@@ -1,0 +1,13 @@
+{
+  "language": "uz",
+  "min_order": 30000.0,
+  "work_hours_from": "09:00",
+  "work_hours_until": "21:45",
+  "restaurant_name": "Muhsina Dollar Somsa",
+  "address": "Toshkent sh.",
+  "phone": "+998901234567",
+  "restaurant_lat": 41.3554,
+  "restaurant_lon": 69.3103,
+  "delivery_base_fee": 10000.0,
+  "delivery_per_km": 3000.0
+}

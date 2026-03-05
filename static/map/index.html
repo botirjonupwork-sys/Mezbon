@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Manzilni tanlang</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, sans-serif; background: #fff; }
+    #map { width: 100vw; height: 100vh; }
+
+    #pin-center {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -100%);
+      font-size: 36px;
+      pointer-events: none;
+      z-index: 1000;
+      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));
+    }
+
+    #panel {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: #fff;
+      padding: 12px 16px 20px;
+      box-shadow: 0 -2px 16px rgba(0,0,0,0.12);
+      z-index: 1000;
+      border-radius: 16px 16px 0 0;
+    }
+    #address-text {
+      font-size: 14px;
+      color: #555;
+      min-height: 20px;
+      margin-bottom: 10px;
+      text-align: center;
+    }
+    #confirm-btn {
+      width: 100%;
+      padding: 14px;
+      background: #fa8c16;
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    #confirm-btn:active { opacity: 0.8; }
+    #confirm-btn:disabled { background: #ccc; }
+    .hint {
+      font-size: 12px;
+      color: #999;
+      text-align: center;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="pin-center">📍</div>
+
+  <div id="panel">
+    <div id="address-text">📍 Xaritani suring va manzilni tanlang...</div>
+    <button id="confirm-btn">✅ Shu joyni tanlash</button>
+    <div class="hint">Xaritani suring va kerakli nuqtaga olib boring</div>
+  </div>
+
+  <script>
+    const tg = window.Telegram.WebApp;
+    tg.ready();
+    tg.expand();
+
+    // Toshkent markazidan boshlaymiz
+    const defaultLat = 41.2995;
+    const defaultLon = 69.2401;
+
+    const map = L.map('map', {
+      center: [defaultLat, defaultLon],
+      zoom: 15,
+      zoomControl: true,
+    });
+
+    // Yandex Maps tile layer
+    L.tileLayer('https://core-renderer-tiles.maps.yandex.net/tiles?l=map&x={x}&y={y}&z={z}&scale=2&lang=ru_RU', {
+      attribution: '© Yandex Maps',
+      maxZoom: 19,
+    }).addTo(map);
+
+    // Fallback: OSM tiles
+    map.on('tileerror', function() {
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap',
+        maxZoom: 19,
+      }).addTo(map);
+    });
+
+    let currentLat = defaultLat;
+    let currentLon = defaultLon;
+    const addressEl = document.getElementById('address-text');
+    const btn = document.getElementById('confirm-btn');
+
+    // Manzil nomini olamiz (reverse geocoding - Nominatim)
+    let geocodeTimer = null;
+    function updateAddress(lat, lon) {
+      addressEl.textContent = `📍 ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+      clearTimeout(geocodeTimer);
+      geocodeTimer = setTimeout(async () => {
+        try {
+          const res = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=uz`,
+            { headers: { 'Accept-Language': 'uz,ru' } }
+          );
+          const data = await res.json();
+          if (data.display_name) {
+            const parts = data.display_name.split(',').slice(0, 3).join(',');
+            addressEl.textContent = `📍 ${parts}`;
+          }
+        } catch {}
+      }, 600);
+    }
+
+    // Xarita ko'chirilganda markaz koordinatalarini yangilaymiz
+    map.on('move', function() {
+      const center = map.getCenter();
+      currentLat = center.lat;
+      currentLon = center.lng;
+    });
+
+    map.on('moveend', function() {
+      updateAddress(currentLat, currentLon);
+    });
+
+    updateAddress(currentLat, currentLon);
+
+    // Tasdiqlash tugmasi
+    btn.addEventListener('click', function() {
+      btn.disabled = true;
+      btn.textContent = '⏳ Yuborilmoqda...';
+      const data = JSON.stringify({
+        lat: currentLat,
+        lon: currentLon,
+        address: addressEl.textContent.replace('📍 ', ''),
+      });
+      tg.sendData(data);
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; }
+
+/* ── Mobile responsive ── */
+@media (max-width: 768px) {
+  /* Ant Table mobil uchun kichikroq */
+  .ant-table { font-size: 13px; }
+  .ant-table-thead > tr > th,
+  .ant-table-tbody > tr > td { padding: 8px 6px !important; }
+
+  /* Card ichidagi padding */
+  .ant-card-body { padding: 12px !important; }
+
+  /* Title kichikroq */
+  .ant-typography h4 { font-size: 18px !important; }
+
+  /* DatePicker */
+  .ant-picker-range { width: 100% !important; }
+
+  /* Statistic kichikroq */
+  .ant-statistic-content-value { font-size: 20px !important; }
+
+  /* Content margin */
+  .ant-layout-content { margin: 12px !important; }
+
+  /* Descriptions mobil */
+  .ant-descriptions-item-label { font-size: 12px; }
+  .ant-descriptions-item-content { font-size: 13px; }
+
+  /* Tag kichikroq */
+  .ant-tag { font-size: 11px; padding: 0 4px; }
+
+  /* Button block on mobile */
+  .ant-space-horizontal { flex-wrap: wrap; }
+
+  /* Search input full width */
+  .ant-input-affix-wrapper { width: 100% !important; }
+}
+
+@media (max-width: 480px) {
+  .ant-table { font-size: 12px; }
+  .ant-table-thead > tr > th,
+  .ant-table-tbody > tr > td { padding: 6px 4px !important; }
+  .ant-card-body { padding: 8px !important; }
+  .ant-statistic-content-value { font-size: 18px !important; }
+  .ant-statistic-title { font-size: 12px !important; }
+}
+
+/* Pending row highlight */
+.ant-table-row-pending td { background-color: #fff7e6 !important; }
+
+/* Yangi zakaz flash animatsiyasi */
+@keyframes orderFlash {
+  0%, 100% { background-color: #fff7e6; }
+  50% { background-color: #ffe58f; }
+}
+.order-flash td {
+  animation: orderFlash 0.6s ease-in-out 5;
+}
