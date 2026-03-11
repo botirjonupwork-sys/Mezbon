@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Table, Card, Typography, Input, message, Tag, Spin } from 'antd'
 import { SearchOutlined } from '@ant-design/icons'
 import { getUsers, getUserOrders } from '../api'
+import { useBranchStore } from '../store/branch'
 
 const { Title } = Typography
 
@@ -92,13 +93,16 @@ export default function Users() {
   const [filtered, setFiltered] = useState([])
   const [loading, setLoading] = useState(true)
   const [pageSize, setPageSize] = useState(10)
+  const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
 
   useEffect(() => {
-    getUsers()
+    setLoading(true)
+    const params = selectedBranchId ? { branch_id: selectedBranchId } : {}
+    getUsers(params)
       .then((res) => { setUsers(res.data || []); setFiltered(res.data || []) })
       .catch(() => message.error('Yuklashda xato'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [selectedBranchId])
 
   const onSearch = (val) => {
     const q = val.toLowerCase()

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from typing import Optional
 from api.database import get_db
 from api.schemas import ReviewCreate, ReviewOut
 from database.models import Review, User
@@ -12,7 +13,8 @@ router = APIRouter(prefix="/reviews", tags=["reviews"])
 async def create_review(
     telegram_id: str,
     data: ReviewCreate,
-    db: AsyncSession = Depends(get_db)
+    branch_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
 ):
     if not 1 <= data.rating <= 5:
         raise HTTPException(400, "Reyting 1 dan 5 gacha bo'lishi kerak")
@@ -22,7 +24,7 @@ async def create_review(
     if not user:
         raise HTTPException(404, "Foydalanuvchi topilmadi")
 
-    review = Review(user_id=user.id, **data.model_dump())
+    review = Review(user_id=user.id, branch_id=branch_id, **data.model_dump())
     db.add(review)
     await db.commit()
     await db.refresh(review)
@@ -30,10 +32,14 @@ async def create_review(
 
 
 @router.get("/")
-async def get_reviews(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(Review).order_by(Review.created_at.desc())
-    )
+async def get_reviews(
+    branch_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(Review).order_by(Review.created_at.desc())
+    if branch_id:
+        query = query.where(Review.branch_id == branch_id)
+    result = await db.execute(query)
     reviews = result.scalars().all()
 
     output = []
@@ -42,6 +48,7 @@ async def get_reviews(db: AsyncSession = Depends(get_db)):
         user = user_res.scalar_one_or_none()
         output.append({
             "id": r.id,
+            "branch_id": r.branch_id,
             "rating": r.rating,
             "comment": r.comment,
             "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -51,13 +58,17 @@ async def get_reviews(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/stats")
-async def get_stats(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(
-            func.avg(Review.rating).label("average"),
-            func.count(Review.id).label("total"),
-        )
+async def get_stats(
+    branch_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(
+        func.avg(Review.rating).label("average"),
+        func.count(Review.id).label("total"),
     )
+    if branch_id:
+        query = query.where(Review.branch_id == branch_id)
+    result = await db.execute(query)
     row = result.one()
     return {
         "average_rating": round(float(row.average or 0), 1),

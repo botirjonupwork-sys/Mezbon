@@ -1,23 +1,125 @@
 from aiogram import Router, F
-from aiogram.types import Message, ReplyKeyboardRemove
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from bot.states import Registration
-from bot.api_client import get_user, create_user
-from bot.keyboards.main import main_menu_kb, phone_kb
+from bot.api_client import get_user, create_user, get_nearest_branches, get_branch
+from bot.keyboards.main import main_menu_kb, phone_kb, branch_location_kb, branches_kb
 
 router = Router()
 
 
 @router.message(CommandStart())
-async def start_handler(message: Message):
+async def start_handler(message: Message, state: FSMContext):
+    data = await state.get_data()
+    branch_id = data.get("branch_id")
+    if branch_id:
+        branch = await get_branch(branch_id)
+        branch_name = branch["name"] if branch else ""
+        await message.answer(
+            f"🥟 <b>Muhsina Dollar Somsa</b> ga xush kelibsiz!\n\n"
+            f"📍 Filial: <b>{branch_name}</b>\n\n"
+            f"Bizning mazali taomlarimizdan buyurtma bering!",
+            reply_markup=main_menu_kb(),
+            parse_mode="HTML",
+        )
+    else:
+        await message.answer(
+            "🥟 <b>Muhsina Dollar Somsa</b> ga xush kelibsiz!\n\n"
+            "📍 Avval yaqin filialini topish uchun joylashuvingizni yuboring!",
+            reply_markup=branch_location_kb(),
+            parse_mode="HTML",
+        )
+
+
+# ── Filial tanlash ─────────────────────────────────────
+
+@router.message(F.text == "📍 Filial tanlash")
+async def branch_select_start(message: Message):
     await message.answer(
-        "🥟 <b>Muhsina Dollar Somsa</b> ga xush kelibsiz!\n\n"
-        "Bizning mazali taomlarimizdan buyurtma bering!",
+        "📍 Yaqin filiallarni topish uchun joylashuvingizni yuboring:",
+        reply_markup=branch_location_kb(),
+    )
+
+
+@router.message(F.location)
+async def branch_location_received(message: Message, state: FSMContext):
+    """Joylashuv kelganda yaqin filiallarni ko'rsatish."""
+    # Agar OrderFlow.entering_address holatida bo'lsa — bu yerda ushlanmasin
+    current_state = await state.get_state()
+    if current_state and "OrderFlow" in current_state:
+        return
+
+    lat = message.location.latitude
+    lon = message.location.longitude
+
+    await message.answer("🔍 Yaqin filiallar qidirilmoqda...", reply_markup=ReplyKeyboardRemove())
+
+    branches = await get_nearest_branches(lat, lon)
+    if not branches:
+        await message.answer(
+            "😔 Hozircha filiallar topilmadi.\n"
+            "Iltimos, keyinroq urinib ko'ring.",
+            reply_markup=main_menu_kb(),
+        )
+        return
+
+    # Foydalanuvchi koordinatalarini saqlash (delivery uchun)
+    await state.update_data(user_lat=lat, user_lon=lon)
+
+    text = "📍 <b>Yaqin filiallar:</b>\n\n"
+    for b in branches[:5]:
+        status = "✅ Ochiq" if b.get("is_open") else "❌ Yopiq"
+        text += (
+            f"🏪 <b>{b['name']}</b> — {b['distance_km']} km\n"
+            f"   {status} | {b.get('work_hours_from', '09:00')} – {b.get('work_hours_until', '22:00')}\n"
+        )
+        if b.get("address"):
+            text += f"   📍 {b['address']}\n"
+        text += "\n"
+
+    text += "Qaysi filialdan buyurtma bermoqchisiz?"
+    await message.answer(text, reply_markup=branches_kb(branches[:5]), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("branch:"))
+async def branch_selected(callback: CallbackQuery, state: FSMContext):
+    """Foydalanuvchi filial tanladi."""
+    branch_id = int(callback.data.split(":")[1])
+    branch = await get_branch(branch_id)
+
+    if not branch:
+        await callback.answer("Filial topilmadi!", show_alert=True)
+        return
+
+    if not branch.get("is_open"):
+        await callback.answer(
+            f"❌ {branch['name']} hozir yopiq!\n"
+            f"Ish vaqti: {branch.get('work_hours_from', '09:00')} – {branch.get('work_hours_until', '22:00')}",
+            show_alert=True,
+        )
+        return
+
+    # Filial ID ni saqlash
+    await state.update_data(branch_id=branch_id, branch_name=branch["name"])
+
+    await callback.message.answer(
+        f"✅ <b>{branch['name']}</b> filiali tanlandi!\n\n"
+        f"📍 {branch.get('address', '')}\n"
+        f"⏰ {branch.get('work_hours_from', '09:00')} – {branch.get('work_hours_until', '22:00')}\n\n"
+        f"Endi menyudan buyurtma berishingiz mumkin!",
         reply_markup=main_menu_kb(),
         parse_mode="HTML",
     )
+    await callback.answer()
 
+
+@router.message(F.text == "⬅️ Ortga")
+async def back_to_main(message: Message):
+    await message.answer("Asosiy menyu:", reply_markup=main_menu_kb())
+
+
+# ── Profil ─────────────────────────────────────────────
 
 @router.message(F.text == "📝 Ro'yxatdan o'tish")
 @router.message(F.text == "👤 Profil")
@@ -25,10 +127,13 @@ async def profile_handler(message: Message, state: FSMContext):
     user = await get_user(str(message.from_user.id))
 
     if user:
+        data = await state.get_data()
+        branch_name = data.get("branch_name", "Tanlanmagan")
         await message.answer(
             f"👤 <b>Profilingiz</b>\n\n"
             f"Ism: {user['full_name']}\n"
-            f"Telefon: {user['phone']}",
+            f"Telefon: {user['phone']}\n"
+            f"📍 Filial: {branch_name}",
             parse_mode="HTML",
             reply_markup=main_menu_kb(),
         )
@@ -59,7 +164,9 @@ async def reg_name(message: Message, state: FSMContext):
 async def _finish_registration(message: Message, state: FSMContext, phone: str):
     """Ro'yxatdan o'tishni yakunlash — savatchani saqlab qolish bilan"""
     data = await state.get_data()
-    cart = data.get("cart", {})  # Savatchani saqlab olamiz
+    cart = data.get("cart", {})
+    branch_id = data.get("branch_id")
+    branch_name = data.get("branch_name")
 
     user = await create_user(
         telegram_id=str(message.from_user.id),
@@ -69,9 +176,15 @@ async def _finish_registration(message: Message, state: FSMContext, phone: str):
 
     await state.clear()
 
-    # Savat bo'sh bo'lmasa — qayta tiklaymiz
+    # Savat va filial ma'lumotlarini qayta tiklaymiz
+    restore = {}
     if cart:
-        await state.update_data(cart=cart)
+        restore["cart"] = cart
+    if branch_id:
+        restore["branch_id"] = branch_id
+        restore["branch_name"] = branch_name
+    if restore:
+        await state.update_data(**restore)
 
     await message.answer(
         f"✅ Ro'yxatdan o'tdingiz!\n\nXush kelibsiz, <b>{user['full_name']}</b>!",
@@ -79,7 +192,6 @@ async def _finish_registration(message: Message, state: FSMContext, phone: str):
         parse_mode="HTML",
     )
 
-    # Agar savatda mahsulot bo'lsa — davom etishni taklif qilamiz
     if cart:
         total = sum(v["price"] * v["quantity"] for v in cart.values())
         count = sum(v["quantity"] for v in cart.values())

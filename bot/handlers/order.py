@@ -10,7 +10,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from bot.states import OrderFlow
-from bot.api_client import get_user, create_order, get_addresses
+from bot.api_client import get_user, create_order, get_addresses, get_branch
 from bot.handlers.cart import get_cart, save_cart
 from bot.handlers.notifications import notify_admin
 from bot.keyboards.order import (
@@ -84,13 +84,19 @@ def _haversine(lat1, lon1, lat2, lon2) -> float:
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def _calc_delivery_fee(lat: float, lon: float) -> float:
+def _calc_delivery_fee(lat: float, lon: float, branch_info: dict = None) -> float:
     """Masofaga qarab dastavka narxini hisoblash."""
-    s = _load_settings()
-    rest_lat = s.get("restaurant_lat", 41.2995)
-    rest_lon = s.get("restaurant_lon", 69.2401)
-    base_fee = s.get("delivery_base_fee", 10000)
-    per_km = s.get("delivery_per_km", 3000)
+    if branch_info:
+        rest_lat = branch_info.get("latitude", 41.2995)
+        rest_lon = branch_info.get("longitude", 69.2401)
+        base_fee = branch_info.get("delivery_base_fee", 10000)
+        per_km = branch_info.get("delivery_per_km", 3000)
+    else:
+        s = _load_settings()
+        rest_lat = s.get("restaurant_lat", 41.2995)
+        rest_lon = s.get("restaurant_lon", 69.2401)
+        base_fee = s.get("delivery_base_fee", 10000)
+        per_km = s.get("delivery_per_km", 3000)
 
     distance = _haversine(rest_lat, rest_lon, lat, lon)
     return round(base_fee + distance * per_km, -2)  # 100 ga yaxlitlash
@@ -124,19 +130,24 @@ async def checkout_start(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Savat bo'sh!", show_alert=True)
         return
 
-    if not _is_open():
-        work_from, work_until = _load_work_hours()
+    data = await state.get_data()
+    branch_id = data.get("branch_id")
+
+    if not branch_id:
+        await callback.answer("📍 Avval filial tanlang!", show_alert=True)
+        return
+
+    # Filial ochiqligini tekshirish
+    branch_info = await get_branch(branch_id)
+    if branch_info and not branch_info.get("is_open"):
         await callback.answer(
-            f"⏰ Hozir ish vaqti emas!\n"
-            f"Biz {work_from} – {work_until} oralig'ida ishlaymiz.",
+            f"⏰ {branch_info.get('name', 'Filial')} hozir yopiq!\n"
+            f"Ish vaqti: {branch_info.get('work_hours_from', '09:00')} – {branch_info.get('work_hours_until', '22:00')}",
             show_alert=True,
         )
         return
 
-    # Minimal zakaz summasi tekshiruvi (faqat dastavka uchun)
-    # Saboy olib ketish uchun limit yo'q
     await state.update_data(cart_total=sum(v["price"] * v["quantity"] for v in cart.values()))
-
 
     user = await get_user(str(callback.from_user.id))
     if not user:
@@ -169,8 +180,10 @@ async def choose_delivery(callback: CallbackQuery, state: FSMContext):
         data = await state.get_data()
         cart = data.get("cart", {})
         total = sum(v["price"] * v["quantity"] for v in cart.values())
-        settings = _load_settings()
-        min_order = settings.get("min_order", 30000)
+        # Filial sozlamalaridan min_order olish
+        branch_id = data.get("branch_id")
+        branch_info = await get_branch(branch_id) if branch_id else None
+        min_order = branch_info.get("min_order", 30000) if branch_info else _load_settings().get("min_order", 30000)
         if total < min_order:
             await callback.answer(
                 f"\U0001f69a Dastavka uchun minimal zakaz: {min_order:,.0f} so'm\n"
@@ -355,6 +368,7 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
                 "comment": data.get("comment", ""),
                 "payment_method": data.get("payment", "cash"),
                 "delivery_fee": data.get("delivery_fee", 0),
+                "branch_id": data.get("branch_id"),
                 "items": items,
             },
         )
@@ -374,9 +388,15 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
 
     user_name  = data.get("user_name",  "—")
     user_phone = data.get("user_phone", "—")
+    branch_id = data.get("branch_id")
+    branch_name = data.get("branch_name")
 
     await save_cart(state, {})
     await state.clear()
+
+    # Filial ma'lumotlarini qayta tiklaymiz
+    if branch_id:
+        await state.update_data(branch_id=branch_id, branch_name=branch_name)
 
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
@@ -407,7 +427,12 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(OrderFlow.confirming, F.data == "cancel_order")
 async def cancel_order(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    branch_id = data.get("branch_id")
+    branch_name = data.get("branch_name")
     await state.clear()
+    if branch_id:
+        await state.update_data(branch_id=branch_id, branch_name=branch_name)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:

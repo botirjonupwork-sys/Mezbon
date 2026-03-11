@@ -7,6 +7,7 @@ import {
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { getStats, getOrders, getReviewStats } from '../api'
+import { useBranchStore } from '../store/branch'
 
 const { Title } = Typography
 const { RangePicker } = DatePicker
@@ -36,6 +37,7 @@ export default function Dashboard() {
   const [reviewStats, setReviewStats] = useState({})
   const [loading, setLoading] = useState(true)
   const [dateRange, setDateRange] = useState([dayjs(), dayjs()])
+  const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
 
   const fetchAll = async (range) => {
     setLoading(true)
@@ -44,6 +46,7 @@ export default function Dashboard() {
       date_from: from.format('YYYY-MM-DD'),
       date_to: to.format('YYYY-MM-DD'),
     }
+    if (selectedBranchId) params.branch_id = selectedBranchId
     try {
       const [statsRes, ordersRes, reviewRes] = await Promise.all([
         getStats(params),
@@ -60,7 +63,7 @@ export default function Dashboard() {
     }
   }
 
-  useEffect(() => { fetchAll(dateRange) }, [])
+  useEffect(() => { fetchAll(dateRange) }, [selectedBranchId])
 
   const handleRangeChange = (dates) => {
     if (dates && dates.length === 2) {
@@ -159,11 +162,16 @@ export default function Dashboard() {
 
       <Card title="So'nggi zakazlar">
         <Table
-          dataSource={orders.slice(0, 15)}
+          dataSource={orders}
           columns={columns}
           rowKey="id"
           loading={loading}
-          pagination={false}
+          pagination={{
+            defaultPageSize: 10,
+            showSizeChanger: true,
+            pageSizeOptions: ['10', '20', '50'],
+            showTotal: (total, range) => `${range[0]}-${range[1]} / ${total} ta`,
+          }}
           size="small"
           scroll={{ x: 900 }}
         />

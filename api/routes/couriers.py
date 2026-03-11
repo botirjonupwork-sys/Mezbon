@@ -23,6 +23,7 @@ class CourierRegister(BaseModel):
     full_name: str
     phone: str
     transport_type: str = "car"
+    branch_id: Optional[int] = None
 
 
 # ── Ro'yxatdan o'tish ──────────────────────────────────
@@ -40,6 +41,7 @@ async def register_courier(data: CourierRegister, db: AsyncSession = Depends(get
         full_name=data.full_name,
         phone=data.phone,
         transport_type=data.transport_type,
+        branch_id=data.branch_id,
     )
     db.add(courier)
     await db.commit()
@@ -194,8 +196,11 @@ async def mark_delivered(telegram_id: str, order_id: int, db: AsyncSession = Dep
 
 # ── Admin: barcha kuryerlar ────────────────────────────
 @router.get("/")
-async def list_couriers(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Courier).order_by(Courier.created_at.desc()))
+async def list_couriers(branch_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+    query = select(Courier).order_by(Courier.created_at.desc())
+    if branch_id:
+        query = query.where(Courier.branch_id == branch_id)
+    result = await db.execute(query)
     couriers = result.scalars().all()
     return [
         {
@@ -206,6 +211,7 @@ async def list_couriers(db: AsyncSession = Depends(get_db)):
             "transport_type": c.transport_type,
             "status": c.status.value,
             "created_at": c.created_at.isoformat() if c.created_at else None,
+            "branch_id": c.branch_id,
         }
         for c in couriers
     ]

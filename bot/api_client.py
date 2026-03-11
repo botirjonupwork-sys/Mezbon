@@ -99,3 +99,51 @@ async def create_review(telegram_id: str, rating: int, comment: str = ""):
             json={"rating": rating, "comment": comment},
         )
         return r.json()
+
+
+async def get_nearest_branches(lat: float, lon: float, restaurant_id: int = 1):
+    """Yaqin filiallarni masofasi bilan qaytaradi."""
+    async with httpx.AsyncClient() as client:
+        try:
+            r = await client.get(
+                f"{BASE_URL}/branches/nearest",
+                params={"lat": lat, "lon": lon, "restaurant_id": restaurant_id},
+                timeout=5.0,
+            )
+            if r.status_code == 200:
+                return r.json()
+        except Exception:
+            pass
+    return []
+
+
+async def get_branch(branch_id: int):
+    """Filial ma'lumotlarini olish."""
+    async with httpx.AsyncClient() as client:
+        try:
+            r = await client.get(f"{BASE_URL}/branches/{branch_id}", timeout=5.0)
+            if r.status_code == 200:
+                return r.json()
+        except Exception:
+            pass
+    return None
+
+
+async def get_branch_categories(branch_id: int):
+    """Filial bo'yicha kategoriyalarni olish."""
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{BASE_URL}/menu/categories",
+            params={"branch_id": branch_id},
+        )
+        return r.json()
+
+
+async def get_branch_products(category_id: int, branch_id: int):
+    """Filial bo'yicha mahsulotlarni olish."""
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{BASE_URL}/menu/categories/{category_id}/products",
+            params={"branch_id": branch_id},
+        )
+        return r.json()

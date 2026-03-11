@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Table, Card, Rate, Typography, Statistic, Row, Col, Tooltip, message } from 'antd'
 import { getReviews, getReviewStats } from '../api'
+import { useBranchStore } from '../store/branch'
 
 const { Title } = Typography
 
@@ -9,16 +10,19 @@ export default function Reviews() {
   const [stats, setStats] = useState({})
   const [loading, setLoading] = useState(true)
   const [pageSize, setPageSize] = useState(10)
+  const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
 
   useEffect(() => {
-    Promise.all([getReviews(), getReviewStats()])
+    setLoading(true)
+    const params = selectedBranchId ? { branch_id: selectedBranchId } : {}
+    Promise.all([getReviews(params), getReviewStats()])
       .then(([revRes, statsRes]) => {
         setReviews(revRes.data || [])
         setStats(statsRes.data || {})
       })
       .catch(() => message.error('Yuklashda xato'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [selectedBranchId])
 
   const columns = [
     { title: '#', dataIndex: 'id', width: 60 },

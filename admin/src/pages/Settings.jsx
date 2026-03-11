@@ -8,8 +8,9 @@ import {
   ShopOutlined, ClockCircleOutlined, CarOutlined,
   UserOutlined, LockOutlined
 } from '@ant-design/icons'
-import { getSettings, updateSettings, getProfile, updateProfile } from '../api'
+import { getSettings, updateSettings, getProfile, updateProfile, getBranchSettings, updateBranchSettings } from '../api'
 import { useAuthStore } from '../store/auth'
+import { useBranchStore } from '../store/branch'
 import dayjs from 'dayjs'
 
 const { Title, Text } = Typography
@@ -97,26 +98,34 @@ export default function Settings() {
   const [mapLat, setMapLat] = useState(41.2995)
   const [mapLon, setMapLon] = useState(69.2401)
   const { setAuth, token } = useAuthStore()
+  const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
 
   useEffect(() => {
-    Promise.all([
-      getSettings(),
-      getProfile(),
-    ])
+    setLoading(true)
+    const settingsPromise = selectedBranchId
+      ? getBranchSettings(selectedBranchId)
+      : getSettings()
+
+    Promise.all([settingsPromise, getProfile()])
       .then(([settingsRes, profileRes]) => {
         const d = settingsRes.data || {}
         if (d.work_hours_from) d.work_hours_from = dayjs(d.work_hours_from, 'HH:mm')
         if (d.work_hours_until) d.work_hours_until = dayjs(d.work_hours_until, 'HH:mm')
         form.setFieldsValue(d)
-        if (d.restaurant_lat) setMapLat(d.restaurant_lat)
-        if (d.restaurant_lon) setMapLon(d.restaurant_lon)
+        if (selectedBranchId) {
+          if (d.latitude) setMapLat(d.latitude)
+          if (d.longitude) setMapLon(d.longitude)
+        } else {
+          if (d.restaurant_lat) setMapLat(d.restaurant_lat)
+          if (d.restaurant_lon) setMapLon(d.restaurant_lon)
+        }
 
         const p = profileRes.data || {}
         profileForm.setFieldsValue({ username: p.username, name: p.name })
       })
       .catch(() => message.error('Sozlamalarni yuklashda xato'))
       .finally(() => setLoading(false))
-  }, [])
+  }, [selectedBranchId])
 
   const handleMapChange = useCallback((lat, lon) => {
     const roundedLat = Math.round(lat * 10000) / 10000
@@ -133,7 +142,11 @@ export default function Settings() {
       // TimePicker dayjs → string
       if (values.work_hours_from) values.work_hours_from = values.work_hours_from.format('HH:mm')
       if (values.work_hours_until) values.work_hours_until = values.work_hours_until.format('HH:mm')
-      await updateSettings(values)
+      if (selectedBranchId) {
+        await updateBranchSettings(selectedBranchId, values)
+      } else {
+        await updateSettings(values)
+      }
       message.success('✅ Sozlamalar muvaffaqiyatli saqlandi')
     } catch (err) {
       if (!err?.errorFields) message.error('Saqlashda xato')

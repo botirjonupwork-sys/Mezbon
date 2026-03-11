@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Table, Tag, Button, Space, Typography, message, Popconfirm } from 'antd'
 import { CheckOutlined, StopOutlined, UserOutlined } from '@ant-design/icons'
 import { getCouriers, updateCourierStatus } from '../api'
+import { useBranchStore } from '../store/branch'
 
 const { Title } = Typography
 
@@ -21,16 +22,18 @@ const STATUS_TAG = {
 export default function Couriers() {
   const [couriers, setCouriers] = useState([])
   const [loading, setLoading] = useState(true)
+  const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
 
   const load = () => {
     setLoading(true)
-    getCouriers()
+    const params = selectedBranchId ? { branch_id: selectedBranchId } : {}
+    getCouriers(params)
       .then((r) => setCouriers(r.data))
       .catch(() => message.error('Kuryer ma\'lumotlarini yuklashda xato'))
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [selectedBranchId])
 
   const handleStatus = async (id, status) => {
     try {

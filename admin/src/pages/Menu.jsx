@@ -13,6 +13,7 @@ import {
   createProduct, updateProduct, deleteProduct,
   createCategory, uploadImage
 } from '../api'
+import { useBranchStore } from '../store/branch'
 
 const { Title } = Typography
 
@@ -156,11 +157,13 @@ export default function Menu() {
   const [hasTimeLimit, setHasTimeLimit] = useState(false)
   const [imageUrl, setImageUrl] = useState(null)
   const [pageSize, setPageSize] = useState(10)
+  const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
 
   const fetchData = async () => {
     setLoading(true)
     try {
-      const [catRes, prodRes] = await Promise.all([getCategories(), getProducts()])
+      const params = selectedBranchId ? { branch_id: selectedBranchId } : {}
+      const [catRes, prodRes] = await Promise.all([getCategories(params), getProducts(params)])
       setCategories(catRes.data || [])
       setProducts(prodRes.data || [])
     } catch {
@@ -170,7 +173,7 @@ export default function Menu() {
     }
   }
 
-  useEffect(() => { fetchData() }, [])
+  useEffect(() => { fetchData() }, [selectedBranchId])
 
   const handleToggleStop = async (id, checked) => {
     try {

@@ -13,8 +13,9 @@ import uuid
 from api.database import get_db
 from api.schemas import CategoryOut
 from api.config import settings
+from fastapi import Query
 from database.models import (
-    Product, Category, Order, OrderItem, User, Review, OrderStatus
+    Product, Category, Order, OrderItem, User, Review, OrderStatus, Courier
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -35,12 +36,14 @@ class ProductCreate(BaseModel):
     has_time_limit: bool = False
     available_from: Optional[str] = None
     available_until: Optional[str] = None
+    branch_id: Optional[int] = None
 
 
 class CategoryCreate(BaseModel):
     name_uz: str
     name_ru: Optional[str] = None
     order: int = 0
+    branch_id: Optional[int] = None
 
 
 class SettingsUpdate(BaseModel):
@@ -86,6 +89,7 @@ async def upload_image(file: UploadFile = File(...)):
 async def get_stats(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    branch_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db)
 ):
     # Date range
@@ -105,20 +109,24 @@ async def get_stats(
     else:
         d_to = date.today()
 
+    # Branch filter
+    order_filters = [
+        func.date(Order.created_at) >= d_from,
+        func.date(Order.created_at) <= d_to,
+    ]
+    if branch_id:
+        order_filters.append(Order.branch_id == branch_id)
+
     # Zakazlar soni
     orders_q = await db.execute(
-        select(func.count(Order.id)).where(
-            func.date(Order.created_at) >= d_from,
-            func.date(Order.created_at) <= d_to,
-        )
+        select(func.count(Order.id)).where(*order_filters)
     )
     orders_count = orders_q.scalar() or 0
 
     # Daromad
     revenue_q = await db.execute(
         select(func.sum(Order.total_price)).where(
-            func.date(Order.created_at) >= d_from,
-            func.date(Order.created_at) <= d_to,
+            *order_filters,
             Order.status != OrderStatus.cancelled
         )
     )
@@ -129,20 +137,24 @@ async def get_stats(
     users_count = total_users.scalar() or 0
 
     # Faol zakazlar
+    active_filters = [
+        Order.status.notin_([OrderStatus.delivered, OrderStatus.cancelled])
+    ]
+    if branch_id:
+        active_filters.append(Order.branch_id == branch_id)
     active_orders = await db.execute(
-        select(func.count(Order.id)).where(
-            Order.status.notin_([OrderStatus.delivered, OrderStatus.cancelled])
-        )
+        select(func.count(Order.id)).where(*active_filters)
     )
     active_count = active_orders.scalar() or 0
 
     # O'rtacha reyting
-    avg_rating = await db.execute(
-        select(
-            func.avg(Review.rating).label("avg"),
-            func.count(Review.id).label("total")
-        )
+    review_q = select(
+        func.avg(Review.rating).label("avg"),
+        func.count(Review.id).label("total")
     )
+    if branch_id:
+        review_q = review_q.where(Review.branch_id == branch_id)
+    avg_rating = await db.execute(review_q)
     rating_row = avg_rating.one()
 
     return {
@@ -160,11 +172,15 @@ async def get_all_orders(
     status: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    branch_id: Optional[int] = None,
     limit: int = 100,
     offset: int = 0,
     db: AsyncSession = Depends(get_db)
 ):
     query = select(Order).order_by(Order.created_at.desc())
+
+    if branch_id:
+        query = query.where(Order.branch_id == branch_id)
 
     if status:
         try:
@@ -214,6 +230,7 @@ async def get_all_orders(
 
         output.append({
             "id": order.id,
+            "branch_id": order.branch_id,
             "status": order.status.value,
             "delivery_type": order.delivery_type.value,
             "address": order.address,
@@ -229,8 +246,11 @@ async def get_all_orders(
 
 # ── Mahsulot CRUD ─────────────────────────────────────
 @router.get("/products")
-async def list_products(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Product).order_by(Product.category_id, Product.id))
+async def list_products(branch_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+    query = select(Product).order_by(Product.category_id, Product.id)
+    if branch_id:
+        query = query.where(Product.branch_id == branch_id)
+    result = await db.execute(query)
     products = result.scalars().all()
     return [
         {
@@ -246,6 +266,7 @@ async def list_products(db: AsyncSession = Depends(get_db)):
             "available_until": p.available_until,
             "is_stop": p.is_stop,
             "is_active": p.is_active,
+            "branch_id": p.branch_id,
         }
         for p in products
     ]
@@ -291,8 +312,11 @@ async def delete_product(product_id: int, db: AsyncSession = Depends(get_db)):
 
 # ── Kategoriya CRUD ───────────────────────────────────
 @router.get("/categories")
-async def list_categories(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Category).order_by(Category.order))
+async def list_categories(branch_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+    query = select(Category).order_by(Category.order)
+    if branch_id:
+        query = query.where(Category.branch_id == branch_id)
+    result = await db.execute(query)
     return result.scalars().all()
 
 
@@ -318,8 +342,15 @@ async def delete_category(cat_id: int, db: AsyncSession = Depends(get_db)):
 
 # ── Foydalanuvchilar ──────────────────────────────────
 @router.get("/users")
-async def list_users(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).order_by(User.created_at.desc()))
+async def list_users(branch_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+    if branch_id:
+        # Shu filialga buyurtma bergan foydalanuvchilar
+        subq = select(Order.user_id).where(Order.branch_id == branch_id).distinct()
+        result = await db.execute(
+            select(User).where(User.id.in_(subq)).order_by(User.created_at.desc())
+        )
+    else:
+        result = await db.execute(select(User).order_by(User.created_at.desc()))
     users = result.scalars().all()
     return [
         {
@@ -489,8 +520,23 @@ def _save_admins(admins: list):
 @router.get("/admins")
 async def list_admins():
     admins = _load_admins()
-    # Parolni qaytarmaymiz
-    return [{"id": a["id"], "username": a["username"], "created_at": a["created_at"]} for a in admins]
+    result = []
+    # .env dagi super admin
+    result.append({
+        "id": 0,
+        "username": settings.ADMIN_USERNAME,
+        "created_at": None,
+        "is_super": True,
+    })
+    # admins.json dagi adminlar
+    for a in admins:
+        result.append({
+            "id": a["id"],
+            "username": a["username"],
+            "created_at": a["created_at"],
+            "is_super": False,
+        })
+    return result
 
 
 @router.post("/admins")

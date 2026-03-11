@@ -2,14 +2,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime
+from typing import Optional
 from zoneinfo import ZoneInfo
 
-UZ_TZ = ZoneInfo("Asia/Tashkent")
 from api.database import get_db
 from api.schemas import CategoryOut, ProductOut
 from database.models import Category, Product
 
 router = APIRouter(prefix="/menu", tags=["menu"])
+
+UZ_TZ = ZoneInfo("Asia/Tashkent")
 
 
 def is_product_available(product: Product) -> bool:
@@ -26,35 +28,42 @@ def is_product_available(product: Product) -> bool:
 
 
 @router.get("/categories", response_model=list[CategoryOut])
-async def get_categories(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(Category)
-        .where(Category.is_active == True)
-        .order_by(Category.order)
-    )
+async def get_categories(
+    branch_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(Category).where(Category.is_active == True).order_by(Category.order)
+    if branch_id:
+        query = query.where(Category.branch_id == branch_id)
+    result = await db.execute(query)
     return result.scalars().all()
 
 
 @router.get("/products", response_model=list[ProductOut])
-async def get_all_products(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(Product).where(Product.is_active == True)
-    )
-    products = result.scalars().all()
-    return products
+async def get_all_products(
+    branch_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(Product).where(Product.is_active == True)
+    if branch_id:
+        query = query.where(Product.branch_id == branch_id)
+    result = await db.execute(query)
+    return result.scalars().all()
 
 
 @router.get("/categories/{category_id}/products", response_model=list[ProductOut])
 async def get_products_by_category(
     category_id: int,
-    db: AsyncSession = Depends(get_db)
+    branch_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Product).where(
-            Product.category_id == category_id,
-            Product.is_active == True
-        )
+    query = select(Product).where(
+        Product.category_id == category_id,
+        Product.is_active == True,
     )
+    if branch_id:
+        query = query.where(Product.branch_id == branch_id)
+    result = await db.execute(query)
     return result.scalars().all()
 
 
@@ -71,7 +80,7 @@ async def get_product(product_id: int, db: AsyncSession = Depends(get_db)):
 async def toggle_stop(
     product_id: int,
     is_stop: bool,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Stop-list ga qo'shish yoki olib tashlash (Admin uchun)"""
     result = await db.execute(select(Product).where(Product.id == product_id))

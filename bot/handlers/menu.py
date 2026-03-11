@@ -4,7 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
 import httpx
 import os
-from bot.api_client import get_categories, get_products, get_product
+from bot.api_client import get_categories, get_products, get_product, get_branch_categories, get_branch_products
 from bot.keyboards.menu import categories_kb, products_kb, product_detail_kb
 
 router = Router()
@@ -13,23 +13,40 @@ API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000")
 
 
 @router.message(F.text == "🍽 Menyu")
-async def show_categories(message: Message):
-    categories = await get_categories()
+async def show_categories(message: Message, state: FSMContext):
+    data = await state.get_data()
+    branch_id = data.get("branch_id")
+
+    if not branch_id:
+        await message.answer(
+            "📍 Avval filial tanlang!\n"
+            "\"📍 Filial tanlash\" tugmasini bosing."
+        )
+        return
+
+    categories = await get_branch_categories(branch_id)
     if not categories:
         await message.answer("Menyu hozircha bo'sh.")
         return
 
+    branch_name = data.get("branch_name", "")
     await message.answer(
-        "📋 <b>Menyu bo'limlari</b>\n\nQaysi bo'limni ko'rmoqchisiz?",
+        f"📋 <b>{branch_name} — Menyu</b>\n\nQaysi bo'limni ko'rmoqchisiz?",
         reply_markup=categories_kb(categories),
         parse_mode="HTML",
     )
 
 
 @router.callback_query(F.data.startswith("cat:"))
-async def show_products(callback: CallbackQuery):
+async def show_products(callback: CallbackQuery, state: FSMContext):
     category_id = int(callback.data.split(":")[1])
-    products = await get_products(category_id)
+    data = await state.get_data()
+    branch_id = data.get("branch_id")
+
+    if branch_id:
+        products = await get_branch_products(category_id, branch_id)
+    else:
+        products = await get_products(category_id)
 
     if not products:
         await callback.answer("Bu bo'limda hozircha mahsulot yo'q", show_alert=True)
@@ -112,8 +129,15 @@ async def show_product_detail(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "back_to_categories")
-async def back_to_categories(callback: CallbackQuery):
-    categories = await get_categories()
+async def back_to_categories(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    branch_id = data.get("branch_id")
+
+    if branch_id:
+        categories = await get_branch_categories(branch_id)
+    else:
+        categories = await get_categories()
+
     try:
         await callback.message.edit_text(
             "📋 <b>Menyu bo'limlari</b>",

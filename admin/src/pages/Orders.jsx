@@ -3,6 +3,7 @@ import { Table, Tag, Card, Typography, Space, Button, DatePicker, Descriptions, 
 import { ReloadOutlined, CheckCircleOutlined, CarOutlined, CloseCircleOutlined, SoundOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { getOrders, updateOrderStatus } from '../api'
+import { useBranchStore } from '../store/branch'
 
 const { Title, Text } = Typography
 const { RangePicker } = DatePicker
@@ -70,6 +71,7 @@ export default function Orders() {
   const [pageSize, setPageSize] = useState(10)
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [newOrderFlash, setNewOrderFlash] = useState(false)
+  const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
   const prevOrderIdsRef = useRef(new Set())
   const isFirstLoadRef = useRef(true)
   const pollTimerRef = useRef(null)
@@ -78,10 +80,12 @@ export default function Orders() {
     if (!silent) setLoading(true)
     const [from, to] = range || dateRange
     try {
-      const res = await getOrders({
+      const params = {
         date_from: from.format('YYYY-MM-DD'),
         date_to: to.format('YYYY-MM-DD'),
-      })
+      }
+      if (selectedBranchId) params.branch_id = selectedBranchId
+      const res = await getOrders(params)
       const newOrders = res.data || []
       setOrders(newOrders)
 
@@ -110,10 +114,13 @@ export default function Orders() {
     } finally {
       if (!silent) setLoading(false)
     }
-  }, [dateRange, soundEnabled])
+  }, [dateRange, soundEnabled, selectedBranchId])
 
-  // Birinchi yuklash
-  useEffect(() => { fetchOrders(dateRange) }, [])
+  // Birinchi yuklash + branch o'zgarganda
+  useEffect(() => {
+    isFirstLoadRef.current = true
+    fetchOrders(dateRange)
+  }, [selectedBranchId])
 
   // Polling — har 10 sekundda yangi zakazlarni tekshirish
   useEffect(() => {

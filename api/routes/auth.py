@@ -19,6 +19,7 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     token: str
     name: str
+    is_super: bool = False
 
 
 def _load_admins() -> list:
@@ -33,15 +34,15 @@ def _load_admins() -> list:
 
 @router.post("/login", response_model=LoginResponse)
 async def login(data: LoginRequest):
-    # 1. .env dagi asosiy admin
+    # 1. .env dagi super admin
     if data.username == settings.ADMIN_USERNAME and data.password == settings.ADMIN_PASSWORD:
-        return LoginResponse(token=settings.SECRET_KEY, name=data.username)
+        return LoginResponse(token=settings.SECRET_KEY, name=data.username, is_super=True)
 
-    # 2. admins.json dagi qo'shimcha adminlar
+    # 2. admins.json dagi oddiy adminlar
     admins = _load_admins()
     hashed = hashlib.sha256(data.password.encode()).hexdigest()
     for admin in admins:
         if admin["username"] == data.username and admin["password"] == hashed:
-            return LoginResponse(token=settings.SECRET_KEY, name=data.username)
+            return LoginResponse(token=settings.SECRET_KEY, name=data.username, is_super=False)
 
     raise HTTPException(401, "Login yoki parol noto'g'ri")

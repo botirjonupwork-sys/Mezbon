@@ -33,8 +33,8 @@ export const updateOrderStatus = (id, status) =>
   api.patch(`/orders/${id}/status`, null, { params: { status } })
 
 // ── Menu ─────────────────────────────────────────────
-export const getCategories = () => api.get('/admin/categories')
-export const getProducts = () => api.get('/admin/products')
+export const getCategories = (params) => api.get('/admin/categories', { params })
+export const getProducts = (params) => api.get('/admin/products', { params })
 export const toggleStop = (id, is_stop) =>
   api.patch(`/menu/products/${id}/stop`, null, { params: { is_stop } })
 export const createProduct = (data) => api.post('/admin/products', data)
@@ -50,11 +50,11 @@ export const uploadImage = (file) => {
 }
 
 // ── Users ─────────────────────────────────────────────
-export const getUsers = () => api.get('/admin/users')
+export const getUsers = (params) => api.get('/admin/users', { params })
 export const getUserOrders = (userId) => api.get(`/admin/users/${userId}/orders`)
 
 // ── Reviews ───────────────────────────────────────────
-export const getReviews = () => api.get('/reviews')
+export const getReviews = (params) => api.get('/reviews', { params })
 
 // ── Settings ──────────────────────────────────────────
 export const getSettings = () => api.get('/admin/settings')
@@ -65,7 +65,7 @@ export const getProfile = () => api.get('/admin/profile')
 export const updateProfile = (data) => api.put('/admin/profile', data)
 
 // ── Couriers ──────────────────────────────────────────
-export const getCouriers = () => api.get('/couriers/')
+export const getCouriers = (params) => api.get('/couriers/', { params })
 export const updateCourierStatus = (id, status) =>
   api.patch(`/couriers/${id}/status`, null, { params: { status } })
 
@@ -73,3 +73,8 @@ export const updateCourierStatus = (id, status) =>
 export const getAdmins = () => api.get('/admin/admins')
 export const createAdmin = (data) => api.post('/admin/admins', data)
 export const deleteAdmin = (id) => api.delete(`/admin/admins/${id}`)
+
+// ── Branches ──────────────────────────────────────────
+export const getAdminBranches = (params) => api.get('/admin/branches', { params })
+export const getBranchSettings = (branchId) => api.get(`/admin/branches/${branchId}/settings`)
+export const updateBranchSettings = (branchId, data) => api.put(`/admin/branches/${branchId}/settings`, data)

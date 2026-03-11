@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
-import { Layout, Menu, Button, Avatar, Typography, Space, Drawer } from 'antd'
+import { Layout, Menu, Button, Avatar, Typography, Space, Drawer, Select } from 'antd'
 import {
   DashboardOutlined, ShoppingCartOutlined, AppstoreOutlined,
   UserOutlined, StarOutlined, LogoutOutlined, SettingOutlined, TeamOutlined,
-  CarOutlined, MenuOutlined
+  CarOutlined, MenuOutlined, BranchesOutlined
 } from '@ant-design/icons'
 import { useAuthStore } from '../store/auth'
+import { useBranchStore } from '../store/branch'
+import { getAdminBranches } from '../api'
 
 const { Header, Sider, Content } = Layout
 const { Text } = Typography
@@ -29,6 +31,7 @@ export default function AdminLayout() {
   const navigate = useNavigate()
   const location = useLocation()
   const { admin, logout } = useAuthStore()
+  const { branches, selectedBranchId, setBranches, selectBranch } = useBranchStore()
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
@@ -36,6 +39,17 @@ export default function AdminLayout() {
     const handleResize = () => setIsMobile(window.innerWidth < 768)
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  // Load branches
+  useEffect(() => {
+    getAdminBranches()
+      .then((r) => {
+        const list = r.data || []
+        setBranches(list)
+        if (!selectedBranchId && list.length > 0) selectBranch(list[0].id)
+      })
+      .catch(() => {})
   }, [])
 
   const handleMenuClick = ({ key }) => {
@@ -49,6 +63,19 @@ export default function AdminLayout() {
         <Text strong style={{ color: '#fa8c16', fontSize: 16 }}>
           Muhsina Admin
         </Text>
+        {branches.length > 0 && (
+          <Select
+            value={selectedBranchId}
+            onChange={selectBranch}
+            style={{ width: '100%', marginTop: 10 }}
+            size="small"
+            suffixIcon={<BranchesOutlined style={{ color: '#fa8c16' }} />}
+            options={[
+              { value: null, label: 'Barcha filiallar' },
+              ...branches.map((b) => ({ value: b.id, label: b.name })),
+            ]}
+          />
+        )}
       </div>
       <div style={{ flex: 1 }}>
         <Menu
