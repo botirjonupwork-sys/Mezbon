@@ -3,6 +3,9 @@ import os
 import math
 import httpx
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+UZ_TZ = ZoneInfo("Asia/Tashkent")
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
@@ -38,7 +41,7 @@ def _is_open() -> bool:
     """Hozirgi vaqt ish vaqtida ekanligini tekshiradi."""
     try:
         work_from, work_until = _load_work_hours()
-        now = datetime.now().strftime("%H:%M")
+        now = datetime.now(UZ_TZ).strftime("%H:%M")
         return work_from <= now <= work_until
     except Exception:
         return True

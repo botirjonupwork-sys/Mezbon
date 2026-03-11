@@ -2,6 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+UZ_TZ = ZoneInfo("Asia/Tashkent")
 from api.database import get_db
 from api.schemas import CategoryOut, ProductOut
 from database.models import Category, Product
@@ -16,7 +19,7 @@ def is_product_available(product: Product) -> bool:
     if not product.has_time_limit:
         return True
 
-    now = datetime.now().strftime("%H:%M")
+    now = datetime.now(UZ_TZ).strftime("%H:%M")
     if product.available_from and product.available_until:
         return product.available_from <= now <= product.available_until
     return True

@@ -1,4 +1,7 @@
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+UZ_TZ = ZoneInfo("Asia/Tashkent")
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
@@ -51,7 +54,7 @@ async def add_to_cart(callback: CallbackQuery, state: FSMContext):
 
     # Vaqt limiti tekshiruvi
     if product.get("has_time_limit"):
-        now = datetime.now().strftime("%H:%M")
+        now = datetime.now(UZ_TZ).strftime("%H:%M")
         avail_from = product.get("available_from", "00:00")
         avail_until = product.get("available_until", "23:59")
         if not (avail_from <= now <= avail_until):
