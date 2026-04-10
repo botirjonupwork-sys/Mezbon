@@ -17,8 +17,13 @@ env/
 # Node
 admin/node_modules/
 webapp/node_modules/
+super_admin/node_modules/
 admin/dist/
 webapp/dist/
+super_admin/dist/
+
+# macOS resource forks
+._*
 
 # Logs
 *.log

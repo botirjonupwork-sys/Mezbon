@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Table, Card, Rate, Typography, Statistic, Row, Col, Tooltip, message } from 'antd'
 import { getReviews, getReviewStats } from '../api'
 import { useBranchStore } from '../store/branch'
+import { useAuthStore } from '../store/auth'
 
 const { Title } = Typography
 
@@ -11,11 +12,14 @@ export default function Reviews() {
   const [loading, setLoading] = useState(true)
   const [pageSize, setPageSize] = useState(10)
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
+  const restaurantId = useAuthStore((s) => s.restaurantId)
 
   useEffect(() => {
     setLoading(true)
-    const params = selectedBranchId ? { branch_id: selectedBranchId } : {}
-    Promise.all([getReviews(params), getReviewStats()])
+    const params = {}
+    if (restaurantId) params.restaurant_id = restaurantId
+    if (selectedBranchId) params.branch_id = selectedBranchId
+    Promise.all([getReviews(params), getReviewStats(params)])
       .then(([revRes, statsRes]) => {
         setReviews(revRes.data || [])
         setStats(statsRes.data || {})

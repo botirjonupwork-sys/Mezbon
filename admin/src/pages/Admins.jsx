@@ -5,6 +5,7 @@ import {
 } from 'antd'
 import { PlusOutlined, DeleteOutlined, LockOutlined, UserOutlined } from '@ant-design/icons'
 import { getAdmins, createAdmin, deleteAdmin } from '../api'
+import { useAuthStore } from '../store/auth'
 
 const { Title } = Typography
 
@@ -14,10 +15,13 @@ export default function Admins() {
   const [modalOpen, setModalOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [form] = Form.useForm()
+  const restaurantId = useAuthStore((s) => s.restaurantId)
 
   const fetchAdmins = () => {
     setLoading(true)
-    getAdmins()
+    const params = {}
+    if (restaurantId) params.restaurant_id = restaurantId
+    getAdmins(params)
       .then((res) => setAdmins(res.data || []))
       .catch(() => message.error('Yuklashda xato'))
       .finally(() => setLoading(false))
@@ -36,7 +40,8 @@ export default function Admins() {
     setSaving(true)
     try {
       const values = await form.validateFields()
-      await createAdmin(values)
+      const qParams = restaurantId ? { restaurant_id: restaurantId } : {}
+      await createAdmin(values, qParams)
       message.success("Admin qo'shildi")
       form.resetFields()
       setModalOpen(false)

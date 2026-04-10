@@ -82,6 +82,7 @@ class OrderCreate(BaseModel):
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     delivery_fee: Optional[float] = None
+    branch_id: Optional[int] = None
     items: List[OrderItemCreate]
 
 

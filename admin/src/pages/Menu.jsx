@@ -2,23 +2,25 @@ import { useEffect, useState, useRef } from 'react'
 import {
   Table, Switch, Button, Tag, Modal, Form, Input,
   InputNumber, Select, Space, Card, Typography, message,
-  Popconfirm, Divider, Upload, Image, Avatar
+  Popconfirm, Divider, Upload, Image, Avatar, Tabs
 } from 'antd'
 import {
   PlusOutlined, EditOutlined, DeleteOutlined,
-  CheckOutlined, UploadOutlined, PictureOutlined
+  CheckOutlined, UploadOutlined, PictureOutlined,
+  AppstoreOutlined, UnorderedListOutlined
 } from '@ant-design/icons'
 import {
   getCategories, getProducts, toggleStop,
   createProduct, updateProduct, deleteProduct,
-  createCategory, uploadImage
+  createCategory, updateCategory, deleteCategory, uploadImage
 } from '../api'
 import { useBranchStore } from '../store/branch'
+import { useAuthStore } from '../store/auth'
 
 const { Title } = Typography
 
 // ── Kategoriya Select + inline qo'shish ───────────────
-function CategorySelect({ value, onChange, categories, onCategoryAdded }) {
+function CategorySelect({ value, onChange, categories, onCategoryAdded, branchId, restaurantId }) {
   const [newCatName, setNewCatName] = useState('')
   const [adding, setAdding] = useState(false)
   const [open, setOpen] = useState(false)
@@ -29,7 +31,10 @@ function CategorySelect({ value, onChange, categories, onCategoryAdded }) {
     if (!name) return
     setAdding(true)
     try {
-      const res = await createCategory({ name_uz: name, order: categories.length + 1 })
+      const catData = { name_uz: name, order: categories.length + 1 }
+      if (branchId) catData.branch_id = branchId
+      const qParams = restaurantId ? { restaurant_id: restaurantId } : {}
+      const res = await createCategory(catData, qParams)
       const newCat = res.data
       message.success(`"${name}" kategoriyasi qo'shildi`)
       setNewCatName('')
@@ -158,11 +163,21 @@ export default function Menu() {
   const [imageUrl, setImageUrl] = useState(null)
   const [pageSize, setPageSize] = useState(10)
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
+  const restaurantId = useAuthStore((s) => s.restaurantId)
+
+  const [activeTab, setActiveTab] = useState('menu')
+
+  // Kategoriya CRUD state
+  const [catModalOpen, setCatModalOpen] = useState(false)
+  const [editingCategory, setEditingCategory] = useState(null)
+  const [catForm] = Form.useForm()
 
   const fetchData = async () => {
     setLoading(true)
     try {
-      const params = selectedBranchId ? { branch_id: selectedBranchId } : {}
+      const params = {}
+      if (restaurantId) params.restaurant_id = restaurantId
+      if (selectedBranchId) params.branch_id = selectedBranchId
       const [catRes, prodRes] = await Promise.all([getCategories(params), getProducts(params)])
       setCategories(catRes.data || [])
       setProducts(prodRes.data || [])
@@ -207,11 +222,14 @@ export default function Menu() {
     try {
       const values = await form.validateFields()
       const payload = { ...values, image_url: imageUrl }
+      if (selectedBranchId) payload.branch_id = selectedBranchId
+      else if (editingProduct?.branch_id) payload.branch_id = editingProduct.branch_id
+      const qParams = restaurantId ? { restaurant_id: restaurantId } : {}
       if (editingProduct) {
-        await updateProduct(editingProduct.id, payload)
+        await updateProduct(editingProduct.id, payload, qParams)
         message.success('Yangilandi')
       } else {
-        await createProduct(payload)
+        await createProduct(payload, qParams)
         message.success("Qo'shildi")
       }
       setModalOpen(false)
@@ -235,6 +253,77 @@ export default function Menu() {
   const handleCategoryAdded = (newCat) => {
     setCategories((prev) => [...prev, newCat])
   }
+
+  // ── Kategoriya CRUD ──────────────────────────────
+  const openAddCategory = () => {
+    setEditingCategory(null)
+    catForm.resetFields()
+    setCatModalOpen(true)
+  }
+
+  const openEditCategory = (cat) => {
+    setEditingCategory(cat)
+    catForm.setFieldsValue(cat)
+    setCatModalOpen(true)
+  }
+
+  const handleSaveCategory = async () => {
+    try {
+      const values = await catForm.validateFields()
+      if (editingCategory) {
+        await updateCategory(editingCategory.id, values)
+        message.success('Kategoriya yangilandi')
+      } else {
+        const catData = { ...values }
+        if (selectedBranchId) catData.branch_id = selectedBranchId
+        const qParams = restaurantId ? { restaurant_id: restaurantId } : {}
+        await createCategory(catData, qParams)
+        message.success("Kategoriya qo'shildi")
+      }
+      setCatModalOpen(false)
+      fetchData()
+    } catch (err) {
+      if (err?.errorFields) return
+      message.error('Saqlashda xato')
+    }
+  }
+
+  const handleDeleteCategory = async (id) => {
+    try {
+      await deleteCategory(id)
+      message.success("Kategoriya o'chirildi")
+      fetchData()
+    } catch {
+      message.error("O'chirishda xato")
+    }
+  }
+
+  const categoryColumns = [
+    { title: '#', dataIndex: 'id', width: 60 },
+    { title: 'Nomi', dataIndex: 'name_uz' },
+    { title: 'Tartib', dataIndex: 'order', width: 80 },
+    {
+      title: 'Tur', width: 140,
+      render: (_, r) => r.branch_id
+        ? <Tag color="blue">Filial</Tag>
+        : <Tag color="green">Restaurant</Tag>
+    },
+    {
+      title: 'Amallar', width: 120,
+      render: (_, record) => (
+        <Space>
+          <Button size="small" icon={<EditOutlined />} onClick={() => openEditCategory(record)} />
+          <Popconfirm
+            title="O'chirilsinmi?"
+            onConfirm={() => handleDeleteCategory(record.id)}
+            okText="Ha" cancelText="Yo'q"
+          >
+            <Button size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        </Space>
+      )
+    },
+  ]
 
   const columns = [
     {
@@ -295,33 +384,97 @@ export default function Menu() {
     <div>
       <Title level={4} style={{ marginBottom: 16 }}>Menyu Boshqaruvi</Title>
 
-      <Card
-        extra={
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={openAdd}
-            style={{ background: '#fa8c16', borderColor: '#fa8c16' }}
-          >
-            Mahsulot qo'shish
-          </Button>
-        }
+      <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
+        type="card"
+        style={{ marginBottom: 16 }}
+        items={[
+          {
+            key: 'menu',
+            label: <span><AppstoreOutlined /> Menyu</span>,
+            children: (
+              <Card
+                extra={
+                  <Button
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    onClick={openAdd}
+                    style={{ background: '#fa8c16', borderColor: '#fa8c16' }}
+                  >
+                    Mahsulot qo'shish
+                  </Button>
+                }
+              >
+                <Table
+                  dataSource={products}
+                  columns={columns}
+                  rowKey="id"
+                  loading={loading}
+                  scroll={{ x: 800 }}
+                  pagination={{
+                    pageSize,
+                    pageSizeOptions: ['10', '30', '50'],
+                    showSizeChanger: true,
+                    onShowSizeChange: (_, size) => setPageSize(size),
+                    showTotal: (total) => `Jami: ${total} ta`,
+                  }}
+                />
+              </Card>
+            ),
+          },
+          {
+            key: 'categories',
+            label: <span><UnorderedListOutlined /> Kategoriyalar</span>,
+            children: (
+              <Card
+                extra={
+                  <Button
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    onClick={openAddCategory}
+                    style={{ background: '#fa8c16', borderColor: '#fa8c16' }}
+                  >
+                    Kategoriya qo'shish
+                  </Button>
+                }
+              >
+                <Table
+                  dataSource={categories}
+                  columns={categoryColumns}
+                  rowKey="id"
+                  loading={loading}
+                  pagination={false}
+                  scroll={{ x: 500 }}
+                />
+              </Card>
+            ),
+          },
+        ]}
+      />
+
+      {/* ── Kategoriya modal ── */}
+      <Modal
+        title={editingCategory ? 'Kategoriyani tahrirlash' : 'Yangi kategoriya'}
+        open={catModalOpen}
+        onOk={handleSaveCategory}
+        onCancel={() => setCatModalOpen(false)}
+        okText="Saqlash"
+        cancelText="Bekor"
+        okButtonProps={{ style: { background: '#fa8c16', borderColor: '#fa8c16' } }}
       >
-        <Table
-          dataSource={products}
-          columns={columns}
-          rowKey="id"
-          loading={loading}
-          scroll={{ x: 800 }}
-          pagination={{
-            pageSize,
-            pageSizeOptions: ['10', '30', '50'],
-            showSizeChanger: true,
-            onShowSizeChange: (_, size) => setPageSize(size),
-            showTotal: (total) => `Jami: ${total} ta`,
-          }}
-        />
-      </Card>
+        <Form form={catForm} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item name="name_uz" label="Nomi (UZ)" rules={[{ required: true, message: 'Nomini kiriting' }]}>
+            <Input placeholder="Somsalar" />
+          </Form.Item>
+          <Form.Item name="name_ru" label="Nomi (RU)">
+            <Input placeholder="Самсы" />
+          </Form.Item>
+          <Form.Item name="order" label="Tartib raqami">
+            <InputNumber min={0} style={{ width: '100%' }} placeholder="1" />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Modal
         title={editingProduct ? 'Mahsulotni tahrirlash' : 'Yangi mahsulot'}
@@ -350,6 +503,8 @@ export default function Menu() {
             <CategorySelect
               categories={categories}
               onCategoryAdded={handleCategoryAdded}
+              branchId={selectedBranchId}
+              restaurantId={restaurantId}
               value={form.getFieldValue('category_id')}
               onChange={(val) => form.setFieldValue('category_id', val)}
             />

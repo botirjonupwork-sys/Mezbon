@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from api.database import get_db
 from api.schemas import CategoryOut, ProductOut
-from database.models import Category, Product
+from database.models import Category, Product, Branch
 
 router = APIRouter(prefix="/menu", tags=["menu"])
 
@@ -30,11 +30,26 @@ def is_product_available(product: Product) -> bool:
 @router.get("/categories", response_model=list[CategoryOut])
 async def get_categories(
     branch_id: Optional[int] = None,
+    restaurant_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Category).where(Category.is_active == True).order_by(Category.order)
     if branch_id:
-        query = query.where(Category.branch_id == branch_id)
+        # Filialniki + restaurant darajasidagi (branch_id NULL) kategoriyalar
+        br = await db.execute(select(Branch).where(Branch.id == branch_id))
+        branch = br.scalar_one_or_none()
+        if branch:
+            query = query.where(
+                (Category.branch_id == branch_id) |
+                ((Category.restaurant_id == branch.restaurant_id) & (Category.branch_id.is_(None)))
+            )
+        else:
+            query = query.where(Category.branch_id == branch_id)
+    elif restaurant_id:
+        branch_ids = select(Branch.id).where(Branch.restaurant_id == restaurant_id)
+        query = query.where(
+            (Category.restaurant_id == restaurant_id) | Category.branch_id.in_(branch_ids)
+        )
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -42,11 +57,25 @@ async def get_categories(
 @router.get("/products", response_model=list[ProductOut])
 async def get_all_products(
     branch_id: Optional[int] = None,
+    restaurant_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Product).where(Product.is_active == True)
     if branch_id:
-        query = query.where(Product.branch_id == branch_id)
+        br = await db.execute(select(Branch).where(Branch.id == branch_id))
+        branch = br.scalar_one_or_none()
+        if branch:
+            query = query.where(
+                (Product.branch_id == branch_id) |
+                ((Product.restaurant_id == branch.restaurant_id) & (Product.branch_id.is_(None)))
+            )
+        else:
+            query = query.where(Product.branch_id == branch_id)
+    elif restaurant_id:
+        branch_ids = select(Branch.id).where(Branch.restaurant_id == restaurant_id)
+        query = query.where(
+            (Product.restaurant_id == restaurant_id) | Product.branch_id.in_(branch_ids)
+        )
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -55,6 +84,7 @@ async def get_all_products(
 async def get_products_by_category(
     category_id: int,
     branch_id: Optional[int] = None,
+    restaurant_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Product).where(
@@ -62,7 +92,20 @@ async def get_products_by_category(
         Product.is_active == True,
     )
     if branch_id:
-        query = query.where(Product.branch_id == branch_id)
+        br = await db.execute(select(Branch).where(Branch.id == branch_id))
+        branch = br.scalar_one_or_none()
+        if branch:
+            query = query.where(
+                (Product.branch_id == branch_id) |
+                ((Product.restaurant_id == branch.restaurant_id) & (Product.branch_id.is_(None)))
+            )
+        else:
+            query = query.where(Product.branch_id == branch_id)
+    elif restaurant_id:
+        branch_ids = select(Branch.id).where(Branch.restaurant_id == restaurant_id)
+        query = query.where(
+            (Product.restaurant_id == restaurant_id) | Product.branch_id.in_(branch_ids)
+        )
     result = await db.execute(query)
     return result.scalars().all()
 

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from api.database import get_db
-from database.models import Courier, CourierStatus, Order, OrderStatus
+from database.models import Courier, CourierStatus, Order, OrderStatus, Branch
 
 router = APIRouter(prefix="/couriers", tags=["couriers"])
 
@@ -196,10 +196,17 @@ async def mark_delivered(telegram_id: str, order_id: int, db: AsyncSession = Dep
 
 # ── Admin: barcha kuryerlar ────────────────────────────
 @router.get("/")
-async def list_couriers(branch_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+async def list_couriers(
+    branch_id: Optional[int] = None,
+    restaurant_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
     query = select(Courier).order_by(Courier.created_at.desc())
     if branch_id:
         query = query.where(Courier.branch_id == branch_id)
+    elif restaurant_id:
+        branch_ids = select(Branch.id).where(Branch.restaurant_id == restaurant_id)
+        query = query.where(Courier.branch_id.in_(branch_ids))
     result = await db.execute(query)
     couriers = result.scalars().all()
     return [

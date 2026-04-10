@@ -8,6 +8,7 @@ import {
 import dayjs from 'dayjs'
 import { getStats, getOrders, getReviewStats } from '../api'
 import { useBranchStore } from '../store/branch'
+import { useAuthStore } from '../store/auth'
 
 const { Title } = Typography
 const { RangePicker } = DatePicker
@@ -38,6 +39,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [dateRange, setDateRange] = useState([dayjs(), dayjs()])
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
+  const restaurantId = useAuthStore((s) => s.restaurantId)
 
   const fetchAll = async (range) => {
     setLoading(true)
@@ -46,6 +48,7 @@ export default function Dashboard() {
       date_from: from.format('YYYY-MM-DD'),
       date_to: to.format('YYYY-MM-DD'),
     }
+    if (restaurantId) params.restaurant_id = restaurantId
     if (selectedBranchId) params.branch_id = selectedBranchId
     try {
       const [statsRes, ordersRes, reviewRes] = await Promise.all([

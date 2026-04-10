@@ -22,16 +22,17 @@ const topMenuItems = [
   { key: '/couriers', icon: <CarOutlined />,         label: 'Kuryerlar' },
 ]
 
-const bottomMenuItems = [
-  { key: '/admins',   icon: <TeamOutlined />,    label: 'Adminlar'   },
+const allBottomMenuItems = [
+  { key: '/admins',   icon: <TeamOutlined />,    label: 'Adminlar', superOnly: true },
   { key: '/settings', icon: <SettingOutlined />, label: 'Sozlamalar' },
 ]
 
 export default function AdminLayout() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { admin, logout } = useAuthStore()
+  const { admin, logout, restaurantId } = useAuthStore()
   const { branches, selectedBranchId, setBranches, selectBranch } = useBranchStore()
+  const bottomMenuItems = allBottomMenuItems.filter((i) => !i.superOnly || !restaurantId)
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const [drawerOpen, setDrawerOpen] = useState(false)
 
@@ -43,14 +44,18 @@ export default function AdminLayout() {
 
   // Load branches
   useEffect(() => {
-    getAdminBranches()
+    if (!restaurantId) {
+      setBranches([])
+      return
+    }
+    getAdminBranches({ restaurant_id: restaurantId })
       .then((r) => {
         const list = r.data || []
         setBranches(list)
-        if (!selectedBranchId && list.length > 0) selectBranch(list[0].id)
+        if (!selectedBranchId && list.length === 1) selectBranch(list[0].id)
       })
-      .catch(() => {})
-  }, [])
+      .catch(() => setBranches([]))
+  }, [restaurantId])
 
   const handleMenuClick = ({ key }) => {
     navigate(key)
@@ -61,7 +66,7 @@ export default function AdminLayout() {
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div style={{ padding: '20px 16px', borderBottom: '1px solid #303030', flexShrink: 0 }}>
         <Text strong style={{ color: '#fa8c16', fontSize: 16 }}>
-          Muhsina Admin
+          {admin?.name || 'Admin'}
         </Text>
         {branches.length > 0 && (
           <Select

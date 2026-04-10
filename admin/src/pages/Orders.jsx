@@ -4,6 +4,7 @@ import { ReloadOutlined, CheckCircleOutlined, CarOutlined, CloseCircleOutlined, 
 import dayjs from 'dayjs'
 import { getOrders, updateOrderStatus } from '../api'
 import { useBranchStore } from '../store/branch'
+import { useAuthStore } from '../store/auth'
 
 const { Title, Text } = Typography
 const { RangePicker } = DatePicker
@@ -72,6 +73,7 @@ export default function Orders() {
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [newOrderFlash, setNewOrderFlash] = useState(false)
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
+  const restaurantId = useAuthStore((s) => s.restaurantId)
   const prevOrderIdsRef = useRef(new Set())
   const isFirstLoadRef = useRef(true)
   const pollTimerRef = useRef(null)
@@ -84,6 +86,7 @@ export default function Orders() {
         date_from: from.format('YYYY-MM-DD'),
         date_to: to.format('YYYY-MM-DD'),
       }
+      if (restaurantId) params.restaurant_id = restaurantId
       if (selectedBranchId) params.branch_id = selectedBranchId
       const res = await getOrders(params)
       const newOrders = res.data || []

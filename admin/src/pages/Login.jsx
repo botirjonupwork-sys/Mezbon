@@ -16,7 +16,7 @@ export default function Login() {
     setLoading(true)
     try {
       const res = await login({ username, password })
-      setAuth(res.data.token, { name: res.data.name })
+      setAuth(res.data.token, { name: res.data.name }, res.data.restaurant_id)
       message.success('Xush kelibsiz!')
       navigate('/')
     } catch {

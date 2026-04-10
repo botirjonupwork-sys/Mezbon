@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     ADMIN_PASSWORD: str = "admin123"
     SECRET_KEY: str = "muhsina-secret-key-change-in-production"
 
+    # Super Admin
+    SUPER_ADMIN_USERNAME: str = "superadmin"
+    SUPER_ADMIN_PASSWORD: str = "SuperAdmin2024!"
+
     # Biznes qoidalari
     DELIVERY_FEE: float = 10000.0
     MIN_ORDER_AMOUNT: float = 20000.0

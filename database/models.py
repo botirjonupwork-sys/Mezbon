@@ -255,6 +255,19 @@ class Review(Base):
     user = relationship("User", back_populates="reviews")
 
 
+# ── Admin (sub-admin tizimi) ────────────────────────
+
+class Admin(Base):
+    __tablename__ = "admins"
+
+    id = Column(Integer, primary_key=True)
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False)
+    username = Column(String, nullable=False)
+    password_hash = Column(String, nullable=False)
+    role = Column(String, default="admin")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ── Platform (SaaS) ─────────────────────────────────
 
 class Plan(Base):

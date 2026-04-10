@@ -97,28 +97,30 @@ export default function Settings() {
   const [savingProfile, setSavingProfile] = useState(false)
   const [mapLat, setMapLat] = useState(41.2995)
   const [mapLon, setMapLon] = useState(69.2401)
-  const { setAuth, token } = useAuthStore()
+  const { setAuth, token, restaurantId } = useAuthStore()
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
+  const restParams = restaurantId ? { restaurant_id: restaurantId } : {}
 
   useEffect(() => {
     setLoading(true)
     const settingsPromise = selectedBranchId
       ? getBranchSettings(selectedBranchId)
-      : getSettings()
+      : getSettings(restParams)
 
-    Promise.all([settingsPromise, getProfile()])
+    Promise.all([settingsPromise, getProfile(restParams)])
       .then(([settingsRes, profileRes]) => {
         const d = settingsRes.data || {}
+        // Branch va restaurant field nomlarini formga moslashtirish
+        if (selectedBranchId) {
+          d.restaurant_name = d.name || ''
+          d.restaurant_lat = d.latitude
+          d.restaurant_lon = d.longitude
+        }
         if (d.work_hours_from) d.work_hours_from = dayjs(d.work_hours_from, 'HH:mm')
         if (d.work_hours_until) d.work_hours_until = dayjs(d.work_hours_until, 'HH:mm')
         form.setFieldsValue(d)
-        if (selectedBranchId) {
-          if (d.latitude) setMapLat(d.latitude)
-          if (d.longitude) setMapLon(d.longitude)
-        } else {
-          if (d.restaurant_lat) setMapLat(d.restaurant_lat)
-          if (d.restaurant_lon) setMapLon(d.restaurant_lon)
-        }
+        if (d.restaurant_lat) setMapLat(d.restaurant_lat)
+        if (d.restaurant_lon) setMapLon(d.restaurant_lon)
 
         const p = profileRes.data || {}
         profileForm.setFieldsValue({ username: p.username, name: p.name })
@@ -143,9 +145,17 @@ export default function Settings() {
       if (values.work_hours_from) values.work_hours_from = values.work_hours_from.format('HH:mm')
       if (values.work_hours_until) values.work_hours_until = values.work_hours_until.format('HH:mm')
       if (selectedBranchId) {
-        await updateBranchSettings(selectedBranchId, values)
+        // Form field nomlarini branch API field nomlariga moslashtirish
+        const branchData = { ...values }
+        branchData.name = branchData.restaurant_name
+        branchData.latitude = branchData.restaurant_lat
+        branchData.longitude = branchData.restaurant_lon
+        delete branchData.restaurant_name
+        delete branchData.restaurant_lat
+        delete branchData.restaurant_lon
+        await updateBranchSettings(selectedBranchId, branchData)
       } else {
-        await updateSettings(values)
+        await updateSettings(values, restParams)
       }
       message.success('✅ Sozlamalar muvaffaqiyatli saqlandi')
     } catch (err) {
@@ -163,12 +173,12 @@ export default function Settings() {
       if (values.username) payload.username = values.username
       if (values.new_password) payload.new_password = values.new_password
 
-      await updateProfile(payload)
+      await updateProfile(payload, restParams)
       profileForm.setFieldValue('new_password', '')
       profileForm.setFieldValue('confirm_password', '')
 
       if (values.username) {
-        setAuth(token, { name: values.username })
+        setAuth(token, { name: values.username }, restaurantId)
       }
       message.success('✅ Profil muvaffaqiyatli yangilandi')
     } catch (err) {

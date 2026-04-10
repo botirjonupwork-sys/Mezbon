@@ -7,8 +7,11 @@ export const useAuthStore = create(
       token: null,
       admin: null,
       isAuth: false,
-      setAuth: (token, admin) => set({ token, admin, isAuth: true }),
-      logout: () => set({ token: null, admin: null, isAuth: false }),
+      restaurantId: null,
+      setAuth: (token, admin, restaurantId) =>
+        set({ token, admin, isAuth: true, restaurantId }),
+      logout: () =>
+        set({ token: null, admin: null, isAuth: false, restaurantId: null }),
     }),
     { name: 'admin-auth' }
   )

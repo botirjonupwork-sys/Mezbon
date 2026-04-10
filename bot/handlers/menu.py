@@ -17,21 +17,19 @@ async def show_categories(message: Message, state: FSMContext):
     data = await state.get_data()
     branch_id = data.get("branch_id")
 
-    if not branch_id:
-        await message.answer(
-            "📍 Avval filial tanlang!\n"
-            "\"📍 Filial tanlash\" tugmasini bosing."
-        )
-        return
+    if branch_id:
+        categories = await get_branch_categories(branch_id)
+    else:
+        categories = await get_categories()
 
-    categories = await get_branch_categories(branch_id)
     if not categories:
         await message.answer("Menyu hozircha bo'sh.")
         return
 
     branch_name = data.get("branch_name", "")
+    title = f"📋 <b>{branch_name} — Menyu</b>" if branch_name else "📋 <b>Menyu</b>"
     await message.answer(
-        f"📋 <b>{branch_name} — Menyu</b>\n\nQaysi bo'limni ko'rmoqchisiz?",
+        f"{title}\n\nQaysi bo'limni ko'rmoqchisiz?",
         reply_markup=categories_kb(categories),
         parse_mode="HTML",
     )
@@ -43,10 +41,7 @@ async def show_products(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     branch_id = data.get("branch_id")
 
-    if branch_id:
-        products = await get_branch_products(category_id, branch_id)
-    else:
-        products = await get_products(category_id)
+    products = await get_branch_products(category_id, branch_id) if branch_id else await get_products(category_id)
 
     if not products:
         await callback.answer("Bu bo'limda hozircha mahsulot yo'q", show_alert=True)

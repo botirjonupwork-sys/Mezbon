@@ -3,7 +3,7 @@ from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from bot.states import Registration
-from bot.api_client import get_user, create_user, get_nearest_branches, get_branch
+from bot.api_client import get_user, create_user, get_nearest_branches, get_branch, get_restaurant_branches
 from bot.keyboards.main import main_menu_kb, phone_kb, branch_location_kb, branches_kb
 
 router = Router()
@@ -13,9 +13,22 @@ router = Router()
 async def start_handler(message: Message, state: FSMContext):
     data = await state.get_data()
     branch_id = data.get("branch_id")
+
+    # Agar branch tanlanmagan bo'lsa — avtomatik aniqlash
+    if not branch_id:
+        branches = await get_restaurant_branches()
+        if len(branches) == 1:
+            # Yagona filial — avtomatik tanlash
+            b = branches[0]
+            branch_id = b["id"]
+            await state.update_data(branch_id=branch_id, branch_name=b["name"])
+            data["branch_name"] = b["name"]
+
     if branch_id:
-        branch = await get_branch(branch_id)
-        branch_name = branch["name"] if branch else ""
+        branch_name = data.get("branch_name", "")
+        if not branch_name:
+            branch = await get_branch(branch_id)
+            branch_name = branch["name"] if branch else ""
         await message.answer(
             f"🥟 <b>Muhsina Dollar Somsa</b> ga xush kelibsiz!\n\n"
             f"📍 Filial: <b>{branch_name}</b>\n\n"

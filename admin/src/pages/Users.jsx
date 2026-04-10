@@ -3,6 +3,7 @@ import { Table, Card, Typography, Input, message, Tag, Spin } from 'antd'
 import { SearchOutlined } from '@ant-design/icons'
 import { getUsers, getUserOrders } from '../api'
 import { useBranchStore } from '../store/branch'
+import { useAuthStore } from '../store/auth'
 
 const { Title } = Typography
 
@@ -94,10 +95,13 @@ export default function Users() {
   const [loading, setLoading] = useState(true)
   const [pageSize, setPageSize] = useState(10)
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
+  const restaurantId = useAuthStore((s) => s.restaurantId)
 
   useEffect(() => {
     setLoading(true)
-    const params = selectedBranchId ? { branch_id: selectedBranchId } : {}
+    const params = {}
+    if (restaurantId) params.restaurant_id = restaurantId
+    if (selectedBranchId) params.branch_id = selectedBranchId
     getUsers(params)
       .then((res) => { setUsers(res.data || []); setFiltered(res.data || []) })
       .catch(() => message.error('Yuklashda xato'))

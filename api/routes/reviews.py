@@ -4,7 +4,7 @@ from sqlalchemy import select, func
 from typing import Optional
 from api.database import get_db
 from api.schemas import ReviewCreate, ReviewOut
-from database.models import Review, User
+from database.models import Review, User, Branch
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 
@@ -34,11 +34,15 @@ async def create_review(
 @router.get("/")
 async def get_reviews(
     branch_id: Optional[int] = None,
+    restaurant_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Review).order_by(Review.created_at.desc())
     if branch_id:
         query = query.where(Review.branch_id == branch_id)
+    elif restaurant_id:
+        branch_ids = select(Branch.id).where(Branch.restaurant_id == restaurant_id)
+        query = query.where(Review.branch_id.in_(branch_ids))
     result = await db.execute(query)
     reviews = result.scalars().all()
 
@@ -60,6 +64,7 @@ async def get_reviews(
 @router.get("/stats")
 async def get_stats(
     branch_id: Optional[int] = None,
+    restaurant_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
 ):
     query = select(
@@ -68,6 +73,9 @@ async def get_stats(
     )
     if branch_id:
         query = query.where(Review.branch_id == branch_id)
+    elif restaurant_id:
+        branch_ids = select(Branch.id).where(Branch.restaurant_id == restaurant_id)
+        query = query.where(Review.branch_id.in_(branch_ids))
     result = await db.execute(query)
     row = result.one()
     return {

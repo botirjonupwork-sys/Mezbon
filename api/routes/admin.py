@@ -1,8 +1,7 @@
 """Admin uchun maxsus endpointlar — mahsulot CRUD, kategoriya, statistika"""
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func
 from datetime import datetime, date
 from typing import Optional
 from pydantic import BaseModel
@@ -13,9 +12,8 @@ import uuid
 from api.database import get_db
 from api.schemas import CategoryOut
 from api.config import settings
-from fastapi import Query
 from database.models import (
-    Product, Category, Order, OrderItem, User, Review, OrderStatus, Courier
+    Product, Category, Order, OrderItem, User, Review, OrderStatus, Courier, Branch, Admin
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -39,10 +37,31 @@ class ProductCreate(BaseModel):
     branch_id: Optional[int] = None
 
 
+class ProductUpdate(BaseModel):
+    name_uz: Optional[str] = None
+    name_ru: Optional[str] = None
+    description_uz: Optional[str] = None
+    description_ru: Optional[str] = None
+    category_id: Optional[int] = None
+    price: Optional[float] = None
+    image_url: Optional[str] = None
+    has_time_limit: Optional[bool] = None
+    available_from: Optional[str] = None
+    available_until: Optional[str] = None
+    branch_id: Optional[int] = None
+
+
 class CategoryCreate(BaseModel):
     name_uz: str
     name_ru: Optional[str] = None
     order: int = 0
+    branch_id: Optional[int] = None
+
+
+class CategoryUpdate(BaseModel):
+    name_uz: Optional[str] = None
+    name_ru: Optional[str] = None
+    order: Optional[int] = None
     branch_id: Optional[int] = None
 
 
@@ -71,6 +90,11 @@ class ProfileUpdate(BaseModel):
     new_password: Optional[str] = None
 
 
+def _get_restaurant_branches(restaurant_id: int):
+    """Restaurant'ning barcha branch_id larini olish uchun subquery"""
+    return select(Branch.id).where(Branch.restaurant_id == restaurant_id)
+
+
 # ── Image upload ───────────────────────────────────────
 @router.post("/upload-image")
 async def upload_image(file: UploadFile = File(...)):
@@ -90,9 +114,9 @@ async def get_stats(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     branch_id: Optional[int] = None,
+    restaurant_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db)
 ):
-    # Date range
     if date_from:
         try:
             d_from = datetime.strptime(date_from, "%Y-%m-%d").date()
@@ -109,21 +133,21 @@ async def get_stats(
     else:
         d_to = date.today()
 
-    # Branch filter
     order_filters = [
         func.date(Order.created_at) >= d_from,
         func.date(Order.created_at) <= d_to,
     ]
     if branch_id:
         order_filters.append(Order.branch_id == branch_id)
+    elif restaurant_id:
+        branch_ids = _get_restaurant_branches(restaurant_id)
+        order_filters.append(Order.branch_id.in_(branch_ids))
 
-    # Zakazlar soni
     orders_q = await db.execute(
         select(func.count(Order.id)).where(*order_filters)
     )
     orders_count = orders_q.scalar() or 0
 
-    # Daromad
     revenue_q = await db.execute(
         select(func.sum(Order.total_price)).where(
             *order_filters,
@@ -132,28 +156,38 @@ async def get_stats(
     )
     revenue = revenue_q.scalar() or 0.0
 
-    # Jami foydalanuvchilar
-    total_users = await db.execute(select(func.count(User.id)))
+    if restaurant_id:
+        branch_ids = _get_restaurant_branches(restaurant_id)
+        user_subq = select(Order.user_id).where(Order.branch_id.in_(branch_ids)).distinct()
+        total_users = await db.execute(select(func.count()).select_from(
+            select(User.id).where(User.id.in_(user_subq)).subquery()
+        ))
+    else:
+        total_users = await db.execute(select(func.count(User.id)))
     users_count = total_users.scalar() or 0
 
-    # Faol zakazlar
     active_filters = [
         Order.status.notin_([OrderStatus.delivered, OrderStatus.cancelled])
     ]
     if branch_id:
         active_filters.append(Order.branch_id == branch_id)
+    elif restaurant_id:
+        branch_ids = _get_restaurant_branches(restaurant_id)
+        active_filters.append(Order.branch_id.in_(branch_ids))
     active_orders = await db.execute(
         select(func.count(Order.id)).where(*active_filters)
     )
     active_count = active_orders.scalar() or 0
 
-    # O'rtacha reyting
     review_q = select(
         func.avg(Review.rating).label("avg"),
         func.count(Review.id).label("total")
     )
     if branch_id:
         review_q = review_q.where(Review.branch_id == branch_id)
+    elif restaurant_id:
+        branch_ids = _get_restaurant_branches(restaurant_id)
+        review_q = review_q.where(Review.branch_id.in_(branch_ids))
     avg_rating = await db.execute(review_q)
     rating_row = avg_rating.one()
 
@@ -173,6 +207,7 @@ async def get_all_orders(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     branch_id: Optional[int] = None,
+    restaurant_id: Optional[int] = None,
     limit: int = 100,
     offset: int = 0,
     db: AsyncSession = Depends(get_db)
@@ -181,6 +216,9 @@ async def get_all_orders(
 
     if branch_id:
         query = query.where(Order.branch_id == branch_id)
+    elif restaurant_id:
+        branch_ids = _get_restaurant_branches(restaurant_id)
+        query = query.where(Order.branch_id.in_(branch_ids))
 
     if status:
         try:
@@ -216,7 +254,6 @@ async def get_all_orders(
         )
         items = items_res.scalars().all()
 
-        # Product nomlarini olamiz
         items_with_names = []
         for i in items:
             prod_res = await db.execute(select(Product).where(Product.id == i.product_id))
@@ -246,10 +283,28 @@ async def get_all_orders(
 
 # ── Mahsulot CRUD ─────────────────────────────────────
 @router.get("/products")
-async def list_products(branch_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
-    query = select(Product).order_by(Product.category_id, Product.id)
+async def list_products(
+    branch_id: Optional[int] = None,
+    restaurant_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(Product).where(Product.is_active == True).order_by(Product.category_id, Product.id)
     if branch_id:
-        query = query.where(Product.branch_id == branch_id)
+        # Shu filialniki + restaurant darajasidagi (branch_id NULL) mahsulotlar
+        br = await db.execute(select(Branch).where(Branch.id == branch_id))
+        branch = br.scalar_one_or_none()
+        if branch:
+            query = query.where(
+                (Product.branch_id == branch_id) |
+                ((Product.restaurant_id == branch.restaurant_id) & (Product.branch_id.is_(None)))
+            )
+        else:
+            query = query.where(Product.branch_id == branch_id)
+    elif restaurant_id:
+        branch_ids = _get_restaurant_branches(restaurant_id)
+        query = query.where(
+            (Product.restaurant_id == restaurant_id) | Product.branch_id.in_(branch_ids)
+        )
     result = await db.execute(query)
     products = result.scalars().all()
     return [
@@ -273,8 +328,21 @@ async def list_products(branch_id: Optional[int] = None, db: AsyncSession = Depe
 
 
 @router.post("/products")
-async def create_product(data: ProductCreate, db: AsyncSession = Depends(get_db)):
-    product = Product(**data.model_dump())
+async def create_product(
+    data: ProductCreate,
+    restaurant_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    dump = data.model_dump()
+    # branch_id bo'lsa — shu branchning restaurant_id sini olish
+    if dump.get("branch_id"):
+        br = await db.execute(select(Branch).where(Branch.id == dump["branch_id"]))
+        branch = br.scalar_one_or_none()
+        if branch:
+            dump["restaurant_id"] = branch.restaurant_id
+    elif restaurant_id:
+        dump["restaurant_id"] = restaurant_id
+    product = Product(**dump)
     db.add(product)
     await db.commit()
     await db.refresh(product)
@@ -284,7 +352,8 @@ async def create_product(data: ProductCreate, db: AsyncSession = Depends(get_db)
 @router.put("/products/{product_id}")
 async def update_product(
     product_id: int,
-    data: ProductCreate,
+    data: ProductUpdate,
+    restaurant_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(select(Product).where(Product.id == product_id))
@@ -292,7 +361,19 @@ async def update_product(
     if not product:
         raise HTTPException(404, "Mahsulot topilmadi")
 
-    for key, value in data.model_dump().items():
+    # Faqat yuborilgan maydonlarni yangilash (qolganlarini o'zgartirmaslik)
+    dump = data.model_dump(exclude_unset=True)
+
+    # branch_id yangilansa — restaurant_id ni ham yangilash
+    if "branch_id" in dump and dump["branch_id"]:
+        br = await db.execute(select(Branch).where(Branch.id == dump["branch_id"]))
+        branch = br.scalar_one_or_none()
+        if branch:
+            dump["restaurant_id"] = branch.restaurant_id
+    elif restaurant_id and "restaurant_id" not in dump:
+        dump["restaurant_id"] = restaurant_id
+
+    for key, value in dump.items():
         setattr(product, key, value)
 
     await db.commit()
@@ -312,21 +393,67 @@ async def delete_product(product_id: int, db: AsyncSession = Depends(get_db)):
 
 # ── Kategoriya CRUD ───────────────────────────────────
 @router.get("/categories")
-async def list_categories(branch_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
-    query = select(Category).order_by(Category.order)
+async def list_categories(
+    branch_id: Optional[int] = None,
+    restaurant_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(Category).where(Category.is_active == True).order_by(Category.order)
     if branch_id:
-        query = query.where(Category.branch_id == branch_id)
+        # Shu filialniki + restaurant darajasidagi (branch_id NULL) kategoriyalar
+        br = await db.execute(select(Branch).where(Branch.id == branch_id))
+        branch = br.scalar_one_or_none()
+        if branch:
+            query = query.where(
+                (Category.branch_id == branch_id) |
+                ((Category.restaurant_id == branch.restaurant_id) & (Category.branch_id.is_(None)))
+            )
+        else:
+            query = query.where(Category.branch_id == branch_id)
+    elif restaurant_id:
+        branch_ids = _get_restaurant_branches(restaurant_id)
+        query = query.where(
+            (Category.restaurant_id == restaurant_id) | Category.branch_id.in_(branch_ids)
+        )
     result = await db.execute(query)
     return result.scalars().all()
 
 
 @router.post("/categories")
-async def create_category(data: CategoryCreate, db: AsyncSession = Depends(get_db)):
-    cat = Category(**data.model_dump())
+async def create_category(
+    data: CategoryCreate,
+    restaurant_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    dump = data.model_dump()
+    if dump.get("branch_id"):
+        br = await db.execute(select(Branch).where(Branch.id == dump["branch_id"]))
+        branch = br.scalar_one_or_none()
+        if branch:
+            dump["restaurant_id"] = branch.restaurant_id
+    elif restaurant_id:
+        dump["restaurant_id"] = restaurant_id
+    cat = Category(**dump)
     db.add(cat)
     await db.commit()
     await db.refresh(cat)
     return {"id": cat.id, "name_uz": cat.name_uz}
+
+
+@router.put("/categories/{cat_id}")
+async def update_category(
+    cat_id: int,
+    data: CategoryUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Category).where(Category.id == cat_id))
+    cat = result.scalar_one_or_none()
+    if not cat:
+        raise HTTPException(404, "Kategoriya topilmadi")
+    for key, value in data.model_dump(exclude_unset=True).items():
+        setattr(cat, key, value)
+    await db.commit()
+    return {"success": True}
 
 
 @router.delete("/categories/{cat_id}")
@@ -342,10 +469,19 @@ async def delete_category(cat_id: int, db: AsyncSession = Depends(get_db)):
 
 # ── Foydalanuvchilar ──────────────────────────────────
 @router.get("/users")
-async def list_users(branch_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+async def list_users(
+    branch_id: Optional[int] = None,
+    restaurant_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
     if branch_id:
-        # Shu filialga buyurtma bergan foydalanuvchilar
         subq = select(Order.user_id).where(Order.branch_id == branch_id).distinct()
+        result = await db.execute(
+            select(User).where(User.id.in_(subq)).order_by(User.created_at.desc())
+        )
+    elif restaurant_id:
+        branch_ids = _get_restaurant_branches(restaurant_id)
+        subq = select(Order.user_id).where(Order.branch_id.in_(branch_ids)).distinct()
         result = await db.execute(
             select(User).where(User.id.in_(subq)).order_by(User.created_at.desc())
         )
@@ -367,7 +503,6 @@ async def list_users(branch_id: Optional[int] = None, db: AsyncSession = Depends
 
 @router.get("/users/{user_id}/orders")
 async def get_user_orders(user_id: int, db: AsyncSession = Depends(get_db)):
-    """Foydalanuvchining barcha zakazlari"""
     result = await db.execute(
         select(Order).where(Order.user_id == user_id).order_by(Order.created_at.desc())
     )
@@ -401,73 +536,113 @@ async def get_user_orders(user_id: int, db: AsyncSession = Depends(get_db)):
     return output
 
 
-# ── Settings ──────────────────────────────────────────
-# Oddiy JSON fayl orqali sozlamalarni saqlash
-SETTINGS_FILE = "settings.json"
-
-
-def _load_settings() -> dict:
-    import json
-    defaults = {
-        "language": "uz",
-        "min_order": 20000,
-        "work_hours_from": "09:00",
-        "work_hours_until": "22:00",
-        "restaurant_name": "Muhsina Dollar Somsa",
-        "address": "Toshkent sh.",
-        "phone": "+998901234567",
-    }
-    if not os.path.exists(SETTINGS_FILE):
-        return defaults
-    try:
-        with open(SETTINGS_FILE, "r") as f:
-            data = json.load(f)
-        return {**defaults, **data}
-    except Exception:
-        return defaults
-
-
-def _save_settings(data: dict):
-    import json
-    existing = _load_settings()
-    existing.update({k: v for k, v in data.items() if v is not None})
-    with open(SETTINGS_FILE, "w") as f:
-        json.dump(existing, f, ensure_ascii=False, indent=2)
+# ── Settings (restaurant-specific) ────────────────────
+from database.models import Restaurant
+import hashlib as _hashlib
 
 
 @router.get("/settings")
-async def get_settings():
-    return _load_settings()
-
-
-@router.put("/settings")
-async def update_settings(data: SettingsUpdate):
-    _save_settings(data.model_dump())
-    return _load_settings()
-
-
-# ── Profil ────────────────────────────────────────────
-@router.get("/profile")
-async def get_profile():
-    """Hozirgi admin profili"""
+async def get_settings(
+    restaurant_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    if not restaurant_id:
+        return {}
+    result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
+    rest = result.scalar_one_or_none()
+    if not rest:
+        raise HTTPException(404, "Restoran topilmadi")
     return {
-        "name": settings.ADMIN_USERNAME,
-        "username": settings.ADMIN_USERNAME,
+        "restaurant_name": rest.name,
+        "address": rest.address,
+        "phone": rest.phone,
+        "work_hours_from": rest.work_hours_from,
+        "work_hours_until": rest.work_hours_until,
+        "min_order": rest.min_order,
+        "delivery_base_fee": rest.delivery_base_fee,
+        "delivery_per_km": rest.delivery_per_km,
+        "restaurant_lat": rest.restaurant_lat,
+        "restaurant_lon": rest.restaurant_lon,
     }
 
 
-@router.put("/profile")
-async def update_profile(data: ProfileUpdate):
-    """Admin profilini yangilash (ism, username, parol)"""
-    import json as _json
+@router.put("/settings")
+async def update_settings(
+    data: SettingsUpdate,
+    restaurant_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    if not restaurant_id:
+        raise HTTPException(400, "restaurant_id kerak")
+    result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
+    rest = result.scalar_one_or_none()
+    if not rest:
+        raise HTTPException(404, "Restoran topilmadi")
 
+    update_map = {
+        "restaurant_name": "name",
+        "address": "address",
+        "phone": "phone",
+        "work_hours_from": "work_hours_from",
+        "work_hours_until": "work_hours_until",
+        "min_order": "min_order",
+        "delivery_base_fee": "delivery_base_fee",
+        "delivery_per_km": "delivery_per_km",
+        "restaurant_lat": "restaurant_lat",
+        "restaurant_lon": "restaurant_lon",
+    }
+    for form_key, db_key in update_map.items():
+        val = getattr(data, form_key, None)
+        if val is not None:
+            setattr(rest, db_key, val)
+
+    await db.commit()
+    return {"success": True}
+
+
+# ── Profil (restaurant-specific) ─────────────────────
+@router.get("/profile")
+async def get_profile(
+    restaurant_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    if restaurant_id:
+        result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
+        rest = result.scalar_one_or_none()
+        if rest:
+            return {"name": rest.name, "username": rest.admin_username}
+    return {"name": settings.ADMIN_USERNAME, "username": settings.ADMIN_USERNAME}
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.put("/profile")
+async def update_profile(
+    data: ProfileUpdate,
+    restaurant_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    if restaurant_id:
+        result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
+        rest = result.scalar_one_or_none()
+        if not rest:
+            raise HTTPException(404, "Restoran topilmadi")
+        if data.username:
+            rest.admin_username = data.username
+        if data.new_password:
+            rest.admin_password_hash = _hashlib.sha256(data.new_password.encode()).hexdigest()
+        await db.commit()
+        return {"success": True, "username": rest.admin_username}
+
+    # Fallback: .env admin
     env_path = os.path.join(os.getcwd(), ".env")
     if not os.path.exists(env_path):
         raise HTTPException(500, ".env fayl topilmadi")
-
     with open(env_path, "r") as f:
         lines = f.readlines()
-
     changes = {}
     if data.username:
         changes["ADMIN_USERNAME"] = data.username
@@ -475,7 +650,6 @@ async def update_profile(data: ProfileUpdate):
     if data.new_password:
         changes["ADMIN_PASSWORD"] = data.new_password
         settings.ADMIN_PASSWORD = data.new_password
-
     if changes:
         new_lines = []
         updated_keys = set()
@@ -486,83 +660,69 @@ async def update_profile(data: ProfileUpdate):
                 updated_keys.add(key)
             else:
                 new_lines.append(line)
-        # Yangi kalitlarni qo'shish
         for key, val in changes.items():
             if key not in updated_keys:
                 new_lines.append(f"{key}={val}\n")
         with open(env_path, "w") as f:
             f.writelines(new_lines)
-
     return {"success": True, "username": settings.ADMIN_USERNAME}
 
 
-# ── Adminlar ──────────────────────────────────────────
-ADMINS_FILE = "admins.json"
-
-
-def _load_admins() -> list:
-    import json
-    if not os.path.exists(ADMINS_FILE):
-        return []
-    try:
-        with open(ADMINS_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-
-def _save_admins(admins: list):
-    import json
-    with open(ADMINS_FILE, "w") as f:
-        json.dump(admins, f, ensure_ascii=False, indent=2)
-
-
+# ── Adminlar boshqaruvi ──────────────────────────────
 @router.get("/admins")
-async def list_admins():
-    admins = _load_admins()
-    result = []
-    # .env dagi super admin
-    result.append({
-        "id": 0,
-        "username": settings.ADMIN_USERNAME,
-        "created_at": None,
-        "is_super": True,
-    })
-    # admins.json dagi adminlar
-    for a in admins:
-        result.append({
-            "id": a["id"],
-            "username": a["username"],
-            "created_at": a["created_at"],
-            "is_super": False,
-        })
-    return result
+async def list_admins(
+    restaurant_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(Admin)
+    if restaurant_id:
+        query = query.where(Admin.restaurant_id == restaurant_id)
+    query = query.order_by(Admin.created_at.desc())
+    result = await db.execute(query)
+    admins = result.scalars().all()
+    return [
+        {
+            "id": a.id,
+            "restaurant_id": a.restaurant_id,
+            "username": a.username,
+            "role": a.role,
+            "created_at": a.created_at.isoformat() if a.created_at else None,
+        }
+        for a in admins
+    ]
 
 
 @router.post("/admins")
-async def create_admin(data: AdminCreate):
-    import hashlib
-    from datetime import datetime as dt
-    admins = _load_admins()
-    if any(a["username"] == data.username for a in admins):
+async def create_admin(
+    data: AdminCreate,
+    restaurant_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    if not restaurant_id:
+        raise HTTPException(400, "restaurant_id kerak")
+    # Username takrorlanmasligini tekshirish
+    existing = await db.execute(
+        select(Admin).where(Admin.username == data.username, Admin.restaurant_id == restaurant_id)
+    )
+    if existing.scalar_one_or_none():
         raise HTTPException(400, "Bu username allaqachon mavjud")
-    new_id = max((a["id"] for a in admins), default=0) + 1
-    hashed = hashlib.sha256(data.password.encode()).hexdigest()
-    admins.append({
-        "id": new_id,
-        "username": data.username,
-        "password": hashed,
-        "created_at": dt.utcnow().isoformat(),
-    })
-    _save_admins(admins)
-    return {"id": new_id, "username": data.username}
+    admin = Admin(
+        restaurant_id=restaurant_id,
+        username=data.username,
+        password_hash=_hashlib.sha256(data.password.encode()).hexdigest(),
+    )
+    db.add(admin)
+    await db.commit()
+    await db.refresh(admin)
+    return {"id": admin.id, "username": admin.username}
 
 
 @router.delete("/admins/{admin_id}")
-async def delete_admin(admin_id: int):
-    admins = _load_admins()
-    new_list = [a for a in admins if a["id"] != admin_id]
-    if len(new_list) == len(admins):
+async def delete_admin(admin_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Admin).where(Admin.id == admin_id))
+    admin = result.scalar_one_or_none()
+    if not admin:
         raise HTTPException(404, "Admin topilmadi")
-    _save_admins(new_list)
+    await db.delete(admin)
+    await db.commit()
     return {"success": True}

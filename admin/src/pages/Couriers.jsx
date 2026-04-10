@@ -3,6 +3,7 @@ import { Table, Tag, Button, Space, Typography, message, Popconfirm } from 'antd
 import { CheckOutlined, StopOutlined, UserOutlined } from '@ant-design/icons'
 import { getCouriers, updateCourierStatus } from '../api'
 import { useBranchStore } from '../store/branch'
+import { useAuthStore } from '../store/auth'
 
 const { Title } = Typography
 
@@ -23,10 +24,13 @@ export default function Couriers() {
   const [couriers, setCouriers] = useState([])
   const [loading, setLoading] = useState(true)
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
+  const restaurantId = useAuthStore((s) => s.restaurantId)
 
   const load = () => {
     setLoading(true)
-    const params = selectedBranchId ? { branch_id: selectedBranchId } : {}
+    const params = {}
+    if (restaurantId) params.restaurant_id = restaurantId
+    if (selectedBranchId) params.branch_id = selectedBranchId
     getCouriers(params)
       .then((r) => setCouriers(r.data))
       .catch(() => message.error('Kuryer ma\'lumotlarini yuklashda xato'))

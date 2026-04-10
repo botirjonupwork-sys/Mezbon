@@ -1,6 +1,7 @@
 import os
 import httpx
 from dotenv import load_dotenv
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 
 load_dotenv()
@@ -10,7 +11,7 @@ from sqlalchemy.orm import selectinload
 from api.database import get_db
 from api.schemas import OrderCreate, OrderOut
 from api.config import settings
-from database.models import Order, OrderItem, OrderStatus, Product, User, Courier, CourierStatus
+from database.models import Order, OrderItem, OrderStatus, Product, User, Courier, CourierStatus, Branch, Restaurant
 from pos.alice import alice_pos
 from pos.yandex import create_delivery
 
@@ -24,11 +25,22 @@ STATUS_MSG = {
 }
 
 
-async def _notify_user_status(telegram_id: str, order_id: int, status: str):
+async def _notify_user_status(telegram_id: str, order_id: int, status: str, restaurant_id: int = None, db: AsyncSession = None):
     """Mijozga Telegram orqali status xabari yuborish (API dan chaqiriladi)"""
-    bot_token = os.getenv("BOT_TOKEN", "")
     msg = STATUS_MSG.get(status)
-    if not bot_token or not msg:
+    if not msg:
+        return
+    # Restoran bot tokenini aniqlash
+    bot_token = os.getenv("BOT_TOKEN", "")
+    if restaurant_id and db:
+        try:
+            result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
+            rest = result.scalar_one_or_none()
+            if rest and rest.bot_token:
+                bot_token = rest.bot_token
+        except Exception:
+            pass
+    if not bot_token:
         return
     try:
         async with httpx.AsyncClient() as client:
@@ -51,7 +63,8 @@ router = APIRouter(prefix="/orders", tags=["orders"])
 async def create_order(
     telegram_id: str,
     data: OrderCreate,
-    db: AsyncSession = Depends(get_db)
+    restaurant_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
 ):
     # Foydalanuvchini topish
     result = await db.execute(select(User).where(User.telegram_id == telegram_id))
@@ -80,9 +93,23 @@ async def create_order(
     else:
         delivery_fee = 0.0
 
+    # branch_id dan restaurant_id aniqlash
+    order_branch_id = data.branch_id
+    order_restaurant_id = restaurant_id
+    if order_branch_id and not order_restaurant_id:
+        br = await db.execute(select(Branch).where(Branch.id == order_branch_id))
+        branch = br.scalar_one_or_none()
+        if branch:
+            order_restaurant_id = branch.restaurant_id
+    # Mahsulotdan aniqlash (fallback)
+    if not order_restaurant_id and order_items:
+        order_restaurant_id = order_items[0][0].restaurant_id
+
     # Zakaz yaratish
     order = Order(
         user_id=user.id,
+        branch_id=order_branch_id,
+        restaurant_id=order_restaurant_id,
         delivery_type=data.delivery_type,
         address=data.address,
         latitude=data.latitude,
@@ -203,7 +230,7 @@ async def update_order_status(
     user_res = await db.execute(select(User).where(User.id == order.user_id))
     user = user_res.scalar_one_or_none()
     if user:
-        await _notify_user_status(user.telegram_id, order_id, status.value)
+        await _notify_user_status(user.telegram_id, order_id, status.value, order.restaurant_id, db)
 
     # Zakaz tayyor bo'lganda ham kuryerlarga qayta xabar (faqat dastavka)
     if status == OrderStatus.ready and order.delivery_type.value == "delivery":

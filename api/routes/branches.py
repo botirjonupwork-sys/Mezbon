@@ -180,7 +180,7 @@ async def delete_branch(branch_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.get("/admin/branches")
 async def admin_list_branches(
-    restaurant_id: int = Query(default=1),
+    restaurant_id: int = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
