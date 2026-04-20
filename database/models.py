@@ -67,6 +67,11 @@ class Restaurant(Base):
     payment_card_name = Column(String)
     payment_card_bank = Column(String)
 
+    # Dastavka provider: "own" (o'z kuryerlari) | "yandex" | "customer_choice"
+    delivery_provider = Column(String, default="own")
+    yandex_api_token = Column(String)
+    yandex_test_mode = Column(Boolean, default=True)
+
     branches = relationship("Branch", back_populates="restaurant")
 
 
@@ -185,6 +190,9 @@ class Order(Base):
     branch_id = Column(Integer, ForeignKey("branches.id"), nullable=True)
     alice_order_id = Column(String)
     yandex_claim_id = Column(String)
+    yandex_status = Column(String)
+    yandex_tracking_url = Column(String)
+    yandex_price = Column(Float)
     user_id = Column(Integer, ForeignKey("users.id"))
     courier_id = Column(Integer, ForeignKey("couriers.id"), nullable=True)
     status = Column(Enum(OrderStatus), default=OrderStatus.pending)

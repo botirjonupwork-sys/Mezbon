@@ -13,7 +13,7 @@ from api.schemas import OrderCreate, OrderOut
 from api.config import settings
 from database.models import Order, OrderItem, OrderStatus, Product, User, Courier, CourierStatus, Branch, Restaurant
 from pos.alice import alice_pos
-from pos.yandex import create_delivery
+from api.services.delivery import dispatch_order_to_provider
 
 STATUS_MSG = {
     "confirmed":  "✅ Zakazingiz qabul qilindi! Tayyorlanishni boshlaymiz.",
@@ -149,33 +149,22 @@ async def create_order(
     except Exception:
         pass  # Alice POS xatosi butun zakazni to'xtatmasin
 
-    # Yandex Delivery ga yuborish (faqat dastavka uchun)
-    if data.delivery_type.value == "delivery" and data.address:
-        try:
-            items_desc = ", ".join(f"{p.name_uz} x{q}" for p, q, _ in order_items)
-            lat = getattr(data, "latitude", None)
-            lon = getattr(data, "longitude", None)
-            if lat and lon:
-                yandex_result = await create_delivery(
-                    customer_name=user.full_name,
-                    customer_phone=user.phone,
-                    customer_address=data.address,
-                    customer_lat=float(lat),
-                    customer_lon=float(lon),
-                    order_id=order.id,
-                    items_description=items_desc,
-                    total_price=total,
-                    comment=data.comment or "",
-                )
-                if yandex_result:
-                    order.yandex_claim_id = yandex_result.get("claim_id")
-                    await db.commit()
-        except Exception:
-            pass  # Yandex xatosi zakazni to'xtatmasin
-
-    # Dastavka zakazini darhol kuryerlarga yuborish (kuryer bot orqali)
+    # Dastavka provider — restaurant sozlamasiga qarab yuborish
+    # "own" → o'z kuryerlari (bot orqali)
+    # "yandex" → Yandex Delivery
     if data.delivery_type.value == "delivery":
-        await _notify_couriers_new_order(db, order, order_items, user)
+        rest_res = await db.execute(select(Restaurant).where(Restaurant.id == order_restaurant_id))
+        rest = rest_res.scalar_one_or_none()
+        provider = (rest.delivery_provider if rest else "own") or "own"
+
+        if provider == "yandex":
+            try:
+                await dispatch_order_to_provider(order, db)
+            except Exception as e:
+                print(f"[Yandex] Dispatch xato: {e}")
+        else:
+            # O'z kuryerlariga xabar yuborish
+            await _notify_couriers_new_order(db, order, order_items, user)
 
     # items ni eager load qilib qaytarish
     result = await db.execute(

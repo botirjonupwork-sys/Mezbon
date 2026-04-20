@@ -77,6 +77,9 @@ class SettingsUpdate(BaseModel):
     restaurant_lon: Optional[float] = None
     delivery_base_fee: Optional[float] = None
     delivery_per_km: Optional[float] = None
+    delivery_provider: Optional[str] = None
+    yandex_api_token: Optional[str] = None
+    yandex_test_mode: Optional[bool] = None
 
 
 class AdminCreate(BaseModel):
@@ -563,6 +566,9 @@ async def get_settings(
         "delivery_per_km": rest.delivery_per_km,
         "restaurant_lat": rest.restaurant_lat,
         "restaurant_lon": rest.restaurant_lon,
+        "delivery_provider": rest.delivery_provider or "own",
+        "yandex_api_token": rest.yandex_api_token,
+        "yandex_test_mode": rest.yandex_test_mode if rest.yandex_test_mode is not None else True,
     }
 
 
@@ -590,6 +596,9 @@ async def update_settings(
         "delivery_per_km": "delivery_per_km",
         "restaurant_lat": "restaurant_lat",
         "restaurant_lon": "restaurant_lon",
+        "delivery_provider": "delivery_provider",
+        "yandex_api_token": "yandex_api_token",
+        "yandex_test_mode": "yandex_test_mode",
     }
     for form_key, db_key in update_map.items():
         val = getattr(data, form_key, None)

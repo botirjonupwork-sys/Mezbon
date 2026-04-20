@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import {
   Card, Form, Input, InputNumber, Select, Button, Typography,
-  Row, Col, message, Spin, TimePicker, Tooltip, Space
+  Row, Col, message, Spin, TimePicker, Tooltip, Space, Switch
 } from 'antd'
 import {
   SaveOutlined, EnvironmentOutlined, PhoneOutlined,
@@ -375,6 +375,54 @@ export default function Settings() {
             </Col>
           </Row>
         </Card>
+
+        {/* ── Dastavka provider ── */}
+        {!selectedBranchId && (
+        <Card
+          title={<><CarOutlined /> Dastavka xizmati</>}
+          style={{ marginBottom: 16 }}
+          size="small"
+        >
+          <Form.Item
+            name="delivery_provider"
+            label="Dastavka turi"
+            extra="O'z kuryerlaringiz yoki tashqi xizmat orqali dastavka"
+          >
+            <Select
+              options={[
+                { value: 'own', label: "🚗 O'z kuryerlarim (courier_bot)" },
+                { value: 'yandex', label: '🟡 Yandex Delivery (avtomatik kuryer)' },
+              ]}
+              style={{ maxWidth: 400 }}
+            />
+          </Form.Item>
+
+          <Form.Item
+            noStyle
+            shouldUpdate={(prev, cur) => prev.delivery_provider !== cur.delivery_provider}
+          >
+            {({ getFieldValue }) => getFieldValue('delivery_provider') === 'yandex' && (
+              <>
+                <Form.Item
+                  name="yandex_api_token"
+                  label="Yandex API Token (OAuth)"
+                  extra="Yandex Delivery shartnomasi imzolangandan keyin beriladi. Bo'sh qoldirsangiz — test rejimi."
+                >
+                  <Input.Password placeholder="y0_Ag..." autoComplete="off" />
+                </Form.Item>
+                <Form.Item
+                  name="yandex_test_mode"
+                  label="Test rejimi"
+                  valuePropName="checked"
+                  extra="Yoqilgan holatida haqiqiy buyurtma yaratilmaydi (sandbox)"
+                >
+                  <Switch checkedChildren="Test" unCheckedChildren="Production" />
+                </Form.Item>
+              </>
+            )}
+          </Form.Item>
+        </Card>
+        )}
 
         {/* ── Til ── */}
         <Card title="🌐 Bot tili" style={{ marginBottom: 24 }} size="small">
