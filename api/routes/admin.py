@@ -111,6 +111,22 @@ async def upload_image(file: UploadFile = File(...)):
     return {"url": f"/static/images/products/{filename}"}
 
 
+@router.delete("/upload-image")
+async def delete_image(url: str):
+    """Eski rasmni fayl tizimidan o'chirish."""
+    if not url or not url.startswith("/static/images/products/"):
+        return {"success": False, "reason": "invalid_url"}
+    filename = url.rsplit("/", 1)[-1]
+    filepath = os.path.join(UPLOAD_DIR, filename)
+    if os.path.exists(filepath):
+        try:
+            os.remove(filepath)
+            return {"success": True}
+        except OSError:
+            return {"success": False, "reason": "os_error"}
+    return {"success": False, "reason": "not_found"}
+
+
 # ── Statistika ────────────────────────────────────────
 @router.get("/stats")
 async def get_stats(
@@ -289,9 +305,12 @@ async def get_all_orders(
 async def list_products(
     branch_id: Optional[int] = None,
     restaurant_id: Optional[int] = None,
+    category_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Product).where(Product.is_active == True).order_by(Product.category_id, Product.id)
+    if category_id:
+        query = query.where(Product.category_id == category_id)
     if branch_id:
         # Shu filialniki + restaurant darajasidagi (branch_id NULL) mahsulotlar
         br = await db.execute(select(Branch).where(Branch.id == branch_id))

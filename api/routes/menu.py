@@ -15,7 +15,7 @@ UZ_TZ = ZoneInfo("Asia/Tashkent")
 
 
 def is_product_available(product: Product) -> bool:
-    """Mahsulot hozir mavjudligini tekshirish (vaqt limiti)"""
+    """Mahsulot hozir mavjudligini tekshirish (O'zbekiston vaqti bilan)."""
     if product.is_stop:
         return False
     if not product.has_time_limit:
@@ -23,7 +23,11 @@ def is_product_available(product: Product) -> bool:
 
     now = datetime.now(UZ_TZ).strftime("%H:%M")
     if product.available_from and product.available_until:
-        return product.available_from <= now <= product.available_until
+        # Oddiy holatda: 09:00–22:00
+        if product.available_from <= product.available_until:
+            return product.available_from <= now <= product.available_until
+        # Tungi oraliq: 22:00–06:00 (kun o'zgaradi)
+        return now >= product.available_from or now <= product.available_until
     return True
 
 
@@ -77,7 +81,9 @@ async def get_all_products(
             (Product.restaurant_id == restaurant_id) | Product.branch_id.in_(branch_ids)
         )
     result = await db.execute(query)
-    return result.scalars().all()
+    products = result.scalars().all()
+    # O'zbekiston vaqti bo'yicha vaqt limiti filteri
+    return [p for p in products if is_product_available(p)]
 
 
 @router.get("/categories/{category_id}/products", response_model=list[ProductOut])
@@ -107,7 +113,9 @@ async def get_products_by_category(
             (Product.restaurant_id == restaurant_id) | Product.branch_id.in_(branch_ids)
         )
     result = await db.execute(query)
-    return result.scalars().all()
+    products = result.scalars().all()
+    # O'zbekiston vaqti bo'yicha vaqt limiti filteri
+    return [p for p in products if is_product_available(p)]
 
 
 @router.get("/products/{product_id}", response_model=ProductOut)

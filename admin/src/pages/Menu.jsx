@@ -12,7 +12,7 @@ import {
 import {
   getCategories, getProducts, toggleStop,
   createProduct, updateProduct, deleteProduct,
-  createCategory, updateCategory, deleteCategory, uploadImage
+  createCategory, updateCategory, deleteCategory, uploadImage, deleteImage
 } from '../api'
 import { useBranchStore } from '../store/branch'
 import { useAuthStore } from '../store/auth'
@@ -91,35 +91,34 @@ function CategorySelect({ value, onChange, categories, onCategoryAdded, branchId
   )
 }
 
-// ── Rasm yuklash komponenti ───────────────────────────
+// ── Rasm tanlash komponenti (yuklamaydi — faqat ko'rsatish + File saqlash) ──
+// value = { url?: string, file?: File, previewUrl?: string }
 function ImageUploader({ value, onChange }) {
-  const [uploading, setUploading] = useState(false)
-
-  const handleFile = async (file) => {
-    // Faqat rasm fayllari
+  const handleFile = (file) => {
     if (!file.type.startsWith('image/')) {
       message.error('Faqat rasm fayllarini yuklang')
       return false
     }
-    setUploading(true)
-    try {
-      const res = await uploadImage(file)
-      const url = res.data.url
-      onChange(url)
-      message.success("Rasm yuklandi")
-    } catch {
-      message.error("Rasm yuklashda xato")
-    } finally {
-      setUploading(false)
-    }
-    return false // antd Upload boshqaruvini oldini olamiz
+    // Local preview URL yaratish (brauzer xotirasida)
+    const previewUrl = URL.createObjectURL(file)
+    onChange({ file, previewUrl, url: value?.url || null })
+    return false  // antd upload ni to'xtatish
   }
+
+  const handleClear = () => {
+    if (value?.previewUrl) URL.revokeObjectURL(value.previewUrl)
+    onChange({ url: null, file: null, previewUrl: null })
+  }
+
+  const displayUrl = value?.previewUrl
+    || (value?.url ? (value.url.startsWith('http') ? value.url : value.url) : null)
+  const hasImage = !!displayUrl
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-      {value && (
+      {hasImage && (
         <Image
-          src={value.startsWith('http') ? value : `http://localhost:8000${value}`}
+          src={displayUrl}
           width={80}
           height={80}
           style={{ objectFit: 'cover', borderRadius: 8, border: '1px solid #f0f0f0' }}
@@ -131,21 +130,19 @@ function ImageUploader({ value, onChange }) {
         showUploadList={false}
         accept="image/*"
       >
-        <Button
-          icon={<UploadOutlined />}
-          loading={uploading}
-        >
-          {value ? "Rasmni almashtirish" : "Rasm yuklash"}
+        <Button icon={<UploadOutlined />}>
+          {hasImage ? "Rasmni almashtirish" : "Rasm tanlash"}
         </Button>
       </Upload>
-      {value && (
-        <Button
-          size="small"
-          danger
-          onClick={() => onChange(null)}
-        >
+      {hasImage && (
+        <Button size="small" danger onClick={handleClear}>
           O'chirish
         </Button>
+      )}
+      {value?.file && (
+        <span style={{ fontSize: 12, color: '#fa8c16' }}>
+          Saqlash bosilganda yuklanadi
+        </span>
       )}
     </div>
   )
@@ -160,12 +157,14 @@ export default function Menu() {
   const [editingProduct, setEditingProduct] = useState(null)
   const [form] = Form.useForm()
   const [hasTimeLimit, setHasTimeLimit] = useState(false)
-  const [imageUrl, setImageUrl] = useState(null)
+  // imageData = { url?: string, file?: File, previewUrl?: string }
+  const [imageData, setImageData] = useState({ url: null, file: null, previewUrl: null })
   const [pageSize, setPageSize] = useState(10)
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
   const restaurantId = useAuthStore((s) => s.restaurantId)
 
   const [activeTab, setActiveTab] = useState('menu')
+  const [filterCategoryId, setFilterCategoryId] = useState(null)
 
   // Kategoriya CRUD state
   const [catModalOpen, setCatModalOpen] = useState(false)
@@ -178,7 +177,9 @@ export default function Menu() {
       const params = {}
       if (restaurantId) params.restaurant_id = restaurantId
       if (selectedBranchId) params.branch_id = selectedBranchId
-      const [catRes, prodRes] = await Promise.all([getCategories(params), getProducts(params)])
+      const prodParams = { ...params }
+      if (filterCategoryId) prodParams.category_id = filterCategoryId
+      const [catRes, prodRes] = await Promise.all([getCategories(params), getProducts(prodParams)])
       setCategories(catRes.data || [])
       setProducts(prodRes.data || [])
     } catch {
@@ -188,7 +189,7 @@ export default function Menu() {
     }
   }
 
-  useEffect(() => { fetchData() }, [selectedBranchId])
+  useEffect(() => { fetchData() }, [selectedBranchId, filterCategoryId])
 
   const handleToggleStop = async (id, checked) => {
     try {
@@ -205,7 +206,7 @@ export default function Menu() {
   const openAdd = () => {
     setEditingProduct(null)
     setHasTimeLimit(false)
-    setImageUrl(null)
+    setImageData({ url: null, file: null, previewUrl: null })
     form.resetFields()
     setModalOpen(true)
   }
@@ -213,7 +214,7 @@ export default function Menu() {
   const openEdit = (product) => {
     setEditingProduct(product)
     setHasTimeLimit(product.has_time_limit || false)
-    setImageUrl(product.image_url || null)
+    setImageData({ url: product.image_url || null, file: null, previewUrl: null })
     form.setFieldsValue({ ...product, image_url: product.image_url })
     setModalOpen(true)
   }
@@ -221,7 +222,32 @@ export default function Menu() {
   const handleSave = async () => {
     try {
       const values = await form.validateFields()
-      const payload = { ...values, image_url: imageUrl }
+
+      // Rasmni faqat saqlash bosilganda yuklash
+      let finalImageUrl = imageData.url
+      if (imageData.file) {
+        // Eski rasmni o'chirish (agar edit va yangi rasm yuklanayotgan bo'lsa)
+        const oldUrl = editingProduct?.image_url
+        if (oldUrl && oldUrl.startsWith('/static/')) {
+          try { await deleteImage(oldUrl) } catch { /* ignore */ }
+        }
+        try {
+          const res = await uploadImage(imageData.file)
+          finalImageUrl = res.data.url
+        } catch {
+          message.error('Rasm yuklashda xato')
+          return
+        }
+      } else if (editingProduct && editingProduct.image_url && !imageData.url) {
+        // Rasmni o'chirish tugmasi bosilgan bo'lsa — eski rasmni o'chirish
+        const oldUrl = editingProduct.image_url
+        if (oldUrl.startsWith('/static/')) {
+          try { await deleteImage(oldUrl) } catch { /* ignore */ }
+        }
+        finalImageUrl = null
+      }
+
+      const payload = { ...values, image_url: finalImageUrl }
       if (selectedBranchId) payload.branch_id = selectedBranchId
       else if (editingProduct?.branch_id) payload.branch_id = editingProduct.branch_id
       const qParams = restaurantId ? { restaurant_id: restaurantId } : {}
@@ -232,6 +258,8 @@ export default function Menu() {
         await createProduct(payload, qParams)
         message.success("Qo'shildi")
       }
+      // Preview URL ni tozalash
+      if (imageData.previewUrl) URL.revokeObjectURL(imageData.previewUrl)
       setModalOpen(false)
       fetchData()
     } catch (err) {
@@ -242,6 +270,11 @@ export default function Menu() {
 
   const handleDelete = async (id) => {
     try {
+      // Mahsulot rasmi bo'lsa — faylni ham o'chirish
+      const prod = products.find((p) => p.id === id)
+      if (prod?.image_url && prod.image_url.startsWith('/static/')) {
+        try { await deleteImage(prod.image_url) } catch { /* ignore */ }
+      }
       await deleteProduct(id)
       message.success("O'chirildi")
       fetchData()
@@ -396,14 +429,24 @@ export default function Menu() {
             children: (
               <Card
                 extra={
-                  <Button
-                    type="primary"
-                    icon={<PlusOutlined />}
-                    onClick={openAdd}
-                    style={{ background: '#fa8c16', borderColor: '#fa8c16' }}
-                  >
-                    Mahsulot qo'shish
-                  </Button>
+                  <Space>
+                    <Select
+                      allowClear
+                      placeholder="Kategoriya bo'yicha filter"
+                      value={filterCategoryId}
+                      onChange={setFilterCategoryId}
+                      options={categories.map((c) => ({ value: c.id, label: c.name_uz }))}
+                      style={{ minWidth: 220 }}
+                    />
+                    <Button
+                      type="primary"
+                      icon={<PlusOutlined />}
+                      onClick={openAdd}
+                      style={{ background: '#fa8c16', borderColor: '#fa8c16' }}
+                    >
+                      Mahsulot qo'shish
+                    </Button>
+                  </Space>
                 }
               >
                 <Table
@@ -480,7 +523,10 @@ export default function Menu() {
         title={editingProduct ? 'Mahsulotni tahrirlash' : 'Yangi mahsulot'}
         open={modalOpen}
         onOk={handleSave}
-        onCancel={() => setModalOpen(false)}
+        onCancel={() => {
+          if (imageData.previewUrl) URL.revokeObjectURL(imageData.previewUrl)
+          setModalOpen(false)
+        }}
         okText="Saqlash"
         cancelText="Bekor"
         width={560}
@@ -524,9 +570,9 @@ export default function Menu() {
             <Input.TextArea rows={2} placeholder="Mahsulot haqida qisqacha..." />
           </Form.Item>
 
-          {/* Rasm yuklash */}
+          {/* Rasm yuklash — Saqlash bosilganda yuklanadi */}
           <Form.Item label="Mahsulot rasmi">
-            <ImageUploader value={imageUrl} onChange={setImageUrl} />
+            <ImageUploader value={imageData} onChange={setImageData} />
             <div style={{ fontSize: 12, color: '#999', marginTop: 6 }}>
               Rasm Telegram botda ham ko'rinadi
             </div>
