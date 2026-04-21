@@ -405,8 +405,9 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
     )
 
     if not result or result.get("error"):
+        err_msg = result.get("error") if result else "Nomalum xato"
         await callback.message.answer(
-            f"❌ Buyurtma yaratishda xato: {result.get('error') if result else 'Noma\\'lum xato'}",
+            f"❌ Buyurtma yaratishda xato: {err_msg}",
             reply_markup=main_menu_kb(),
         )
         await state.clear()
