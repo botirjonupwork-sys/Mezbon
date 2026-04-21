@@ -112,21 +112,20 @@ def format_date_uz(d) -> str:
 
 
 def date_kb() -> InlineKeyboardMarkup:
-    """30 kunlik sana — 2 qatorda, tushunarli format."""
-    today = datetime.now().date()
+    """30 kunlik sana — kamida 24 soat oldin."""
+    tomorrow = datetime.now().date() + timedelta(days=1)
     rows = []
-    # Quick options
+    # Ertangi kun birinchi
     rows.append([
-        InlineKeyboardButton(text=f"📅 Bugun ({today.day}-{MONTH_UZ[today.month]})", callback_data=f"cat_date:{today.isoformat()}"),
-    ])
-    tomorrow = today + timedelta(days=1)
-    rows.append([
-        InlineKeyboardButton(text=f"📅 Erta ({tomorrow.day}-{MONTH_UZ[tomorrow.month]})", callback_data=f"cat_date:{tomorrow.isoformat()}"),
+        InlineKeyboardButton(
+            text=f"📅 Erta ({tomorrow.day}-{MONTH_UZ[tomorrow.month]})",
+            callback_data=f"cat_date:{tomorrow.isoformat()}",
+        ),
     ])
     # Keyingi 28 kun (2 ta ustun)
     row = []
     for i in range(2, 30):
-        d = today + timedelta(days=i)
+        d = tomorrow + timedelta(days=i - 1)
         label = f"{d.day}-{MONTH_UZ[d.month]} ({WEEKDAY_UZ[d.weekday()]})"
         row.append(InlineKeyboardButton(text=label, callback_data=f"cat_date:{d.isoformat()}"))
         if len(row) == 2:

@@ -326,6 +326,23 @@ class Admin(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class CateringSubscriber(Base):
+    """Catering bot'ga /start bosgan foydalanuvchilar va guruhlar.
+
+    Har kuni 20:00 da ertangi kun catering buyurtmalari shu obunachilarga yuboriladi.
+    chat_type: 'private' (foydalanuvchi) yoki 'group'/'supergroup' (guruh)
+    """
+    __tablename__ = "catering_subscribers"
+
+    id = Column(Integer, primary_key=True)
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=True, default=1)
+    chat_id = Column(String, unique=True, nullable=False)
+    chat_type = Column(String, default="private")
+    title = Column(String)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # ── Platform (SaaS) ─────────────────────────────────
 
 class Plan(Base):

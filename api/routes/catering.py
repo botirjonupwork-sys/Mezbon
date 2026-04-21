@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 from typing import Optional, List, Dict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from api.database import get_db
 from api.services.currency import get_currency_rate, convert_usd_to_uzs
@@ -296,13 +296,18 @@ async def create_catering_order(
     total = sum(it.quantity for it in data.items if it.quantity > 0)
     _validate_group_order(data.group, total, rest)
 
-    # Sana
+    # Sana — kamida 24 soat oldin
     try:
         schedule_dt = datetime.strptime(f"{data.schedule_date} {data.schedule_time}", "%Y-%m-%d %H:%M")
-        if schedule_dt < datetime.now():
-            raise HTTPException(400, "Sana o'tmishda bo'lishi mumkin emas")
     except ValueError:
         raise HTTPException(400, "Sana/vaqt noto'g'ri formatda")
+    min_allowed = datetime.now() + timedelta(hours=24)
+    if schedule_dt < min_allowed:
+        raise HTTPException(
+            400,
+            "Catering buyurtmalari kamida 24 soat oldin qabul qilinadi. "
+            "Tezkor buyurtmalar uchun: +998 98 000 06 04"
+        )
 
     # Narx
     rate = await get_currency_rate(restaurant_id, db)

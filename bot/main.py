@@ -40,13 +40,13 @@ async def run_bot(bot_token: str):
     )
     dp = Dispatcher(storage=MemoryStorage())
 
-    # Catering BIRINCHI — FSM state filter'lari boshqa routerlardan oldin ishlashi uchun
+    # FSM state filterlari bor routerlar BIRINCHI — global F.location'lar oldidan
     dp.include_router(catering.router)
-    dp.include_router(start.router)
-    dp.include_router(menu.router)
-    dp.include_router(cart.router)
     dp.include_router(order.router)
     dp.include_router(review.router)
+    dp.include_router(start.router)  # branch tanlash uchun global F.location bor
+    dp.include_router(menu.router)
+    dp.include_router(cart.router)
     dp.include_router(profile.router)
 
     print(f"[Bot] Ishga tushdi: {rname} (restaurant_id={rid})")

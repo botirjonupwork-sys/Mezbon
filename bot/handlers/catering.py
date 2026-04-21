@@ -334,11 +334,15 @@ async def date_custom_input(message: Message, state: FSMContext):
         await message.answer("❌ Format noto'g'ri. Masalan: 28.04.2026")
         return
 
-    today = datetime.now().date()
-    if d < today:
-        await message.answer("❌ Sana o'tmishda bo'lmasligi kerak")
+    tomorrow = datetime.now().date() + timedelta(days=1)
+    if d < tomorrow:
+        await message.answer(
+            "❌ Catering buyurtmalari kamida 24 soat oldin qabul qilinadi.\n\n"
+            "Tezkor buyurtma uchun qo'ng'iroq qiling: <b>+998 98 000 06 04</b>",
+            parse_mode="HTML",
+        )
         return
-    if (d - today).days > 60:
+    if (d - tomorrow).days > 60:
         await message.answer("❌ Eng ko'pi bilan 60 kun oldinga yozilsin")
         return
 
