@@ -37,6 +37,10 @@ class ProductCreate(BaseModel):
     branch_id: Optional[int] = None
     # Catering maydonlari
     product_type: Optional[str] = "regular"
+    catering_group: Optional[str] = None  # 'somsa' | 'nan'
+    unit_price_usd: Optional[float] = None
+    unit_price_pickup_uzs: Optional[float] = None
+    # Eski (backward compat)
     unit_type: Optional[str] = "piece"
     min_quantity: Optional[int] = 1
     quantity_step: Optional[int] = 1
@@ -60,6 +64,9 @@ class ProductUpdate(BaseModel):
     branch_id: Optional[int] = None
     # Catering maydonlari
     product_type: Optional[str] = None
+    catering_group: Optional[str] = None
+    unit_price_usd: Optional[float] = None
+    unit_price_pickup_uzs: Optional[float] = None
     unit_type: Optional[str] = None
     min_quantity: Optional[int] = None
     quantity_step: Optional[int] = None
@@ -103,6 +110,12 @@ class SettingsUpdate(BaseModel):
     currency_rate_manual: Optional[float] = None
     catering_payment_card: Optional[str] = None
     catering_payment_owner: Optional[str] = None
+    # Catering guruh sozlamalari
+    catering_somsa_min: Optional[int] = None
+    catering_somsa_step: Optional[int] = None
+    catering_nan_min: Optional[int] = None
+    catering_nan_step: Optional[int] = None
+    catering_delivery_per_km_uzs: Optional[float] = None
 
 
 class AdminCreate(BaseModel):
@@ -387,6 +400,9 @@ async def list_products(
             "is_active": p.is_active,
             "branch_id": p.branch_id,
             "product_type": p.product_type or "regular",
+            "catering_group": p.catering_group,
+            "unit_price_usd": p.unit_price_usd,
+            "unit_price_pickup_uzs": p.unit_price_pickup_uzs,
             "unit_type": p.unit_type or "piece",
             "min_quantity": p.min_quantity or 1,
             "quantity_step": p.quantity_step or 1,
@@ -644,6 +660,12 @@ async def get_settings(
         "currency_rate_cache": rest.currency_rate_cache,
         "catering_payment_card": rest.catering_payment_card,
         "catering_payment_owner": rest.catering_payment_owner,
+        # Catering guruhlari
+        "catering_somsa_min": rest.catering_somsa_min or 100,
+        "catering_somsa_step": rest.catering_somsa_step or 1,
+        "catering_nan_min": rest.catering_nan_min or 40,
+        "catering_nan_step": rest.catering_nan_step or 40,
+        "catering_delivery_per_km_uzs": rest.catering_delivery_per_km_uzs or 5000,
     }
 
 
@@ -678,6 +700,11 @@ async def update_settings(
         "currency_rate_manual": "currency_rate_manual",
         "catering_payment_card": "catering_payment_card",
         "catering_payment_owner": "catering_payment_owner",
+        "catering_somsa_min": "catering_somsa_min",
+        "catering_somsa_step": "catering_somsa_step",
+        "catering_nan_min": "catering_nan_min",
+        "catering_nan_step": "catering_nan_step",
+        "catering_delivery_per_km_uzs": "catering_delivery_per_km_uzs",
     }
     for form_key, db_key in update_map.items():
         val = getattr(data, form_key, None)

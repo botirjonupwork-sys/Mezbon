@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import {
   Table, Switch, Button, Tag, Modal, Form, Input,
   InputNumber, Select, Space, Card, Typography, message,
-  Popconfirm, Divider, Upload, Image, Avatar, Tabs
+  Popconfirm, Divider, Upload, Image, Avatar, Tabs, Segmented, Row, Col
 } from 'antd'
 import {
   PlusOutlined, EditOutlined, DeleteOutlined,
@@ -12,7 +12,8 @@ import {
 import {
   getCategories, getProducts, toggleStop,
   createProduct, updateProduct, deleteProduct,
-  createCategory, updateCategory, deleteCategory, uploadImage, deleteImage
+  createCategory, updateCategory, deleteCategory, uploadImage, deleteImage,
+  getSettings, updateSettings
 } from '../api'
 import { useBranchStore } from '../store/branch'
 import { useAuthStore } from '../store/auth'
@@ -169,6 +170,14 @@ export default function Menu() {
   const [cateringModalOpen, setCateringModalOpen] = useState(false)
   const [editingCatering, setEditingCatering] = useState(null)
   const [cateringForm] = Form.useForm()
+  const [cateringFilterGroup, setCateringFilterGroup] = useState('all') // all | somsa | nan
+  const [cateringSettings, setCateringSettings] = useState({
+    catering_somsa_min: 100, catering_somsa_step: 1,
+    catering_nan_min: 40, catering_nan_step: 40,
+    catering_delivery_per_km_uzs: 5000,
+  })
+  const [settingsForm] = Form.useForm()
+  const [savingSettings, setSavingSettings] = useState(false)
 
   // Kategoriya CRUD state
   const [catModalOpen, setCatModalOpen] = useState(false)
@@ -184,18 +193,44 @@ export default function Menu() {
       const prodParams = { ...params, product_type: 'regular' }
       if (filterCategoryId) prodParams.category_id = filterCategoryId
       const cateringParams = { ...params, product_type: 'catering' }
-      const [catRes, prodRes, cateringRes] = await Promise.all([
+      const [catRes, prodRes, cateringRes, settingsRes] = await Promise.all([
         getCategories(params),
         getProducts(prodParams),
         getProducts(cateringParams),
+        restaurantId ? getSettings({ restaurant_id: restaurantId }) : Promise.resolve({ data: {} }),
       ])
       setCategories(catRes.data || [])
       setProducts(prodRes.data || [])
       setCateringProducts(cateringRes.data || [])
+      const s = settingsRes.data || {}
+      const settingsData = {
+        catering_somsa_min: s.catering_somsa_min || 100,
+        catering_somsa_step: s.catering_somsa_step || 1,
+        catering_nan_min: s.catering_nan_min || 40,
+        catering_nan_step: s.catering_nan_step || 40,
+        catering_delivery_per_km_uzs: s.catering_delivery_per_km_uzs || 5000,
+      }
+      setCateringSettings(settingsData)
+      settingsForm.setFieldsValue(settingsData)
     } catch {
       message.error('Malumotlarni yuklashda xato')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleSaveCateringSettings = async () => {
+    setSavingSettings(true)
+    try {
+      const values = await settingsForm.validateFields()
+      const qParams = restaurantId ? { restaurant_id: restaurantId } : {}
+      await updateSettings(values, qParams)
+      message.success('Catering sozlamalari saqlandi')
+      setCateringSettings(values)
+    } catch (err) {
+      if (!err?.errorFields) message.error('Sozlamalarni saqlashda xato')
+    } finally {
+      setSavingSettings(false)
     }
   }
 
@@ -346,10 +381,8 @@ export default function Menu() {
     setEditingCatering(null)
     cateringForm.resetFields()
     cateringForm.setFieldsValue({
-      unit_type: 'tandir_40',
-      min_quantity: 1,
-      quantity_step: 1,
-      price_onsite_usd: 120,
+      catering_group: 'somsa',
+      unit_price_usd: 1.2,
     })
     setCateringModalOpen(true)
   }
@@ -363,13 +396,11 @@ export default function Menu() {
   const handleSaveCatering = async () => {
     try {
       const values = await cateringForm.validateFields()
-      const cateringCategory = categories.find((c) => c.name_uz.toLowerCase().includes('catering'))
-        || { id: categories[0]?.id || 1 }
       const payload = {
         ...values,
         product_type: 'catering',
-        category_id: values.category_id || cateringCategory.id,
-        price: values.price_onsite_usd || 120,
+        category_id: values.category_id || categories[0]?.id || 1,
+        price: values.unit_price_usd || 1.2,
       }
       const qParams = restaurantId ? { restaurant_id: restaurantId } : {}
       if (editingCatering) {
@@ -397,32 +428,25 @@ export default function Menu() {
     }
   }
 
-  const UNIT_LABEL = {
-    bunch_100: '100 dona (bog\'lam)',
-    tandir_40: 'tandir (40 dona)',
-    piece: 'dona',
+  const GROUP_LABEL = {
+    somsa: '🥟 Somsa',
+    nan: '🍞 Non',
   }
 
   const cateringColumns = [
     { title: '#', dataIndex: 'id', width: 60 },
     { title: 'Nomi', dataIndex: 'name_uz' },
     {
-      title: 'Birlik', dataIndex: 'unit_type', width: 140,
-      render: (v) => UNIT_LABEL[v] || v,
+      title: 'Guruh', dataIndex: 'catering_group', width: 100,
+      render: (v) => v ? <Tag color={v === 'somsa' ? 'orange' : 'gold'}>{GROUP_LABEL[v] || v}</Tag> : '—',
     },
-    { title: 'Min', dataIndex: 'min_quantity', width: 70 },
-    { title: 'Qadam', dataIndex: 'quantity_step', width: 70 },
     {
-      title: 'Joyiga ($)', dataIndex: 'price_onsite_usd', width: 110,
+      title: '1 dona ($)', dataIndex: 'unit_price_usd', width: 110,
       render: (v) => v ? `$${v}` : '—',
     },
     {
-      title: 'Saboy (som)', dataIndex: 'price_pickup_uzs', width: 140,
+      title: '1 dona saboy (som)', dataIndex: 'unit_price_pickup_uzs', width: 160,
       render: (v) => v ? `${v.toLocaleString()} som` : '—',
-    },
-    {
-      title: 'Dastavka km (som)', dataIndex: 'price_per_km_uzs', width: 140,
-      render: (v) => v ? `${v.toLocaleString()} som/km` : '—',
     },
     {
       title: 'Amallar', width: 100,
@@ -607,27 +631,123 @@ export default function Menu() {
             key: 'catering',
             label: <span>🎉 Catering</span>,
             children: (
-              <Card
-                extra={
-                  <Button
-                    type="primary"
-                    icon={<PlusOutlined />}
-                    onClick={openAddCatering}
-                    style={{ background: '#fa8c16', borderColor: '#fa8c16' }}
-                  >
-                    Catering mahsulot qo'shish
-                  </Button>
-                }
-              >
-                <Table
-                  dataSource={cateringProducts}
-                  columns={cateringColumns}
-                  rowKey="id"
-                  loading={loading}
-                  pagination={false}
-                  scroll={{ x: 1000 }}
-                />
-              </Card>
+              <div>
+                {/* Sozlamalar kartasi */}
+                <Card
+                  title="⚙️ Catering sozlamalari"
+                  size="small"
+                  style={{ marginBottom: 16 }}
+                  extra={
+                    <Button
+                      type="primary"
+                      loading={savingSettings}
+                      onClick={handleSaveCateringSettings}
+                      style={{ background: '#fa8c16', borderColor: '#fa8c16' }}
+                    >
+                      Sozlamalarni saqlash
+                    </Button>
+                  }
+                >
+                  <Form form={settingsForm} layout="vertical" initialValues={cateringSettings}>
+                    <Row gutter={16}>
+                      <Col xs={24} md={6}>
+                        <Form.Item
+                          name="catering_somsa_min"
+                          label="🥟 Somsa — minimal miqdor"
+                          rules={[{ required: true }]}
+                          extra="Kamida necha dona zakaz beriladi"
+                        >
+                          <InputNumber min={1} style={{ width: '100%' }} placeholder="100" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={6}>
+                        <Form.Item
+                          name="catering_somsa_step"
+                          label="🥟 Somsa — qo'shish qadami"
+                          rules={[{ required: true }]}
+                          extra="Miqdor shu songa karrali bolishi kerak"
+                        >
+                          <InputNumber min={1} style={{ width: '100%' }} placeholder="1" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={6}>
+                        <Form.Item
+                          name="catering_nan_min"
+                          label="🍞 Non — minimal miqdor"
+                          rules={[{ required: true }]}
+                          extra="Masalan: 40"
+                        >
+                          <InputNumber min={1} style={{ width: '100%' }} placeholder="40" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={24} md={6}>
+                        <Form.Item
+                          name="catering_nan_step"
+                          label="🍞 Non — qo'shish qadami"
+                          rules={[{ required: true }]}
+                          extra="Masalan: 40 (tandir bo'yicha)"
+                        >
+                          <InputNumber min={1} style={{ width: '100%' }} placeholder="40" />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                    <Row gutter={16}>
+                      <Col xs={24} md={12}>
+                        <Form.Item
+                          name="catering_delivery_per_km_uzs"
+                          label="🚗 Dastavka narxi — har km uchun (so'm)"
+                          extra="Yandex ulanmasa, 1 km uchun olinadigan narx"
+                        >
+                          <InputNumber
+                            min={0}
+                            style={{ width: '100%' }}
+                            step={1000}
+                            formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                            parser={(v) => v.replace(/,/g, '')}
+                          />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  </Form>
+                </Card>
+
+                {/* Mahsulotlar jadvali */}
+                <Card
+                  title="🍽 Catering mahsulotlari"
+                  extra={
+                    <Space>
+                      <Segmented
+                        value={cateringFilterGroup}
+                        onChange={setCateringFilterGroup}
+                        options={[
+                          { label: 'Barchasi', value: 'all' },
+                          { label: '🥟 Somsa', value: 'somsa' },
+                          { label: '🍞 Non', value: 'nan' },
+                        ]}
+                      />
+                      <Button
+                        type="primary"
+                        icon={<PlusOutlined />}
+                        onClick={openAddCatering}
+                        style={{ background: '#fa8c16', borderColor: '#fa8c16' }}
+                      >
+                        Mahsulot qo'shish
+                      </Button>
+                    </Space>
+                  }
+                >
+                  <Table
+                    dataSource={cateringFilterGroup === 'all'
+                      ? cateringProducts
+                      : cateringProducts.filter((p) => p.catering_group === cateringFilterGroup)}
+                    columns={cateringColumns}
+                    rowKey="id"
+                    loading={loading}
+                    pagination={false}
+                    scroll={{ x: 800 }}
+                  />
+                </Card>
+              </div>
             ),
           },
         ]}
@@ -641,15 +761,29 @@ export default function Menu() {
         onCancel={() => setCateringModalOpen(false)}
         okText="Saqlash"
         cancelText="Bekor"
-        width={600}
+        width={560}
         okButtonProps={{ style: { background: '#fa8c16', borderColor: '#fa8c16' } }}
       >
         <Form form={cateringForm} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item
+            name="catering_group"
+            label="Guruh"
+            rules={[{ required: true, message: 'Guruhni tanlang' }]}
+            extra="Somsa va Non guruhlari alohida minimal miqdorga ega"
+          >
+            <Select
+              options={[
+                { value: 'somsa', label: '🥟 Somsa guruhi' },
+                { value: 'nan', label: '🍞 Non guruhi' },
+              ]}
+            />
+          </Form.Item>
+
           <Form.Item name="name_uz" label="Nomi (UZ)" rules={[{ required: true, message: 'Nomini kiriting' }]}>
-            <Input placeholder="Dollar somsa / Yong'oq-mayizli non" />
+            <Input placeholder="Go'shtli somsa / Shirmoy non" />
           </Form.Item>
           <Form.Item name="name_ru" label="Nomi (RU)">
-            <Input placeholder="Dollar samsa / ..." />
+            <Input placeholder="Samsa s myasom / Shirmoy nan" />
           </Form.Item>
           <Form.Item name="description_uz" label="Tavsif">
             <Input.TextArea rows={2} placeholder="Qisqacha ma'lumot" />
@@ -661,48 +795,27 @@ export default function Menu() {
             />
           </Form.Item>
 
-          <Form.Item name="unit_type" label="O'lchov birligi" rules={[{ required: true }]}>
-            <Select
-              options={[
-                { value: 'bunch_100', label: "100 dona bog'lam (Dollar somsa)" },
-                { value: 'tandir_40', label: 'Tandir — 40 dona (Non)' },
-                { value: 'piece', label: 'Dona' },
-              ]}
-            />
+          <Form.Item
+            name="unit_price_usd"
+            label="1 dona narxi ($)"
+            rules={[{ required: true, message: 'Narx kiriting' }]}
+            extra="Joyiga borib yopish va dastavka uchun ishlatiladi (USD kursida)"
+          >
+            <InputNumber min={0} style={{ width: '100%' }} step={0.1} placeholder="1.2" />
           </Form.Item>
 
-          <Space style={{ width: '100%' }} align="start">
-            <Form.Item name="min_quantity" label="Minimal miqdor" rules={[{ required: true }]}>
-              <InputNumber min={1} style={{ width: 150 }} />
-            </Form.Item>
-            <Form.Item name="quantity_step" label="Qadam" rules={[{ required: true }]}>
-              <InputNumber min={1} style={{ width: 150 }} />
-            </Form.Item>
-          </Space>
-
-          <Form.Item name="price_onsite_usd" label="🏠 Joyiga borib yopish narxi ($)" rules={[{ required: true }]}>
-            <InputNumber min={0} style={{ width: '100%' }} step={10} placeholder="120" />
-          </Form.Item>
-
-          <Form.Item name="price_pickup_uzs" label="🛍 Olib ketish (saboy) narxi (so'm)">
-            <InputNumber
-              min={0}
-              style={{ width: '100%' }}
-              step={10000}
-              formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-              parser={(v) => v.replace(/,/g, '')}
-              placeholder="1000000"
-            />
-          </Form.Item>
-
-          <Form.Item name="price_per_km_uzs" label="🚗 Dastavka narxi — har km uchun (so'm)" extra="Yandex ulangan bo'lsa bo'sh qoldiring">
+          <Form.Item
+            name="unit_price_pickup_uzs"
+            label="1 dona saboy (olib ketish) narxi (so'm)"
+            extra="Saboy tanlanganda ishlatiladi (so'mda, arzonroq bo'lishi mumkin)"
+          >
             <InputNumber
               min={0}
               style={{ width: '100%' }}
               step={1000}
               formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
               parser={(v) => v.replace(/,/g, '')}
-              placeholder="5000"
+              placeholder="10000"
             />
           </Form.Item>
 
