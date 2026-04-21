@@ -27,6 +27,7 @@ from bot.keyboards.catering import (
     confirm_kb, format_date_uz, MONTH_UZ
 )
 from bot.keyboards.main import main_menu_kb
+from bot.utils import clear_state_preserve_branch
 
 router = Router()
 
@@ -40,7 +41,7 @@ async def start_catering(message: Message, state: FSMContext):
         await message.answer("Hozircha catering mahsulotlari mavjud emas.")
         return
 
-    await state.clear()
+    await clear_state_preserve_branch(state)
     await state.set_state(CateringFlow.choosing_group)
     await state.update_data(catering_groups=groups)
 
@@ -589,7 +590,7 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
             f"❌ Buyurtma yaratishda xato: {err}",
             reply_markup=main_menu_kb(),
         )
-        await state.clear()
+        await clear_state_preserve_branch(state)
         await callback.answer()
         return
 
@@ -611,13 +612,13 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
 
     await callback.message.edit_text(text, parse_mode="HTML")
     await callback.message.answer("Asosiy menyuga qaytdik.", reply_markup=main_menu_kb())
-    await state.clear()
+    await clear_state_preserve_branch(state)
     await callback.answer()
 
 
 @router.callback_query(F.data == "cat_cancel")
 async def cancel_order(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
+    await clear_state_preserve_branch(state)
     await callback.message.edit_text("❌ Buyurtma bekor qilindi.")
     await callback.message.answer("Asosiy menyuga qaytdik.", reply_markup=main_menu_kb())
     await callback.answer()
@@ -625,7 +626,7 @@ async def cancel_order(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "cat_back_main")
 async def back_to_main(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
+    await clear_state_preserve_branch(state)
     await callback.message.delete()
     await callback.message.answer("Asosiy menyu:", reply_markup=main_menu_kb())
     await callback.answer()
