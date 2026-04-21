@@ -200,3 +200,53 @@ async def get_branch_products(category_id: int, branch_id: int):
             params={"branch_id": branch_id},
         )
         return r.json()
+
+
+# ── Catering (tadbir) API ───────────────────────────
+
+async def get_catering_products():
+    """Catering mahsulotlarini olish."""
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{BASE_URL}/catering/products",
+            params={"restaurant_id": _restaurant_id},
+        )
+        if r.status_code == 200:
+            return r.json()
+        return []
+
+
+async def calculate_catering_price(product_id: int, quantity: int, delivery_subtype: str, distance_km: float = None):
+    """Catering buyurtma narxini hisoblash."""
+    payload = {
+        "product_id": product_id,
+        "quantity": quantity,
+        "delivery_subtype": delivery_subtype,
+    }
+    if distance_km is not None:
+        payload["distance_km"] = distance_km
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            f"{BASE_URL}/catering/calculate-price",
+            params={"restaurant_id": _restaurant_id},
+            json=payload,
+        )
+        if r.status_code == 200:
+            return r.json()
+        return None
+
+
+async def create_catering_order(telegram_id: str, order_data: dict, branch_id: int = None):
+    """Catering buyurtma yaratish."""
+    params = {"telegram_id": telegram_id, "restaurant_id": _restaurant_id}
+    if branch_id:
+        params["branch_id"] = branch_id
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.post(
+            f"{BASE_URL}/catering/orders",
+            params=params,
+            json=order_data,
+        )
+        if r.status_code in (200, 201):
+            return r.json()
+        return {"error": r.text}

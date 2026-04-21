@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import os
 from api.database import create_tables
-from api.routes import users, menu, orders, reviews, admin, auth, couriers, superadmin, branches
+from api.routes import users, menu, orders, reviews, admin, auth, couriers, superadmin, branches, catering
 
 
 @asynccontextmanager
@@ -36,6 +36,7 @@ app.include_router(reviews.router)
 app.include_router(admin.router)
 app.include_router(couriers.router)
 app.include_router(branches.router)
+app.include_router(catering.router)
 
 # Static fayllar (rasmlar)
 os.makedirs("static", exist_ok=True)

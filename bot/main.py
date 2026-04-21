@@ -5,7 +5,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
-from bot.handlers import start, menu, cart, order, review, profile
+from bot.handlers import start, menu, cart, order, review, profile, catering
 from bot import api_client
 
 load_dotenv()
@@ -41,6 +41,7 @@ async def run_bot(bot_token: str):
     dp = Dispatcher(storage=MemoryStorage())
 
     dp.include_router(start.router)
+    dp.include_router(catering.router)
     dp.include_router(menu.router)
     dp.include_router(cart.router)
     dp.include_router(order.router)

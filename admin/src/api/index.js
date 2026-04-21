@@ -79,6 +79,11 @@ export const getAdmins = (params) => api.get('/admin/admins', { params })
 export const createAdmin = (data, params) => api.post('/admin/admins', data, { params })
 export const deleteAdmin = (id) => api.delete(`/admin/admins/${id}`)
 
+// ── Catering ──────────────────────────────────────────
+export const getCateringProducts = (params) => api.get('/catering/products', { params })
+export const getCurrencyRate = (params) => api.get('/catering/currency', { params })
+export const getCateringOrders = (params) => api.get('/admin/orders', { params: { ...params, order_kind: 'catering' } })
+
 // ── Branches ──────────────────────────────────────────
 export const getAdminBranches = (params) => api.get('/admin/branches', { params })
 export const getBranchSettings = (branchId) => api.get(`/admin/branches/${branchId}/settings`)

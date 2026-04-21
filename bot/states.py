@@ -17,3 +17,17 @@ class OrderFlow(StatesGroup):
 class ReviewFlow(StatesGroup):
     rating = State()
     comment = State()
+
+
+class CateringFlow(StatesGroup):
+    choosing_product = State()
+    choosing_quantity = State()
+    choosing_delivery = State()
+    choosing_date = State()
+    choosing_time = State()
+    entering_phone = State()
+    entering_location = State()
+    choosing_payment_method = State()
+    choosing_payment_timing = State()
+    entering_comment = State()
+    confirming = State()

@@ -5,6 +5,7 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🍽 Menyu"), KeyboardButton(text="🛒 Savat")],
+            [KeyboardButton(text="🎉 Tadbir uchun buyurtma")],
             [KeyboardButton(text="📦 Zakazlarim"), KeyboardButton(text="👤 Profil")],
             [KeyboardButton(text="📍 Filial tanlash"), KeyboardButton(text="📞 Bog'lanish")],
             [KeyboardButton(text="⭐ Baho berish")],

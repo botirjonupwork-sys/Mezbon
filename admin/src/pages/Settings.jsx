@@ -395,6 +395,71 @@ export default function Settings() {
         </Card>
         )}
 
+        {/* ── Catering: Valyuta ── */}
+        {!selectedBranchId && (
+        <Card
+          title={<>💲 Valyuta kursi (catering uchun)</>}
+          style={{ marginBottom: 16 }}
+          size="small"
+        >
+          <Form.Item
+            name="currency_auto"
+            label="Avtomatik kurs (CBU)"
+            valuePropName="checked"
+            extra="Yoqilgan bo'lsa Markaziy Bank kursi har soatda yangilanadi"
+          >
+            <Switch checkedChildren="Auto (CBU)" unCheckedChildren="Qo'lda" />
+          </Form.Item>
+
+          <Form.Item
+            noStyle
+            shouldUpdate={(prev, cur) => prev.currency_auto !== cur.currency_auto}
+          >
+            {({ getFieldValue }) => !getFieldValue('currency_auto') && (
+              <Form.Item
+                name="currency_rate_manual"
+                label="Qo'lda kurs (1 USD = ? so'm)"
+                rules={[{ required: true, message: 'Kurs kiriting' }]}
+              >
+                <InputNumber
+                  min={0}
+                  style={{ maxWidth: 300 }}
+                  step={100}
+                  formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                  parser={(v) => v.replace(/,/g, '')}
+                  placeholder="12500"
+                />
+              </Form.Item>
+            )}
+          </Form.Item>
+        </Card>
+        )}
+
+        {/* ── Catering: to'lov karta ── */}
+        {!selectedBranchId && (
+        <Card
+          title={<>💳 Catering to'lov kartasi</>}
+          style={{ marginBottom: 16 }}
+          size="small"
+        >
+          <Row gutter={16}>
+            <Col xs={24} md={14}>
+              <Form.Item name="catering_payment_card" label="Karta raqami">
+                <Input placeholder="8600 1234 5678 9012" maxLength={19} />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={10}>
+              <Form.Item name="catering_payment_owner" label="Egasi (ism)">
+                <Input placeholder="Botirjon Tursunboyev" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <div style={{ fontSize: 12, color: '#999', marginTop: -8 }}>
+            "Hozir to'lov" tanlanganda mijozga shu karta ko'rsatiladi.
+          </div>
+        </Card>
+        )}
+
         {/* ── Til ── */}
         <Card title="🌐 Bot tili" style={{ marginBottom: 24 }} size="small">
           <Form.Item name="language" style={{ maxWidth: 250, marginBottom: 0 }}>

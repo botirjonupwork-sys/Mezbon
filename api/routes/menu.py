@@ -64,7 +64,7 @@ async def get_all_products(
     restaurant_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(Product).where(Product.is_active == True)
+    query = select(Product).where(Product.is_active == True, Product.product_type != "catering")
     if branch_id:
         br = await db.execute(select(Branch).where(Branch.id == branch_id))
         branch = br.scalar_one_or_none()
@@ -96,6 +96,7 @@ async def get_products_by_category(
     query = select(Product).where(
         Product.category_id == category_id,
         Product.is_active == True,
+        Product.product_type != "catering",
     )
     if branch_id:
         br = await db.execute(select(Branch).where(Branch.id == branch_id))

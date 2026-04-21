@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { Table, Tag, Card, Typography, Space, Button, DatePicker, Descriptions, message, Popconfirm, Badge } from 'antd'
+import { Table, Tag, Card, Typography, Space, Button, DatePicker, Descriptions, message, Popconfirm, Badge, Segmented } from 'antd'
 import { ReloadOutlined, CheckCircleOutlined, CarOutlined, CloseCircleOutlined, SoundOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { getOrders, updateOrderStatus } from '../api'
@@ -72,6 +72,7 @@ export default function Orders() {
   const [pageSize, setPageSize] = useState(10)
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [newOrderFlash, setNewOrderFlash] = useState(false)
+  const [orderKind, setOrderKind] = useState('all')  // 'all' | 'regular' | 'catering'
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
   const restaurantId = useAuthStore((s) => s.restaurantId)
   const prevOrderIdsRef = useRef(new Set())
@@ -88,6 +89,7 @@ export default function Orders() {
       }
       if (restaurantId) params.restaurant_id = restaurantId
       if (selectedBranchId) params.branch_id = selectedBranchId
+      if (orderKind !== 'all') params.order_kind = orderKind
       const res = await getOrders(params)
       const newOrders = res.data || []
       setOrders(newOrders)
@@ -117,13 +119,13 @@ export default function Orders() {
     } finally {
       if (!silent) setLoading(false)
     }
-  }, [dateRange, soundEnabled, selectedBranchId])
+  }, [dateRange, soundEnabled, selectedBranchId, orderKind])
 
   // Birinchi yuklash + branch o'zgarganda
   useEffect(() => {
     isFirstLoadRef.current = true
     fetchOrders(dateRange)
-  }, [selectedBranchId])
+  }, [selectedBranchId, orderKind])
 
   // Polling — har 10 sekundda yangi zakazlarni tekshirish
   useEffect(() => {
@@ -328,6 +330,15 @@ export default function Orders() {
 
       <Card>
         <Space style={{ marginBottom: 16 }} wrap>
+          <Segmented
+            value={orderKind}
+            onChange={setOrderKind}
+            options={[
+              { label: 'Barchasi', value: 'all' },
+              { label: '🍽 Oddiy', value: 'regular' },
+              { label: '🎉 Catering', value: 'catering' },
+            ]}
+          />
           <RangePicker
             value={dateRange}
             onChange={handleRangeChange}

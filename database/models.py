@@ -72,6 +72,15 @@ class Restaurant(Base):
     yandex_api_token = Column(String)
     yandex_test_mode = Column(Boolean, default=True)
 
+    # Valyuta kursi (USD → UZS) catering uchun
+    currency_auto = Column(Boolean, default=True)    # True: CBU API, False: qo'lda
+    currency_rate_manual = Column(Float, default=12500.0)
+    currency_rate_cache = Column(Float)              # CBU dan oxirgi kurs
+    currency_cache_updated_at = Column(DateTime)     # Cache vaqti
+    # To'lov karta raqami (catering "hozir to'lov" uchun)
+    catering_payment_card = Column(String)
+    catering_payment_owner = Column(String)
+
     branches = relationship("Branch", back_populates="restaurant")
 
 
@@ -175,6 +184,19 @@ class Product(Base):
     is_active = Column(Boolean, default=True)
     is_stop = Column(Boolean, default=False)
 
+    # ── Catering (tadbir uchun) maydonlar ────────────────
+    # product_type: 'regular' (oddiy) | 'catering' (tadbir uchun)
+    product_type = Column(String, default="regular")
+    # unit_type: 'piece' (dona) | 'bunch_100' (100 dona) | 'tandir_40' (40 dona/tandir)
+    unit_type = Column(String, default="piece")
+    min_quantity = Column(Integer, default=1)      # Min buyurtma (100 somsa, 1 tandir)
+    quantity_step = Column(Integer, default=1)     # Qadam (somsa: 100, non: 1)
+    # Catering uchun 3 xil narx (onsite USD, pickup UZS, delivery per km UZS)
+    price_onsite_usd = Column(Float)               # Joyiga borib yopish ($)
+    price_pickup_uzs = Column(Float)               # Saboy (so'm)
+    price_delivery_uzs = Column(Float)             # Dastavka bazaviy (so'm) — Yandex bo'lsa null
+    price_per_km_uzs = Column(Float)               # Har km uchun (so'm) — agar Yandex yo'q bo'lsa
+
     branch = relationship("Branch", back_populates="products")
     category = relationship("Category", back_populates="products")
     order_items = relationship("OrderItem", back_populates="product")
@@ -208,6 +230,21 @@ class Order(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # ── Catering (tadbir) buyurtma maydonlari ────────────
+    order_kind = Column(String, default="regular")   # 'regular' | 'catering'
+    schedule_date = Column(String)                    # YYYY-MM-DD
+    schedule_time = Column(String)                    # HH:MM
+    # Catering delivery turi: 'onsite' | 'pickup' | 'delivery'
+    delivery_subtype = Column(String)
+    # To'lov maydonlari
+    payment_method = Column(String, default="cash")   # 'cash' | 'card'
+    payment_timing = Column(String, default="later")  # 'now' | 'later'
+    payment_status = Column(String, default="pending")  # 'pending' | 'paid'
+    # Buyurtma vaqtidagi valyuta kursi (tarix uchun)
+    currency_rate_snapshot = Column(Float)
+    # USD'dagi narx (catering uchun)
+    total_price_usd = Column(Float)
 
     branch = relationship("Branch", back_populates="orders")
     user = relationship("User", back_populates="orders")

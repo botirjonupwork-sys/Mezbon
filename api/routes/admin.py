@@ -35,6 +35,15 @@ class ProductCreate(BaseModel):
     available_from: Optional[str] = None
     available_until: Optional[str] = None
     branch_id: Optional[int] = None
+    # Catering maydonlari
+    product_type: Optional[str] = "regular"
+    unit_type: Optional[str] = "piece"
+    min_quantity: Optional[int] = 1
+    quantity_step: Optional[int] = 1
+    price_onsite_usd: Optional[float] = None
+    price_pickup_uzs: Optional[float] = None
+    price_delivery_uzs: Optional[float] = None
+    price_per_km_uzs: Optional[float] = None
 
 
 class ProductUpdate(BaseModel):
@@ -49,6 +58,15 @@ class ProductUpdate(BaseModel):
     available_from: Optional[str] = None
     available_until: Optional[str] = None
     branch_id: Optional[int] = None
+    # Catering maydonlari
+    product_type: Optional[str] = None
+    unit_type: Optional[str] = None
+    min_quantity: Optional[int] = None
+    quantity_step: Optional[int] = None
+    price_onsite_usd: Optional[float] = None
+    price_pickup_uzs: Optional[float] = None
+    price_delivery_uzs: Optional[float] = None
+    price_per_km_uzs: Optional[float] = None
 
 
 class CategoryCreate(BaseModel):
@@ -80,6 +98,11 @@ class SettingsUpdate(BaseModel):
     delivery_provider: Optional[str] = None
     yandex_api_token: Optional[str] = None
     yandex_test_mode: Optional[bool] = None
+    # Catering / valyuta
+    currency_auto: Optional[bool] = None
+    currency_rate_manual: Optional[float] = None
+    catering_payment_card: Optional[str] = None
+    catering_payment_owner: Optional[str] = None
 
 
 class AdminCreate(BaseModel):
@@ -227,6 +250,7 @@ async def get_all_orders(
     date_to: Optional[str] = None,
     branch_id: Optional[int] = None,
     restaurant_id: Optional[int] = None,
+    order_kind: Optional[str] = None,  # 'regular' | 'catering'
     limit: int = 100,
     offset: int = 0,
     db: AsyncSession = Depends(get_db)
@@ -237,7 +261,12 @@ async def get_all_orders(
         query = query.where(Order.branch_id == branch_id)
     elif restaurant_id:
         branch_ids = _get_restaurant_branches(restaurant_id)
-        query = query.where(Order.branch_id.in_(branch_ids))
+        query = query.where(
+            (Order.restaurant_id == restaurant_id) | Order.branch_id.in_(branch_ids)
+        )
+
+    if order_kind:
+        query = query.where(Order.order_kind == order_kind)
 
     if status:
         try:
@@ -296,6 +325,16 @@ async def get_all_orders(
             "created_at": order.created_at.isoformat() if order.created_at else None,
             "user": {"full_name": user.full_name, "phone": user.phone} if user else None,
             "items": items_with_names,
+            # Catering maydonlari
+            "order_kind": order.order_kind or "regular",
+            "schedule_date": order.schedule_date,
+            "schedule_time": order.schedule_time,
+            "delivery_subtype": order.delivery_subtype,
+            "payment_method": order.payment_method,
+            "payment_timing": order.payment_timing,
+            "payment_status": order.payment_status,
+            "total_price_usd": order.total_price_usd,
+            "currency_rate_snapshot": order.currency_rate_snapshot,
         })
     return output
 
@@ -306,9 +345,12 @@ async def list_products(
     branch_id: Optional[int] = None,
     restaurant_id: Optional[int] = None,
     category_id: Optional[int] = None,
+    product_type: Optional[str] = None,  # 'regular' | 'catering' | None (barchasi)
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Product).where(Product.is_active == True).order_by(Product.category_id, Product.id)
+    if product_type:
+        query = query.where(Product.product_type == product_type)
     if category_id:
         query = query.where(Product.category_id == category_id)
     if branch_id:
@@ -344,6 +386,14 @@ async def list_products(
             "is_stop": p.is_stop,
             "is_active": p.is_active,
             "branch_id": p.branch_id,
+            "product_type": p.product_type or "regular",
+            "unit_type": p.unit_type or "piece",
+            "min_quantity": p.min_quantity or 1,
+            "quantity_step": p.quantity_step or 1,
+            "price_onsite_usd": p.price_onsite_usd,
+            "price_pickup_uzs": p.price_pickup_uzs,
+            "price_delivery_uzs": p.price_delivery_uzs,
+            "price_per_km_uzs": p.price_per_km_uzs,
         }
         for p in products
     ]
@@ -588,6 +638,12 @@ async def get_settings(
         "delivery_provider": rest.delivery_provider or "own",
         "yandex_api_token": rest.yandex_api_token,
         "yandex_test_mode": rest.yandex_test_mode if rest.yandex_test_mode is not None else True,
+        # Catering / valyuta
+        "currency_auto": rest.currency_auto if rest.currency_auto is not None else True,
+        "currency_rate_manual": rest.currency_rate_manual,
+        "currency_rate_cache": rest.currency_rate_cache,
+        "catering_payment_card": rest.catering_payment_card,
+        "catering_payment_owner": rest.catering_payment_owner,
     }
 
 
@@ -618,6 +674,10 @@ async def update_settings(
         "delivery_provider": "delivery_provider",
         "yandex_api_token": "yandex_api_token",
         "yandex_test_mode": "yandex_test_mode",
+        "currency_auto": "currency_auto",
+        "currency_rate_manual": "currency_rate_manual",
+        "catering_payment_card": "catering_payment_card",
+        "catering_payment_owner": "catering_payment_owner",
     }
     for form_key, db_key in update_map.items():
         val = getattr(data, form_key, None)
