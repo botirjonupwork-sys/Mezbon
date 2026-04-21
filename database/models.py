@@ -81,6 +81,14 @@ class Restaurant(Base):
     catering_payment_card = Column(String)
     catering_payment_owner = Column(String)
 
+    # Catering guruhlari minimal va step
+    catering_somsa_min = Column(Integer, default=100)
+    catering_somsa_step = Column(Integer, default=1)
+    catering_nan_min = Column(Integer, default=40)
+    catering_nan_step = Column(Integer, default=40)
+    # Dastavka km narxi (har restaurant uchun)
+    catering_delivery_per_km_uzs = Column(Float, default=5000.0)
+
     branches = relationship("Branch", back_populates="restaurant")
 
 
@@ -187,15 +195,20 @@ class Product(Base):
     # ── Catering (tadbir uchun) maydonlar ────────────────
     # product_type: 'regular' (oddiy) | 'catering' (tadbir uchun)
     product_type = Column(String, default="regular")
+    # catering_group: 'somsa' | 'nan' — aralash zakaz uchun guruh
+    catering_group = Column(String)
     # unit_type: 'piece' (dona) | 'bunch_100' (100 dona) | 'tandir_40' (40 dona/tandir)
     unit_type = Column(String, default="piece")
-    min_quantity = Column(Integer, default=1)      # Min buyurtma (100 somsa, 1 tandir)
-    quantity_step = Column(Integer, default=1)     # Qadam (somsa: 100, non: 1)
-    # Catering uchun 3 xil narx (onsite USD, pickup UZS, delivery per km UZS)
-    price_onsite_usd = Column(Float)               # Joyiga borib yopish ($)
-    price_pickup_uzs = Column(Float)               # Saboy (so'm)
-    price_delivery_uzs = Column(Float)             # Dastavka bazaviy (so'm) — Yandex bo'lsa null
-    price_per_km_uzs = Column(Float)               # Har km uchun (so'm) — agar Yandex yo'q bo'lsa
+    min_quantity = Column(Integer, default=1)      # Alohida mahsulot uchun min (ixtiyoriy)
+    quantity_step = Column(Integer, default=1)     # Alohida qadam (ixtiyoriy)
+    # Dona narxi (catering uchun)
+    unit_price_usd = Column(Float)                 # 1 dona USD narx (aralash orders)
+    unit_price_pickup_uzs = Column(Float)          # 1 dona saboy so'm narx
+    # Eski maydonlar (backward compat)
+    price_onsite_usd = Column(Float)
+    price_pickup_uzs = Column(Float)
+    price_delivery_uzs = Column(Float)
+    price_per_km_uzs = Column(Float)
 
     branch = relationship("Branch", back_populates="products")
     category = relationship("Category", back_populates="products")

@@ -20,11 +20,14 @@ class ReviewFlow(StatesGroup):
 
 
 class CateringFlow(StatesGroup):
-    choosing_product = State()
-    choosing_quantity = State()
+    choosing_group = State()         # Somsa / Non
+    selecting_items = State()        # Har bir mahsulot uchun miqdor
+    entering_quantity = State()      # Bitta mahsulot uchun miqdor kiritish
     choosing_delivery = State()
     choosing_date = State()
+    entering_date_custom = State()   # Qo'lda sana kiritish
     choosing_time = State()
+    entering_time_custom = State()
     entering_phone = State()
     entering_location = State()
     choosing_payment_method = State()

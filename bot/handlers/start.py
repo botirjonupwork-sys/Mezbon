@@ -58,9 +58,9 @@ async def branch_select_start(message: Message):
 @router.message(F.location)
 async def branch_location_received(message: Message, state: FSMContext):
     """Joylashuv kelganda yaqin filiallarni ko'rsatish."""
-    # Agar OrderFlow.entering_address holatida bo'lsa — bu yerda ushlanmasin
+    # Agar boshqa FSM oqimida bo'lsa — bu yerda ushlanmasin
     current_state = await state.get_state()
-    if current_state and "OrderFlow" in current_state:
+    if current_state and ("OrderFlow" in current_state or "CateringFlow" in current_state):
         return
 
     lat = message.location.latitude

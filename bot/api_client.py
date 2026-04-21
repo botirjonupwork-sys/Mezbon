@@ -204,11 +204,11 @@ async def get_branch_products(category_id: int, branch_id: int):
 
 # ── Catering (tadbir) API ───────────────────────────
 
-async def get_catering_products():
-    """Catering mahsulotlarini olish."""
+async def get_catering_groups():
+    """Barcha catering guruhlari (somsa va non)."""
     async with httpx.AsyncClient() as client:
         r = await client.get(
-            f"{BASE_URL}/catering/products",
+            f"{BASE_URL}/catering/groups",
             params={"restaurant_id": _restaurant_id},
         )
         if r.status_code == 200:
@@ -216,11 +216,14 @@ async def get_catering_products():
         return []
 
 
-async def calculate_catering_price(product_id: int, quantity: int, delivery_subtype: str, distance_km: float = None):
-    """Catering buyurtma narxini hisoblash."""
+async def calculate_catering_price_multi(group: str, items: list, delivery_subtype: str, distance_km: float = None):
+    """Aralash catering buyurtma narxini hisoblash.
+
+    items = [{product_id: int, quantity: int}, ...]
+    """
     payload = {
-        "product_id": product_id,
-        "quantity": quantity,
+        "group": group,
+        "items": items,
         "delivery_subtype": delivery_subtype,
     }
     if distance_km is not None:
@@ -233,7 +236,7 @@ async def calculate_catering_price(product_id: int, quantity: int, delivery_subt
         )
         if r.status_code == 200:
             return r.json()
-        return None
+        return {"error": r.text}
 
 
 async def create_catering_order(telegram_id: str, order_data: dict, branch_id: int = None):
