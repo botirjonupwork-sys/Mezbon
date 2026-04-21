@@ -9,7 +9,7 @@ from bot.keyboards.menu import categories_kb, products_kb, product_detail_kb
 
 router = Router()
 
-API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000")
+API_BASE = os.getenv("API_URL") or os.getenv("API_BASE_URL", "http://localhost:8000")
 
 
 @router.message(F.text == "🍽 Menyu")
