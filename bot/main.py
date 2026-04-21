@@ -40,8 +40,9 @@ async def run_bot(bot_token: str):
     )
     dp = Dispatcher(storage=MemoryStorage())
 
-    dp.include_router(start.router)
+    # Catering BIRINCHI — FSM state filter'lari boshqa routerlardan oldin ishlashi uchun
     dp.include_router(catering.router)
+    dp.include_router(start.router)
     dp.include_router(menu.router)
     dp.include_router(cart.router)
     dp.include_router(order.router)
