@@ -22,7 +22,7 @@ from bot.api_client import (
     get_catering_groups, calculate_catering_price_multi, create_catering_order
 )
 from bot.keyboards.catering import (
-    groups_kb, items_selector_kb, delivery_subtype_kb, date_kb, time_kb,
+    groups_kb, items_selector_kb, ask_qty_menu_kb, delivery_subtype_kb, date_kb, time_kb,
     phone_request_kb, location_kb, payment_method_kb, payment_timing_kb,
     confirm_kb, format_date_uz, MONTH_UZ
 )
@@ -84,44 +84,68 @@ def _build_selector_text(group_info: dict, selected: dict) -> str:
     min_t = group_info.get("min_total", 0)
     step = group_info.get("step", 1)
     total = sum(selected.values())
-    step_info = f" ({step} ga karrali)" if step > 1 else ""
+    step_info = f", jami {step} ga karrali" if step > 1 else ""
     return (
         f"🛒 <b>{group_info['label']} — mahsulotlar tanlash</b>\n\n"
-        f"Minimal: <b>{min_t} ta</b>{step_info}\n"
-        f"Jami tanlangan: <b>{total} ta</b>\n\n"
-        f"Har bir mahsulot uchun miqdorni belgilang:\n"
-        f"<i>— ➕ / ➖ tugmalari bilan o'zgartiring</i>\n"
-        f"<i>— yoki raqamni bosing va aniq miqdor kiriting</i>"
+        f"📏 Minimal: <b>{min_t} ta</b>{step_info}\n"
+        f"📦 Hozir tanlangan: <b>{total} ta</b>\n\n"
+        f"<i>Har bir mahsulot ostidagi tugmalardan miqdor qo'shing:</i>\n"
+        f"<i>• ➕ tugmasi bosilganda shu miqdor qo'shiladi</i>\n"
+        f"<i>• ➖ 10 donaga kamaytiradi, 0️ — tozalash</i>\n"
+        f"<i>• Turli mahsulotlarni aralashtirib tanlashingiz mumkin</i>"
     )
 
 
-# ── 2. Items ± ──────────────────────────────────────
+# ── 2. Items quick-add va ± ──────────────────────────
 
-@router.callback_query(F.data.startswith("cat_inc:"))
-async def item_inc(callback: CallbackQuery, state: FSMContext):
-    await _item_delta(callback, state, +1)
+@router.callback_query(F.data.startswith("cat_add:"))
+async def item_add(callback: CallbackQuery, state: FSMContext):
+    """Quick-add tugmasi: +10, +50, +100, +20, +40 ..."""
+    parts = callback.data.split(":")
+    product_id = int(parts[1])
+    delta = int(parts[2])
+    await _apply_delta(callback, state, product_id, delta)
 
 
 @router.callback_query(F.data.startswith("cat_dec:"))
 async def item_dec(callback: CallbackQuery, state: FSMContext):
-    await _item_delta(callback, state, -1)
-
-
-async def _item_delta(callback: CallbackQuery, state: FSMContext, sign: int):
+    """Minus: default 10 ga kamaytiradi (yoki 1 agar kam bo'lsa)."""
     product_id = int(callback.data.split(":")[1])
     data = await state.get_data()
-    group_info = data.get("group_info", {})
-    step = group_info.get("step", 1)
     selected = dict(data.get("selected_items", {}))
     current = selected.get(product_id, 0)
-    new_q = current + sign * step
-    if new_q < 0:
-        new_q = 0
-    selected[product_id] = new_q
+    dec = 10 if current >= 10 else (current or 1)
+    await _apply_delta(callback, state, product_id, -dec)
+
+
+@router.callback_query(F.data.startswith("cat_zero:"))
+async def item_zero(callback: CallbackQuery, state: FSMContext):
+    """Mahsulot miqdorini 0 ga tushirish."""
+    product_id = int(callback.data.split(":")[1])
+    data = await state.get_data()
+    selected = dict(data.get("selected_items", {}))
+    selected.pop(product_id, None)
+    await state.update_data(selected_items=selected)
+    await _refresh_selector(callback, state)
+
+
+async def _apply_delta(callback: CallbackQuery, state: FSMContext, product_id: int, delta: int):
+    data = await state.get_data()
+    selected = dict(data.get("selected_items", {}))
+    current = selected.get(product_id, 0)
+    new_q = max(0, current + delta)
     if new_q == 0:
         selected.pop(product_id, None)
+    else:
+        selected[product_id] = new_q
     await state.update_data(selected_items=selected)
+    await _refresh_selector(callback, state)
 
+
+async def _refresh_selector(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    group_info = data.get("group_info", {})
+    selected = data.get("selected_items", {})
     text = _build_selector_text(group_info, selected)
     try:
         await callback.message.edit_text(
@@ -131,6 +155,18 @@ async def _item_delta(callback: CallbackQuery, state: FSMContext, sign: int):
         )
     except Exception:
         pass
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cat_ask_qty_menu")
+async def ask_qty_menu(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    group_info = data.get("group_info", {})
+    selected = data.get("selected_items", {})
+    await callback.message.edit_text(
+        "Qaysi mahsulot uchun aniq miqdor kiritmoqchisiz?",
+        reply_markup=ask_qty_menu_kb(group_info.get("products", []), selected),
+    )
     await callback.answer()
 
 
@@ -164,11 +200,6 @@ async def item_qty_typed(message: Message, state: FSMContext):
     data = await state.get_data()
     product_id = data.get("pending_product_id")
     group_info = data.get("group_info", {})
-    step = group_info.get("step", 1)
-    if step > 1 and qty % step != 0:
-        await message.answer(f"❌ Miqdor {step} ga karrali bo'lishi kerak")
-        return
-
     selected = dict(data.get("selected_items", {}))
     if qty == 0:
         selected.pop(product_id, None)

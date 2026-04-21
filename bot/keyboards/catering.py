@@ -20,38 +20,68 @@ def groups_kb(groups: list) -> InlineKeyboardMarkup:
 
 # ── Multi-product selector ───────────────────────────
 
+# Quick-add miqdor variantlari
+QUICK_ADD = {
+    "somsa": [10, 50, 100],
+    "nan": [10, 20, 40],
+}
+
+
 def items_selector_kb(products: list, selected: dict, group_info: dict) -> InlineKeyboardMarkup:
-    """Har bir mahsulot uchun +/- va joriy miqdor.
+    """Har bir mahsulot uchun quick-add tugmalari va joriy miqdor.
 
     selected: {product_id: quantity}
     """
+    group = group_info.get("group", "")
+    quick_values = QUICK_ADD.get(group, [10, 50, 100])
+
     rows = []
     for p in products:
         qty = selected.get(p["id"], 0)
         price_usd = p.get("unit_price_usd") or 0
-        # Mahsulot nomi + narx
-        header_text = f"{p['name_uz']} — ${price_usd:.1f}/dona"
+        # 1-qator: mahsulot nomi + narx + joriy miqdor
+        header_text = f"{p['name_uz']} — ${price_usd:.1f}/dona [{qty} ta]"
         rows.append([InlineKeyboardButton(text=header_text, callback_data=f"cat_noop:{p['id']}")])
-        # -1, miqdor, +1 (somsa), -40 yoki +40 (non)
-        step = group_info.get("step", 1)
-        minus_label = f"➖{step}" if step > 1 else "➖"
-        plus_label = f"➕{step}" if step > 1 else "➕"
-        rows.append([
-            InlineKeyboardButton(text=minus_label, callback_data=f"cat_dec:{p['id']}"),
-            InlineKeyboardButton(text=f"{qty}", callback_data=f"cat_ask_qty:{p['id']}"),
-            InlineKeyboardButton(text=plus_label, callback_data=f"cat_inc:{p['id']}"),
-        ])
+        # 2-qator: ± + 3 ta quick button
+        row = [
+            InlineKeyboardButton(text="➖", callback_data=f"cat_dec:{p['id']}"),
+        ]
+        for qv in quick_values:
+            row.append(InlineKeyboardButton(text=f"+{qv}", callback_data=f"cat_add:{p['id']}:{qv}"))
+        row.append(InlineKeyboardButton(text="0", callback_data=f"cat_zero:{p['id']}"))
+        rows.append(row)
 
     # Umumiy miqdor
     total = sum(selected.values())
     min_t = group_info.get("min_total", 0)
-    status = f"✅ {total} / min {min_t}" if total >= min_t else f"⚠️ {total} / min {min_t}"
+    step_t = group_info.get("step", 1)
+    status = f"✅ Jami: {total} / min {min_t}"
+    if total < min_t:
+        status = f"⚠️ Jami: {total} / min {min_t}"
+    elif step_t > 1 and total % step_t != 0:
+        status = f"⚠️ Jami: {total} ({step_t} ga karrali emas)"
     rows.append([InlineKeyboardButton(text=status, callback_data="cat_noop:total")])
 
+    rows.append([
+        InlineKeyboardButton(text="✏️ Aniq miqdor kiritish", callback_data="cat_ask_qty_menu"),
+    ])
     rows.append([
         InlineKeyboardButton(text="✅ Davom etish", callback_data="cat_items_done"),
         InlineKeyboardButton(text="⬅️ Ortga", callback_data="cat_back_group"),
     ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def ask_qty_menu_kb(products: list, selected: dict) -> InlineKeyboardMarkup:
+    """Qaysi mahsulot uchun aniq miqdor kiritish kerakligini tanlash."""
+    rows = []
+    for p in products:
+        qty = selected.get(p["id"], 0)
+        rows.append([InlineKeyboardButton(
+            text=f"{p['name_uz']} (hozir: {qty})",
+            callback_data=f"cat_ask_qty:{p['id']}",
+        )])
+    rows.append([InlineKeyboardButton(text="⬅️ Ortga", callback_data="cat_back_items")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
