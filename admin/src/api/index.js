@@ -71,6 +71,8 @@ export const updateProfile = (data, params) => api.put('/admin/profile', data, {
 export const getCouriers = (params) => api.get('/couriers/', { params })
 export const updateCourierStatus = (id, status) =>
   api.patch(`/couriers/${id}/status`, null, { params: { status } })
+export const updateCourier = (id, data) => api.put(`/couriers/${id}`, data)
+export const deleteCourier = (id) => api.delete(`/couriers/${id}`)
 
 // ── Admins ────────────────────────────────────────────
 export const getAdmins = (params) => api.get('/admin/admins', { params })

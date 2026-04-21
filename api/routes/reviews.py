@@ -9,7 +9,7 @@ from database.models import Review, User, Branch
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 
 
-@router.post("/", response_model=ReviewOut)
+@router.post("", response_model=ReviewOut)
 async def create_review(
     telegram_id: str,
     data: ReviewCreate,
@@ -31,7 +31,7 @@ async def create_review(
     return review
 
 
-@router.get("/")
+@router.get("")
 async def get_reviews(
     branch_id: Optional[int] = None,
     restaurant_id: Optional[int] = None,

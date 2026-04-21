@@ -1,7 +1,13 @@
 import { useEffect, useState } from 'react'
-import { Table, Tag, Button, Space, Typography, message, Popconfirm } from 'antd'
-import { CheckOutlined, StopOutlined, UserOutlined } from '@ant-design/icons'
-import { getCouriers, updateCourierStatus } from '../api'
+import {
+  Table, Tag, Button, Space, Typography, message, Popconfirm,
+  Dropdown, Modal, Form, Input, Select
+} from 'antd'
+import {
+  UserOutlined, MoreOutlined, EditOutlined,
+  DeleteOutlined, StopOutlined, CheckOutlined
+} from '@ant-design/icons'
+import { getCouriers, updateCourierStatus, updateCourier, deleteCourier } from '../api'
 import { useBranchStore } from '../store/branch'
 import { useAuthStore } from '../store/auth'
 
@@ -23,6 +29,9 @@ const STATUS_TAG = {
 export default function Couriers() {
   const [couriers, setCouriers] = useState([])
   const [loading, setLoading] = useState(true)
+  const [editModalOpen, setEditModalOpen] = useState(false)
+  const [editingCourier, setEditingCourier] = useState(null)
+  const [form] = Form.useForm()
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
   const restaurantId = useAuthStore((s) => s.restaurantId)
 
@@ -42,28 +51,116 @@ export default function Couriers() {
   const handleStatus = async (id, status) => {
     try {
       await updateCourierStatus(id, status)
-      message.success(status === 'active' ? 'Kuryer tasdiqlandi!' : 'Kuryer bloklandi!')
+      message.success(
+        status === 'active' ? 'Kuryer tasdiqlandi!'
+        : status === 'blocked' ? 'Kuryer bloklandi!'
+        : 'Holat yangilandi'
+      )
       load()
     } catch {
       message.error('Xato!')
     }
   }
 
+  const openEdit = (courier) => {
+    setEditingCourier(courier)
+    form.setFieldsValue({
+      full_name: courier.full_name,
+      phone: courier.phone,
+      transport_type: courier.transport_type,
+    })
+    setEditModalOpen(true)
+  }
+
+  const handleSaveEdit = async () => {
+    try {
+      const values = await form.validateFields()
+      await updateCourier(editingCourier.id, values)
+      message.success('Yangilandi')
+      setEditModalOpen(false)
+      load()
+    } catch (err) {
+      if (err?.errorFields) return
+      message.error('Saqlashda xato')
+    }
+  }
+
+  const handleDelete = async (id) => {
+    try {
+      await deleteCourier(id)
+      message.success("Kuryer o'chirildi")
+      load()
+    } catch {
+      message.error("O'chirishda xato")
+    }
+  }
+
+  const getActionItems = (record) => {
+    const items = [
+      {
+        key: 'edit',
+        icon: <EditOutlined />,
+        label: 'Tahrirlash',
+        onClick: () => openEdit(record),
+      },
+    ]
+
+    if (record.status !== 'active') {
+      items.push({
+        key: 'approve',
+        icon: <CheckOutlined />,
+        label: 'Tasdiqlash',
+        onClick: () => handleStatus(record.id, 'active'),
+      })
+    }
+    if (record.status !== 'blocked') {
+      items.push({
+        key: 'block',
+        icon: <StopOutlined />,
+        label: 'Bloklash',
+        danger: true,
+        onClick: () => handleStatus(record.id, 'blocked'),
+      })
+    }
+    if (record.status === 'blocked') {
+      items.push({
+        key: 'unblock',
+        icon: <CheckOutlined />,
+        label: 'Blokdan chiqarish',
+        onClick: () => handleStatus(record.id, 'pending'),
+      })
+    }
+
+    items.push({ type: 'divider' })
+    items.push({
+      key: 'delete',
+      icon: <DeleteOutlined />,
+      label: (
+        <Popconfirm
+          title="Kuryer o'chirilsinmi?"
+          description="Bu amalni orqaga qaytarib bo'lmaydi."
+          onConfirm={() => handleDelete(record.id)}
+          okText="Ha, o'chirish"
+          cancelText="Bekor"
+          okButtonProps={{ danger: true }}
+        >
+          <span style={{ color: '#ff4d4f' }}>O'chirish</span>
+        </Popconfirm>
+      ),
+      danger: true,
+    })
+
+    return items
+  }
+
   const columns = [
-    {
-      title: 'ID',
-      dataIndex: 'id',
-      width: 60,
-    },
+    { title: 'ID', dataIndex: 'id', width: 60 },
     {
       title: 'Ism',
       dataIndex: 'full_name',
       render: (name) => <><UserOutlined /> {name}</>,
     },
-    {
-      title: 'Telefon',
-      dataIndex: 'phone',
-    },
+    { title: 'Telefon', dataIndex: 'phone' },
     {
       title: 'Transport',
       dataIndex: 'transport_type',
@@ -81,29 +178,16 @@ export default function Couriers() {
     },
     {
       title: 'Amallar',
+      width: 80,
+      align: 'center',
       render: (_, record) => (
-        <Space>
-          {record.status !== 'active' && (
-            <Popconfirm
-              title="Kuryerni tasdiqlaysizmi?"
-              onConfirm={() => handleStatus(record.id, 'active')}
-            >
-              <Button type="primary" size="small" icon={<CheckOutlined />}>
-                Tasdiqlash
-              </Button>
-            </Popconfirm>
-          )}
-          {record.status !== 'blocked' && (
-            <Popconfirm
-              title="Kuryerni bloklaysizmi?"
-              onConfirm={() => handleStatus(record.id, 'blocked')}
-            >
-              <Button danger size="small" icon={<StopOutlined />}>
-                Bloklash
-              </Button>
-            </Popconfirm>
-          )}
-        </Space>
+        <Dropdown
+          menu={{ items: getActionItems(record) }}
+          trigger={['click']}
+          placement="bottomRight"
+        >
+          <Button type="text" icon={<MoreOutlined />} />
+        </Dropdown>
       ),
     },
   ]
@@ -120,6 +204,43 @@ export default function Couriers() {
         size="small"
         scroll={{ x: 700 }}
       />
+
+      <Modal
+        title="Kuryerni tahrirlash"
+        open={editModalOpen}
+        onOk={handleSaveEdit}
+        onCancel={() => setEditModalOpen(false)}
+        okText="Saqlash"
+        cancelText="Bekor"
+        okButtonProps={{ style: { background: '#fa8c16', borderColor: '#fa8c16' } }}
+      >
+        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item
+            name="full_name"
+            label="To'liq ism"
+            rules={[{ required: true, message: 'Ism kiriting' }]}
+          >
+            <Input placeholder="Ali Valiyev" />
+          </Form.Item>
+          <Form.Item
+            name="phone"
+            label="Telefon"
+            rules={[{ required: true, message: 'Telefon kiriting' }]}
+          >
+            <Input placeholder="+998901234567" />
+          </Form.Item>
+          <Form.Item name="transport_type" label="Transport turi">
+            <Select
+              options={[
+                { value: 'car', label: '🚗 Avtomobil' },
+                { value: 'motorcycle', label: '🏍 Motosikl' },
+                { value: 'bicycle', label: '🚲 Velosiped' },
+                { value: 'walk', label: '🚶 Piyoda' },
+              ]}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   )
 }

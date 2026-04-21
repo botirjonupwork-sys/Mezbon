@@ -102,6 +102,11 @@ export default function Settings() {
   const restParams = restaurantId ? { restaurant_id: restaurantId } : {}
 
   useEffect(() => {
+    // restaurantId hali zustand persist'dan kelmagan bo'lsa — kutamiz
+    if (!restaurantId && !selectedBranchId) {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     const settingsPromise = selectedBranchId
       ? getBranchSettings(selectedBranchId)
@@ -109,7 +114,7 @@ export default function Settings() {
 
     Promise.all([settingsPromise, getProfile(restParams)])
       .then(([settingsRes, profileRes]) => {
-        const d = settingsRes.data || {}
+        const d = { ...(settingsRes.data || {}) }
         // Branch va restaurant field nomlarini formga moslashtirish
         if (selectedBranchId) {
           d.restaurant_name = d.name || ''
@@ -118,6 +123,9 @@ export default function Settings() {
         }
         if (d.work_hours_from) d.work_hours_from = dayjs(d.work_hours_from, 'HH:mm')
         if (d.work_hours_until) d.work_hours_until = dayjs(d.work_hours_until, 'HH:mm')
+        // Default qiymatlar
+        if (!d.delivery_provider) d.delivery_provider = 'own'
+        if (d.yandex_test_mode === undefined || d.yandex_test_mode === null) d.yandex_test_mode = true
         form.setFieldsValue(d)
         if (d.restaurant_lat) setMapLat(d.restaurant_lat)
         if (d.restaurant_lon) setMapLon(d.restaurant_lon)
@@ -127,7 +135,7 @@ export default function Settings() {
       })
       .catch(() => message.error('Sozlamalarni yuklashda xato'))
       .finally(() => setLoading(false))
-  }, [selectedBranchId])
+  }, [selectedBranchId, restaurantId])
 
   const handleMapChange = useCallback((lat, lon) => {
     const roundedLat = Math.round(lat * 10000) / 10000
@@ -315,65 +323,28 @@ export default function Settings() {
           </Row>
         </Card>
 
-        {/* ── Yetkazib berish va buyurtma ── */}
+        {/* ── Minimal buyurtma ── */}
         <Card
-          title={<><CarOutlined /> Yetkazib berish</>}
+          title={<><CarOutlined /> Minimal buyurtma summasi</>}
           style={{ marginBottom: 16 }}
           size="small"
         >
-          <Row gutter={16}>
-            <Col xs={24} md={8}>
-              <Form.Item
-                name="min_order"
-                label="Minimal buyurtma (so'm)"
-                rules={[{ required: true, message: 'Summa kiriting' }]}
-                extra="Faqat dastavka uchun"
-              >
-                <InputNumber
-                  style={{ width: '100%' }}
-                  min={0}
-                  max={1000000}
-                  step={5000}
-                  formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-                  parser={(v) => v.replace(/,/g, '')}
-                />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8}>
-              <Form.Item
-                name="delivery_base_fee"
-                label="Bazaviy narx (so'm)"
-                rules={[{ required: true, message: 'Kiriting' }]}
-                extra="Har qanday masofaga"
-              >
-                <InputNumber
-                  style={{ width: '100%' }}
-                  min={0}
-                  max={500000}
-                  step={1000}
-                  formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-                  parser={(v) => v.replace(/,/g, '')}
-                />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={8}>
-              <Form.Item
-                name="delivery_per_km"
-                label="Har km uchun (so'm)"
-                rules={[{ required: true, message: 'Kiriting' }]}
-                extra="Masofaga qarab qo'shiladi"
-              >
-                <InputNumber
-                  style={{ width: '100%' }}
-                  min={0}
-                  max={50000}
-                  step={500}
-                  formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-                  parser={(v) => v.replace(/,/g, '')}
-                />
-              </Form.Item>
-            </Col>
-          </Row>
+          <Form.Item
+            name="min_order"
+            label="Minimal buyurtma (so'm)"
+            rules={[{ required: true, message: 'Summa kiriting' }]}
+            extra="Shu summadan past buyurtmalar qabul qilinmaydi"
+            style={{ maxWidth: 400, marginBottom: 0 }}
+          >
+            <InputNumber
+              style={{ width: '100%' }}
+              min={0}
+              max={1000000}
+              step={5000}
+              formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+              parser={(v) => v.replace(/,/g, '')}
+            />
+          </Form.Item>
         </Card>
 
         {/* ── Dastavka provider ── */}
@@ -386,12 +357,12 @@ export default function Settings() {
           <Form.Item
             name="delivery_provider"
             label="Dastavka turi"
-            extra="O'z kuryerlaringiz yoki tashqi xizmat orqali dastavka"
+            extra="O'z kuryerlaringiz yoki Yandex Delivery. Narx kuryer bilan kelishiladi yoki Yandex avtomatik hisoblaydi."
           >
             <Select
               options={[
-                { value: 'own', label: "🚗 O'z kuryerlarim (courier_bot)" },
-                { value: 'yandex', label: '🟡 Yandex Delivery (avtomatik kuryer)' },
+                { value: 'own', label: "🚗 O'z kuryerlarim (narx kuryer bilan kelishiladi)" },
+                { value: 'yandex', label: '🟡 Yandex Delivery (avtomatik narx)' },
               ]}
               style={{ maxWidth: 400 }}
             />

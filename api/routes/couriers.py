@@ -224,6 +224,41 @@ async def list_couriers(
     ]
 
 
+class CourierUpdate(BaseModel):
+    full_name: Optional[str] = None
+    phone: Optional[str] = None
+    transport_type: Optional[str] = None
+
+
+# ── Admin: kuryer ma'lumotlarini yangilash ─────────────
+@router.put("/{courier_id}")
+async def update_courier(
+    courier_id: int,
+    data: CourierUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Courier).where(Courier.id == courier_id))
+    courier = result.scalar_one_or_none()
+    if not courier:
+        raise HTTPException(404, "Kuryer topilmadi")
+    for key, value in data.model_dump(exclude_unset=True).items():
+        setattr(courier, key, value)
+    await db.commit()
+    return {"success": True}
+
+
+# ── Admin: kuryerni o'chirish ──────────────────────────
+@router.delete("/{courier_id}")
+async def delete_courier(courier_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Courier).where(Courier.id == courier_id))
+    courier = result.scalar_one_or_none()
+    if not courier:
+        raise HTTPException(404, "Kuryer topilmadi")
+    await db.delete(courier)
+    await db.commit()
+    return {"success": True}
+
+
 # ── Admin: kuryer statusini o'zgartirish ───────────────
 @router.patch("/{courier_id}/status")
 async def update_courier_status(
