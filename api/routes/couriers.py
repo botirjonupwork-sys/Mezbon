@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from api.database import get_db
+from api.auth_deps import require_restaurant_admin
 from database.models import Courier, CourierStatus, Order, OrderStatus, Branch
 
 router = APIRouter(prefix="/couriers", tags=["couriers"])
@@ -198,7 +199,7 @@ async def mark_delivered(telegram_id: str, order_id: int, db: AsyncSession = Dep
 @router.get("/")
 async def list_couriers(
     branch_id: Optional[int] = None,
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Courier).order_by(Courier.created_at.desc())
@@ -235,6 +236,7 @@ class CourierUpdate(BaseModel):
 async def update_courier(
     courier_id: int,
     data: CourierUpdate,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Courier).where(Courier.id == courier_id))
@@ -249,7 +251,11 @@ async def update_courier(
 
 # ── Admin: kuryerni o'chirish ──────────────────────────
 @router.delete("/{courier_id}")
-async def delete_courier(courier_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_courier(
+    courier_id: int,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(select(Courier).where(Courier.id == courier_id))
     courier = result.scalar_one_or_none()
     if not courier:
@@ -262,7 +268,10 @@ async def delete_courier(courier_id: int, db: AsyncSession = Depends(get_db)):
 # ── Admin: kuryer statusini o'zgartirish ───────────────
 @router.patch("/{courier_id}/status")
 async def update_courier_status(
-    courier_id: int, status: str, db: AsyncSession = Depends(get_db)
+    courier_id: int,
+    status: str,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
+    db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Courier).where(Courier.id == courier_id))
     courier = result.scalar_one_or_none()

@@ -12,6 +12,7 @@ import uuid
 from api.database import get_db
 from api.schemas import CategoryOut
 from api.config import settings
+from api.auth_deps import require_restaurant_admin, require_super_admin
 from database.models import (
     Product, Category, Order, OrderItem, User, Review, OrderStatus, Courier, Branch, Admin
 )
@@ -134,26 +135,57 @@ def _get_restaurant_branches(restaurant_id: int):
     return select(Branch.id).where(Branch.restaurant_id == restaurant_id)
 
 
+import re as _re
+
+# Fayl nomi formati: UUIDv4.ext — faqat shuni qabul qilamiz (path traversal'ni oldini olish)
+_FILENAME_RE = _re.compile(r"^[0-9a-f\-]{8,}\.(jpg|jpeg|png|webp|gif)$", _re.IGNORECASE)
+_MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
 # ── Image upload ───────────────────────────────────────
 @router.post("/upload-image")
-async def upload_image(file: UploadFile = File(...)):
+async def upload_image(
+    file: UploadFile = File(...),
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
+):
+    # Extension validation
     ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "jpg"
     if ext not in ("jpg", "jpeg", "png", "webp", "gif"):
         raise HTTPException(400, "Faqat rasm fayllar (jpg, png, webp)")
+
+    # Hajm cheklov — fayl butunini o'qimasdan
+    content = await file.read()
+    if len(content) > _MAX_UPLOAD_SIZE:
+        raise HTTPException(400, "Rasm juda katta — max 10 MB")
+
+    # Content-type bo'yicha ham tekshirish
+    if file.content_type and not file.content_type.startswith("image/"):
+        raise HTTPException(400, "Fayl rasm emas")
+
     filename = f"{uuid.uuid4()}.{ext}"
     filepath = os.path.join(UPLOAD_DIR, filename)
     with open(filepath, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        f.write(content)
     return {"url": f"/static/images/products/{filename}"}
 
 
 @router.delete("/upload-image")
-async def delete_image(url: str):
-    """Eski rasmni fayl tizimidan o'chirish."""
+async def delete_image(
+    url: str,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
+):
+    """Eski rasmni fayl tizimidan o'chirish (path traversal himoyasi bilan)."""
     if not url or not url.startswith("/static/images/products/"):
         return {"success": False, "reason": "invalid_url"}
     filename = url.rsplit("/", 1)[-1]
-    filepath = os.path.join(UPLOAD_DIR, filename)
+    # Path traversal himoyasi: UUID format'ga mos kelishi shart
+    if not _FILENAME_RE.match(filename):
+        raise HTTPException(400, "Fayl nomi noto'g'ri")
+    filepath = os.path.abspath(os.path.join(UPLOAD_DIR, filename))
+    # abspath tekshirish — katalog tashqarisiga chiqmaslik
+    upload_abs = os.path.abspath(UPLOAD_DIR)
+    if not filepath.startswith(upload_abs + os.sep):
+        raise HTTPException(400, "Fayl yo'li noto'g'ri")
     if os.path.exists(filepath):
         try:
             os.remove(filepath)
@@ -169,7 +201,7 @@ async def get_stats(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     branch_id: Optional[int] = None,
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db)
 ):
     if date_from:
@@ -262,7 +294,7 @@ async def get_all_orders(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     branch_id: Optional[int] = None,
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     order_kind: Optional[str] = None,  # 'regular' | 'catering'
     limit: int = 100,
     offset: int = 0,
@@ -356,7 +388,7 @@ async def get_all_orders(
 @router.get("/products")
 async def list_products(
     branch_id: Optional[int] = None,
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     category_id: Optional[int] = None,
     product_type: Optional[str] = None,  # 'regular' | 'catering' | None (barchasi)
     db: AsyncSession = Depends(get_db),
@@ -418,7 +450,7 @@ async def list_products(
 @router.post("/products")
 async def create_product(
     data: ProductCreate,
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
     dump = data.model_dump()
@@ -441,7 +473,7 @@ async def create_product(
 async def update_product(
     product_id: int,
     data: ProductUpdate,
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db)
 ):
     result = await db.execute(select(Product).where(Product.id == product_id))
@@ -483,7 +515,7 @@ async def delete_product(product_id: int, db: AsyncSession = Depends(get_db)):
 @router.get("/categories")
 async def list_categories(
     branch_id: Optional[int] = None,
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Category).where(Category.is_active == True).order_by(Category.order)
@@ -510,7 +542,7 @@ async def list_categories(
 @router.post("/categories")
 async def create_category(
     data: CategoryCreate,
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
     dump = data.model_dump()
@@ -559,7 +591,7 @@ async def delete_category(cat_id: int, db: AsyncSession = Depends(get_db)):
 @router.get("/users")
 async def list_users(
     branch_id: Optional[int] = None,
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
     if branch_id:
@@ -631,7 +663,7 @@ import hashlib as _hashlib
 
 @router.get("/settings")
 async def get_settings(
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
     if not restaurant_id:
@@ -672,7 +704,7 @@ async def get_settings(
 @router.put("/settings")
 async def update_settings(
     data: SettingsUpdate,
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
     if not restaurant_id:
@@ -718,7 +750,7 @@ async def update_settings(
 # ── Profil (restaurant-specific) ─────────────────────
 @router.get("/profile")
 async def get_profile(
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
     if restaurant_id:
@@ -737,7 +769,7 @@ class PasswordChange(BaseModel):
 @router.put("/profile")
 async def update_profile(
     data: ProfileUpdate,
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
     if restaurant_id:
@@ -786,7 +818,7 @@ async def update_profile(
 # ── Adminlar boshqaruvi ──────────────────────────────
 @router.get("/admins")
 async def list_admins(
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Admin)
@@ -810,7 +842,7 @@ async def list_admins(
 @router.post("/admins")
 async def create_admin(
     data: AdminCreate,
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
     if not restaurant_id:

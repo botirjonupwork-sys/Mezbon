@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from typing import Optional
 from api.database import get_db
+from api.auth_deps import require_restaurant_admin
 from api.schemas import ReviewCreate, ReviewOut
 from database.models import Review, User, Branch
 
@@ -34,7 +35,7 @@ async def create_review(
 @router.get("")
 async def get_reviews(
     branch_id: Optional[int] = None,
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Review).order_by(Review.created_at.desc())
@@ -64,7 +65,7 @@ async def get_reviews(
 @router.get("/stats")
 async def get_stats(
     branch_id: Optional[int] = None,
-    restaurant_id: Optional[int] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
     query = select(

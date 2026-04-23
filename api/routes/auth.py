@@ -1,16 +1,21 @@
 """Admin login — Restaurants jadvaldan va .env super admin dan tekshiradi"""
 import hashlib
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from api.config import settings
 from api.database import get_db
 from database.models import Restaurant
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# Login uchun qattiq rate limit — brute-force hujumidan himoya
+_auth_limiter = Limiter(key_func=get_remote_address)
 
 
 # ── Super Admin auth dependency ──────────────────────
@@ -39,7 +44,8 @@ class LoginResponse(BaseModel):
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
+@_auth_limiter.limit("5/minute")
+async def login(request: Request, data: LoginRequest, db: AsyncSession = Depends(get_db)):
     # 1. .env dagi super admin (barcha restoranlarga kirish)
     if data.username == settings.ADMIN_USERNAME and data.password == settings.ADMIN_PASSWORD:
         return LoginResponse(
@@ -75,7 +81,8 @@ class BotLoginRequest(BaseModel):
 
 
 @router.post("/bot-login")
-async def bot_login(data: BotLoginRequest, db: AsyncSession = Depends(get_db)):
+@_auth_limiter.limit("10/minute")
+async def bot_login(request: Request, data: BotLoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Restaurant).where(Restaurant.bot_token == data.bot_token)
     )
@@ -101,7 +108,8 @@ class SuperLoginResponse(BaseModel):
 
 
 @router.post("/super/login", response_model=SuperLoginResponse)
-async def super_login(data: SuperLoginRequest):
+@_auth_limiter.limit("5/minute")
+async def super_login(request: Request, data: SuperLoginRequest):
     if (
         data.username == settings.SUPER_ADMIN_USERNAME
         and data.password == settings.SUPER_ADMIN_PASSWORD

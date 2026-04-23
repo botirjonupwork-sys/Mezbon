@@ -7,7 +7,7 @@ Endi guruh bo'yicha ishlaydi:
 Aralash orderlar: ikki yoki undan ortiq mahsulot bitta orderda
 umumiy miqdor minimal va step'ga mos kelishi kerak.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -15,10 +15,18 @@ from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 
 from api.database import get_db
+from api.config import settings
 from api.services.currency import get_currency_rate, convert_usd_to_uzs
 from database.models import (
     Product, User, Order, OrderItem, OrderStatus, DeliveryType, Branch, Restaurant
 )
+
+
+async def _require_bot_secret(x_bot_secret: Optional[str] = Header(None, alias="X-Bot-Secret")):
+    """Bot'dan kelgan so'rovlarni tekshirish (telegram_id spoofing'dan himoya)."""
+    if not x_bot_secret or x_bot_secret != settings.SECRET_KEY:
+        raise HTTPException(403, "Ruxsat berilmadi")
+    return True
 
 router = APIRouter(prefix="/catering", tags=["catering"])
 
@@ -277,6 +285,7 @@ async def create_catering_order(
     telegram_id: str,
     restaurant_id: int,
     branch_id: Optional[int] = None,
+    _bot: bool = Depends(_require_bot_secret),
     db: AsyncSession = Depends(get_db),
 ):
     """Aralash catering buyurtma yaratish."""

@@ -2,6 +2,8 @@ import httpx
 import os
 
 BASE_URL = os.getenv("API_URL", "http://localhost:8000")
+BOT_SECRET = os.getenv("SECRET_KEY", "")  # API bilan bir xil SECRET_KEY
+_BOT_HEADERS = {"X-Bot-Secret": BOT_SECRET} if BOT_SECRET else {}
 
 # ── Multi-restaurant auth state ──────────────────────
 _auth_token: str = ""
@@ -240,7 +242,7 @@ async def calculate_catering_price_multi(group: str, items: list, delivery_subty
 
 
 async def create_catering_order(telegram_id: str, order_data: dict, branch_id: int = None):
-    """Catering buyurtma yaratish."""
+    """Catering buyurtma yaratish (X-Bot-Secret header bilan)."""
     params = {"telegram_id": telegram_id, "restaurant_id": _restaurant_id}
     if branch_id:
         params["branch_id"] = branch_id
@@ -249,6 +251,7 @@ async def create_catering_order(telegram_id: str, order_data: dict, branch_id: i
             f"{BASE_URL}/catering/orders",
             params=params,
             json=order_data,
+            headers=_BOT_HEADERS,
         )
         if r.status_code in (200, 201):
             return r.json()
