@@ -10,6 +10,10 @@ env/
 # Environment
 .env
 
+# Local secrets / personal notes (never push)
+SECRETS.local.md
+*.local.md
+
 # Database
 *.sqlite
 *.db

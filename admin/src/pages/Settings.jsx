@@ -1,12 +1,13 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import {
   Card, Form, Input, InputNumber, Select, Button, Typography,
-  Row, Col, message, Spin, TimePicker, Tooltip, Space, Switch
+  Row, Col, message, Spin, TimePicker, Space, Switch, Tabs, Alert
 } from 'antd'
 import {
   SaveOutlined, EnvironmentOutlined, PhoneOutlined,
   ShopOutlined, ClockCircleOutlined, CarOutlined,
-  UserOutlined, LockOutlined
+  UserOutlined, LockOutlined, CreditCardOutlined,
+  GiftOutlined, GlobalOutlined, DollarOutlined,
 } from '@ant-design/icons'
 import { getSettings, updateSettings, getProfile, updateProfile, getBranchSettings, updateBranchSettings } from '../api'
 import { useAuthStore } from '../store/auth'
@@ -20,7 +21,6 @@ function YandexMap({ lat, lon, onChange }) {
   const mapRef = useRef(null)
   const mapInstance = useRef(null)
   const markerRef = useRef(null)
-  const [mapReady, setMapReady] = useState(false)
 
   const initMap = useCallback(() => {
     if (!window.ymaps || mapInstance.current) return
@@ -30,43 +30,34 @@ function YandexMap({ lat, lon, onChange }) {
         zoom: 15,
         controls: ['zoomControl', 'searchControl', 'geolocationControl'],
       })
-
       const placemark = new window.ymaps.Placemark(
         [lat || 41.2995, lon || 69.2401],
         { hintContent: 'Restoran joylashuvi' },
         { preset: 'islands#redFoodIcon', draggable: true }
       )
-
       placemark.events.add('dragend', () => {
         const coords = placemark.geometry.getCoordinates()
         onChange?.(coords[0], coords[1])
       })
-
       map.events.add('click', (e) => {
         const coords = e.get('coords')
         placemark.geometry.setCoordinates(coords)
         onChange?.(coords[0], coords[1])
       })
-
       map.geoObjects.add(placemark)
       mapInstance.current = map
       markerRef.current = placemark
-      setMapReady(true)
     })
   }, [lat, lon, onChange])
 
   useEffect(() => {
-    if (window.ymaps) {
-      initMap()
-      return
-    }
+    if (window.ymaps) { initMap(); return }
     const script = document.createElement('script')
     script.src = 'https://api-maps.yandex.ru/2.1/?apikey=&lang=ru_RU'
     script.onload = initMap
     document.head.appendChild(script)
   }, [initMap])
 
-  // Tashqaridan lat/lon o'zgarganda markerni yangilash
   useEffect(() => {
     if (markerRef.current && lat && lon) {
       markerRef.current.geometry.setCoordinates([lat, lon])
@@ -75,16 +66,10 @@ function YandexMap({ lat, lon, onChange }) {
   }, [lat, lon])
 
   return (
-    <div
-      ref={mapRef}
-      style={{
-        width: '100%',
-        height: 320,
-        borderRadius: 8,
-        overflow: 'hidden',
-        border: '1px solid #d9d9d9',
-      }}
-    />
+    <div ref={mapRef} style={{
+      width: '100%', height: 320, borderRadius: 8,
+      overflow: 'hidden', border: '1px solid #d9d9d9',
+    }} />
   )
 }
 
@@ -97,16 +82,13 @@ export default function Settings() {
   const [savingProfile, setSavingProfile] = useState(false)
   const [mapLat, setMapLat] = useState(41.2995)
   const [mapLon, setMapLon] = useState(69.2401)
+  const [activeTab, setActiveTab] = useState('restaurant')
   const { setAuth, token, restaurantId } = useAuthStore()
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
   const restParams = restaurantId ? { restaurant_id: restaurantId } : {}
 
   useEffect(() => {
-    // restaurantId hali zustand persist'dan kelmagan bo'lsa — kutamiz
-    if (!restaurantId && !selectedBranchId) {
-      setLoading(false)
-      return
-    }
+    if (!restaurantId && !selectedBranchId) { setLoading(false); return }
     setLoading(true)
     const settingsPromise = selectedBranchId
       ? getBranchSettings(selectedBranchId)
@@ -115,7 +97,6 @@ export default function Settings() {
     Promise.all([settingsPromise, getProfile(restParams)])
       .then(([settingsRes, profileRes]) => {
         const d = { ...(settingsRes.data || {}) }
-        // Branch va restaurant field nomlarini formga moslashtirish
         if (selectedBranchId) {
           d.restaurant_name = d.name || ''
           d.restaurant_lat = d.latitude
@@ -123,9 +104,9 @@ export default function Settings() {
         }
         if (d.work_hours_from) d.work_hours_from = dayjs(d.work_hours_from, 'HH:mm')
         if (d.work_hours_until) d.work_hours_until = dayjs(d.work_hours_until, 'HH:mm')
-        // Default qiymatlar
         if (!d.delivery_provider) d.delivery_provider = 'own'
         if (d.yandex_test_mode === undefined || d.yandex_test_mode === null) d.yandex_test_mode = true
+        if (d.currency_auto === undefined || d.currency_auto === null) d.currency_auto = true
         form.setFieldsValue(d)
         if (d.restaurant_lat) setMapLat(d.restaurant_lat)
         if (d.restaurant_lon) setMapLon(d.restaurant_lon)
@@ -138,34 +119,26 @@ export default function Settings() {
   }, [selectedBranchId, restaurantId])
 
   const handleMapChange = useCallback((lat, lon) => {
-    const roundedLat = Math.round(lat * 10000) / 10000
-    const roundedLon = Math.round(lon * 10000) / 10000
-    setMapLat(roundedLat)
-    setMapLon(roundedLon)
-    form.setFieldsValue({ restaurant_lat: roundedLat, restaurant_lon: roundedLon })
+    const r = (v) => Math.round(v * 10000) / 10000
+    setMapLat(r(lat))
+    setMapLon(r(lon))
+    form.setFieldsValue({ restaurant_lat: r(lat), restaurant_lon: r(lon) })
   }, [form])
 
   const handleSave = async () => {
     setSaving(true)
     try {
       const values = await form.validateFields()
-      // TimePicker dayjs → string
       if (values.work_hours_from) values.work_hours_from = values.work_hours_from.format('HH:mm')
       if (values.work_hours_until) values.work_hours_until = values.work_hours_until.format('HH:mm')
       if (selectedBranchId) {
-        // Form field nomlarini branch API field nomlariga moslashtirish
-        const branchData = { ...values }
-        branchData.name = branchData.restaurant_name
-        branchData.latitude = branchData.restaurant_lat
-        branchData.longitude = branchData.restaurant_lon
-        delete branchData.restaurant_name
-        delete branchData.restaurant_lat
-        delete branchData.restaurant_lon
-        await updateBranchSettings(selectedBranchId, branchData)
+        const b = { ...values, name: values.restaurant_name, latitude: values.restaurant_lat, longitude: values.restaurant_lon }
+        delete b.restaurant_name; delete b.restaurant_lat; delete b.restaurant_lon
+        await updateBranchSettings(selectedBranchId, b)
       } else {
         await updateSettings(values, restParams)
       }
-      message.success('✅ Sozlamalar muvaffaqiyatli saqlandi')
+      message.success('✅ Sozlamalar saqlandi')
     } catch (err) {
       if (!err?.errorFields) message.error('Saqlashda xato')
     } finally {
@@ -180,17 +153,13 @@ export default function Settings() {
       const payload = {}
       if (values.username) payload.username = values.username
       if (values.new_password) payload.new_password = values.new_password
-
       await updateProfile(payload, restParams)
       profileForm.setFieldValue('new_password', '')
       profileForm.setFieldValue('confirm_password', '')
-
-      if (values.username) {
-        setAuth(token, { name: values.username }, restaurantId)
-      }
-      message.success('✅ Profil muvaffaqiyatli yangilandi')
+      if (values.username) setAuth(token, { name: values.username }, restaurantId)
+      message.success('✅ Profil yangilandi')
     } catch (err) {
-      if (!err?.errorFields) message.error('Profilni saqlashda xato')
+      if (!err?.errorFields) message.error('Xato')
     } finally {
       setSavingProfile(false)
     }
@@ -198,250 +167,168 @@ export default function Settings() {
 
   if (loading) return <Spin size="large" style={{ display: 'block', marginTop: 100 }} />
 
-  return (
-    <div style={{ maxWidth: 900, margin: '0 auto' }}>
-      <Title level={4} style={{ marginBottom: 24 }}>⚙️ Sozlamalar</Title>
+  // ── Tab contents ─────────────────────────────────────
 
-      <Form form={form} layout="vertical" requiredMark="optional">
+  const restaurantTab = (
+    <>
+      <Card title={<><ShopOutlined /> Restoran ma'lumotlari</>} size="small" style={{ marginBottom: 16 }}>
+        <Row gutter={16}>
+          <Col xs={24} md={12}>
+            <Form.Item name="restaurant_name" label="Nomi" rules={[{ required: true, message: 'Nom kiriting' }]}>
+              <Input prefix={<ShopOutlined />} placeholder="Muhsina Dollar Somsa" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={12}>
+            <Form.Item name="phone" label="Telefon" rules={[
+              { required: true, message: 'Telefon kiriting' },
+              { pattern: /^\+998\d{9}$/, message: '+998XXXXXXXXX formatida' }
+            ]}>
+              <Input prefix={<PhoneOutlined />} placeholder="+998901234567" maxLength={13} />
+            </Form.Item>
+          </Col>
+          <Col xs={24}>
+            <Form.Item name="address" label="Manzil" rules={[{ required: true, message: 'Manzil kiriting' }]}>
+              <Input prefix={<EnvironmentOutlined />} placeholder="Toshkent sh., 7-mavze" />
+            </Form.Item>
+          </Col>
+        </Row>
+      </Card>
 
-        {/* ── Restoran ma'lumotlari ── */}
-        <Card
-          title={<><ShopOutlined /> Restoran ma'lumotlari</>}
-          style={{ marginBottom: 16 }}
-          size="small"
-        >
-          <Row gutter={16}>
-            <Col xs={24} md={12}>
-              <Form.Item
-                name="restaurant_name"
-                label="Nomi"
-                rules={[{ required: true, message: 'Nom kiriting' }]}
-              >
-                <Input prefix={<ShopOutlined />} placeholder="Muhsina Dollar Somsa" />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={12}>
-              <Form.Item
-                name="phone"
-                label="Telefon"
-                rules={[
-                  { required: true, message: 'Telefon kiriting' },
-                  { pattern: /^\+998\d{9}$/, message: '+998XXXXXXXXX formatida' },
-                ]}
-              >
-                <Input prefix={<PhoneOutlined />} placeholder="+998901234567" maxLength={13} />
-              </Form.Item>
-            </Col>
-            <Col xs={24}>
-              <Form.Item
-                name="address"
-                label="Manzil"
-                rules={[{ required: true, message: 'Manzil kiriting' }]}
-              >
-                <Input prefix={<EnvironmentOutlined />} placeholder="Toshkent sh., Chilonzor tumani, 7-mavze" />
-              </Form.Item>
-            </Col>
-          </Row>
-        </Card>
+      <Card title={<><EnvironmentOutlined /> Joylashuv (xaritadan belgilang)</>} size="small">
+        <YandexMap lat={mapLat} lon={mapLon} onChange={handleMapChange} />
+        <Row gutter={16} style={{ marginTop: 12 }}>
+          <Col xs={12}>
+            <Form.Item name="restaurant_lat" label="Kenglik" style={{ marginBottom: 0 }}>
+              <InputNumber style={{ width: '100%' }} step={0.0001} precision={4} onChange={(v) => v && setMapLat(v)} />
+            </Form.Item>
+          </Col>
+          <Col xs={12}>
+            <Form.Item name="restaurant_lon" label="Uzunlik" style={{ marginBottom: 0 }}>
+              <InputNumber style={{ width: '100%' }} step={0.0001} precision={4} onChange={(v) => v && setMapLon(v)} />
+            </Form.Item>
+          </Col>
+        </Row>
+      </Card>
+    </>
+  )
 
-        {/* ── Xarita ── */}
-        <Card
-          title={<><EnvironmentOutlined /> Restoran joylashuvi (xaritadan belgilang)</>}
-          style={{ marginBottom: 16 }}
-          size="small"
-        >
-          <YandexMap lat={mapLat} lon={mapLon} onChange={handleMapChange} />
-          <Row gutter={16} style={{ marginTop: 12 }}>
-            <Col xs={12}>
-              <Form.Item name="restaurant_lat" label="Kenglik" style={{ marginBottom: 0 }}>
-                <InputNumber
-                  style={{ width: '100%' }}
-                  step={0.0001}
-                  precision={4}
-                  onChange={(v) => v && setMapLat(v)}
-                />
-              </Form.Item>
-            </Col>
-            <Col xs={12}>
-              <Form.Item name="restaurant_lon" label="Uzunlik" style={{ marginBottom: 0 }}>
-                <InputNumber
-                  style={{ width: '100%' }}
-                  step={0.0001}
-                  precision={4}
-                  onChange={(v) => v && setMapLon(v)}
-                />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Text type="secondary" style={{ fontSize: 12, marginTop: 4, display: 'block' }}>
-            Xaritani bosing yoki markerni suring — koordinatalar avtomatik yangilanadi
-          </Text>
-        </Card>
+  const workHoursTab = (
+    <>
+      <Card title={<><ClockCircleOutlined /> Ish vaqti</>} size="small" style={{ marginBottom: 16 }}>
+        <Row gutter={16} align="middle">
+          <Col>
+            <Form.Item name="work_hours_from" label="Ochilish" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+              <TimePicker format="HH:mm" minuteStep={15} style={{ width: 120 }} needConfirm={false} />
+            </Form.Item>
+          </Col>
+          <Col><Text style={{ fontSize: 20, marginTop: 30, display: 'block' }}>—</Text></Col>
+          <Col>
+            <Form.Item name="work_hours_until" label="Yopilish" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+              <TimePicker format="HH:mm" minuteStep={15} style={{ width: 120 }} needConfirm={false} />
+            </Form.Item>
+          </Col>
+        </Row>
+      </Card>
 
-        {/* ── Ish vaqti ── */}
-        <Card
-          title={<><ClockCircleOutlined /> Ish vaqti</>}
-          style={{ marginBottom: 16 }}
-          size="small"
-        >
-          <Row gutter={16} align="middle">
-            <Col>
-              <Form.Item
-                name="work_hours_from"
-                label="Ochilish"
-                rules={[{ required: true, message: 'Tanlang' }]}
-                style={{ marginBottom: 0 }}
-              >
-                <TimePicker
-                  format="HH:mm"
-                  minuteStep={15}
-                  placeholder="09:00"
-                  style={{ width: 120 }}
-                  needConfirm={false}
-                />
-              </Form.Item>
-            </Col>
-            <Col>
-              <Text style={{ fontSize: 20, marginTop: 30, display: 'block' }}>—</Text>
-            </Col>
-            <Col>
-              <Form.Item
-                name="work_hours_until"
-                label="Yopilish"
-                rules={[{ required: true, message: 'Tanlang' }]}
-                style={{ marginBottom: 0 }}
-              >
-                <TimePicker
-                  format="HH:mm"
-                  minuteStep={15}
-                  placeholder="22:00"
-                  style={{ width: 120 }}
-                  needConfirm={false}
-                />
-              </Form.Item>
-            </Col>
-          </Row>
-        </Card>
+      <Card title={<><CarOutlined /> Minimal buyurtma summasi</>} size="small">
+        <Form.Item name="min_order" label="Minimal buyurtma (so'm)" rules={[{ required: true }]}
+          extra="Shu summadan past buyurtmalar qabul qilinmaydi" style={{ maxWidth: 400, marginBottom: 0 }}>
+          <InputNumber style={{ width: '100%' }} min={0} max={1000000} step={5000}
+            formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+            parser={(v) => v.replace(/,/g, '')} />
+        </Form.Item>
+      </Card>
+    </>
+  )
 
-        {/* ── Minimal buyurtma ── */}
-        <Card
-          title={<><CarOutlined /> Minimal buyurtma summasi</>}
-          style={{ marginBottom: 16 }}
-          size="small"
-        >
-          <Form.Item
-            name="min_order"
-            label="Minimal buyurtma (so'm)"
-            rules={[{ required: true, message: 'Summa kiriting' }]}
-            extra="Shu summadan past buyurtmalar qabul qilinmaydi"
-            style={{ maxWidth: 400, marginBottom: 0 }}
-          >
-            <InputNumber
-              style={{ width: '100%' }}
-              min={0}
-              max={1000000}
-              step={5000}
-              formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-              parser={(v) => v.replace(/,/g, '')}
-            />
-          </Form.Item>
-        </Card>
-
-        {/* ── Dastavka provider ── */}
-        {!selectedBranchId && (
-        <Card
-          title={<><CarOutlined /> Dastavka xizmati</>}
-          style={{ marginBottom: 16 }}
-          size="small"
-        >
-          <Form.Item
-            name="delivery_provider"
-            label="Dastavka turi"
-            extra="O'z kuryerlaringiz yoki Yandex Delivery. Narx kuryer bilan kelishiladi yoki Yandex avtomatik hisoblaydi."
-          >
-            <Select
-              options={[
-                { value: 'own', label: "🚗 O'z kuryerlarim (narx kuryer bilan kelishiladi)" },
-                { value: 'yandex', label: '🟡 Yandex Delivery (avtomatik narx)' },
-              ]}
-              style={{ maxWidth: 400 }}
-            />
+  const deliveryTab = (
+    <>
+      {!selectedBranchId && (
+        <Card title={<><CarOutlined /> Dastavka xizmati</>} size="small" style={{ marginBottom: 16 }}>
+          <Form.Item name="delivery_provider" label="Dastavka turi"
+            extra="O'z kuryerlaringiz yoki Yandex Delivery. Narx kuryer bilan kelishiladi yoki Yandex avtomatik hisoblaydi.">
+            <Select options={[
+              { value: 'own', label: "🚗 O'z kuryerlarim (narx kuryer bilan kelishiladi)" },
+              { value: 'yandex', label: '🟡 Yandex Delivery (avtomatik narx)' },
+            ]} style={{ maxWidth: 400 }} />
           </Form.Item>
 
-          <Form.Item
-            noStyle
-            shouldUpdate={(prev, cur) => prev.delivery_provider !== cur.delivery_provider}
-          >
+          <Form.Item noStyle shouldUpdate={(p, c) => p.delivery_provider !== c.delivery_provider}>
             {({ getFieldValue }) => getFieldValue('delivery_provider') === 'yandex' && (
               <>
-                <Form.Item
-                  name="yandex_api_token"
-                  label="Yandex API Token (OAuth)"
-                  extra="Yandex Delivery shartnomasi imzolangandan keyin beriladi. Bo'sh qoldirsangiz — test rejimi."
-                >
+                <Alert type="info" showIcon style={{ marginBottom: 16 }}
+                  message="Yandex Delivery ulash"
+                  description="OAuth token olish uchun dostavka.yandex.ru/account ga kiring. Kabinetda 'Integratsiya' bo'limi ochilgandan keyin token generatsiya qilinadi." />
+                <Form.Item name="yandex_api_token" label="Yandex OAuth Token (y0_Ag...)"
+                  extra="Shartnoma imzolangandan keyin beriladi. Bo'sh qoldirilsa test rejimi ishlaydi.">
                   <Input.Password placeholder="y0_Ag..." autoComplete="off" />
                 </Form.Item>
-                <Form.Item
-                  name="yandex_test_mode"
-                  label="Test rejimi"
-                  valuePropName="checked"
-                  extra="Yoqilgan holatida haqiqiy buyurtma yaratilmaydi (sandbox)"
-                >
+                <Form.Item name="yandex_test_mode" label="Test rejimi" valuePropName="checked"
+                  extra="Yoqilgan holatida haqiqiy buyurtma yaratilmaydi (sandbox)">
                   <Switch checkedChildren="Test" unCheckedChildren="Production" />
                 </Form.Item>
               </>
             )}
           </Form.Item>
         </Card>
-        )}
+      )}
+    </>
+  )
 
-        {/* ── Catering: Valyuta ── */}
-        {!selectedBranchId && (
-        <Card
-          title={<>💲 Valyuta kursi (catering uchun)</>}
-          style={{ marginBottom: 16 }}
-          size="small"
-        >
-          <Form.Item
-            name="currency_auto"
-            label="Avtomatik kurs (CBU)"
-            valuePropName="checked"
-            extra="Yoqilgan bo'lsa Markaziy Bank kursi har soatda yangilanadi"
-          >
-            <Switch checkedChildren="Auto (CBU)" unCheckedChildren="Qo'lda" />
+  const paymentTab = (
+    <>
+      {!selectedBranchId && (<>
+        {/* Click */}
+        <Card title={<><CreditCardOutlined /> Click Merchant</>} size="small" style={{ marginBottom: 16 }}>
+          <Alert type="info" showIcon style={{ marginBottom: 16 }}
+            message="Click.uz ulash"
+            description="merchant.click.uz da ro'yxatdan o'ting. Merchant ID, Service ID va Secret Key beriladi. Komissiya: UzCard/Humo 0.8%, Visa 2.5%" />
+          <Form.Item name="click_enabled" label="Click ulash" valuePropName="checked">
+            <Switch checkedChildren="Yoqiq" unCheckedChildren="O'chiq" />
           </Form.Item>
-
-          <Form.Item
-            noStyle
-            shouldUpdate={(prev, cur) => prev.currency_auto !== cur.currency_auto}
-          >
-            {({ getFieldValue }) => !getFieldValue('currency_auto') && (
-              <Form.Item
-                name="currency_rate_manual"
-                label="Qo'lda kurs (1 USD = ? so'm)"
-                rules={[{ required: true, message: 'Kurs kiriting' }]}
-              >
-                <InputNumber
-                  min={0}
-                  style={{ maxWidth: 300 }}
-                  step={100}
-                  formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-                  parser={(v) => v.replace(/,/g, '')}
-                  placeholder="12500"
-                />
-              </Form.Item>
+          <Form.Item noStyle shouldUpdate={(p, c) => p.click_enabled !== c.click_enabled}>
+            {({ getFieldValue }) => getFieldValue('click_enabled') && (
+              <Row gutter={16}>
+                <Col xs={24} md={8}>
+                  <Form.Item name="click_merchant_id" label="Merchant ID"><Input placeholder="12345" /></Form.Item>
+                </Col>
+                <Col xs={24} md={8}>
+                  <Form.Item name="click_service_id" label="Service ID"><Input placeholder="54321" /></Form.Item>
+                </Col>
+                <Col xs={24} md={8}>
+                  <Form.Item name="click_secret_key" label="Secret Key"><Input.Password autoComplete="off" /></Form.Item>
+                </Col>
+              </Row>
             )}
           </Form.Item>
         </Card>
-        )}
 
-        {/* ── Catering: to'lov karta ── */}
-        {!selectedBranchId && (
-        <Card
-          title={<>💳 Catering to'lov kartasi</>}
-          style={{ marginBottom: 16 }}
-          size="small"
-        >
+        {/* Payme */}
+        <Card title={<><CreditCardOutlined /> Payme Merchant</>} size="small" style={{ marginBottom: 16 }}>
+          <Alert type="info" showIcon style={{ marginBottom: 16 }}
+            message="Payme.uz ulash"
+            description="business.paycom.uz da ariza yuboring. Cashbox ID va Merchant Key beriladi. Komissiya: UzCard/Humo 0.8-1.2%" />
+          <Form.Item name="payme_enabled" label="Payme ulash" valuePropName="checked">
+            <Switch checkedChildren="Yoqiq" unCheckedChildren="O'chiq" />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(p, c) => p.payme_enabled !== c.payme_enabled}>
+            {({ getFieldValue }) => getFieldValue('payme_enabled') && (
+              <Row gutter={16}>
+                <Col xs={24} md={12}>
+                  <Form.Item name="payme_merchant_id" label="Cashbox ID (Merchant ID)"><Input placeholder="5e7c1e..." /></Form.Item>
+                </Col>
+                <Col xs={24} md={12}>
+                  <Form.Item name="payme_secret_key" label="Merchant Key"><Input.Password autoComplete="off" /></Form.Item>
+                </Col>
+              </Row>
+            )}
+          </Form.Item>
+        </Card>
+
+        {/* Catering karta */}
+        <Card title={<><CreditCardOutlined /> Catering to'lov kartasi (manual)</>} size="small">
+          <Alert type="warning" showIcon style={{ marginBottom: 16 }}
+            message="Click/Payme ulanmaguncha" description="Catering 'Hozir to'lov' tanlanganda mijozga shu karta ko'rsatiladi." />
           <Row gutter={16}>
             <Col xs={24} md={14}>
               <Form.Item name="catering_payment_card" label="Karta raqami">
@@ -449,108 +336,134 @@ export default function Settings() {
               </Form.Item>
             </Col>
             <Col xs={24} md={10}>
-              <Form.Item name="catering_payment_owner" label="Egasi (ism)">
-                <Input placeholder="Botirjon Tursunboyev" />
-              </Form.Item>
+              <Form.Item name="catering_payment_owner" label="Karta egasi"><Input placeholder="TURSUNBOYEV B." /></Form.Item>
             </Col>
           </Row>
-          <div style={{ fontSize: 12, color: '#999', marginTop: -8 }}>
-            "Hozir to'lov" tanlanganda mijozga shu karta ko'rsatiladi.
-          </div>
         </Card>
-        )}
+      </>)}
+      {selectedBranchId && <Alert type="info" message="To'lov sozlamalari faqat asosiy restoran darajasida. Filial rejimidan chiqing." />}
+    </>
+  )
 
-        {/* ── Til ── */}
-        <Card title="🌐 Bot tili" style={{ marginBottom: 24 }} size="small">
-          <Form.Item name="language" style={{ maxWidth: 250, marginBottom: 0 }}>
-            <Select
-              options={[
-                { value: 'uz', label: "🇺🇿 O'zbek tili" },
-                { value: 'ru', label: '🇷🇺 Rus tili' },
-              ]}
-            />
+  const cateringTab = (
+    <>
+      {!selectedBranchId && (<>
+        <Card title={<><DollarOutlined /> Valyuta kursi (USD → UZS)</>} size="small" style={{ marginBottom: 16 }}>
+          <Form.Item name="currency_auto" label="Avtomatik kurs (CBU)" valuePropName="checked"
+            extra="Yoqilgan bo'lsa Markaziy Bank kursi har soatda yangilanadi">
+            <Switch checkedChildren="Auto (CBU)" unCheckedChildren="Qo'lda" />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(p, c) => p.currency_auto !== c.currency_auto}>
+            {({ getFieldValue }) => !getFieldValue('currency_auto') && (
+              <Form.Item name="currency_rate_manual" label="Qo'lda kurs (1 USD = ? so'm)"
+                rules={[{ required: true, message: 'Kurs kiriting' }]}>
+                <InputNumber min={0} style={{ maxWidth: 300 }} step={100}
+                  formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                  parser={(v) => v.replace(/,/g, '')} placeholder="12500" />
+              </Form.Item>
+            )}
           </Form.Item>
         </Card>
 
-        <Button
-          type="primary"
-          icon={<SaveOutlined />}
-          loading={saving}
-          onClick={handleSave}
-          size="large"
-          block
-          style={{
-            background: '#fa8c16',
-            borderColor: '#fa8c16',
-            height: 48,
-            fontSize: 16,
-            fontWeight: 600,
-            marginBottom: 32,
-          }}
-        >
-          Saqlash
+        <Card title={<><GiftOutlined /> Catering miqdor sozlamalari</>} size="small">
+          <Row gutter={16}>
+            <Col xs={12} md={6}>
+              <Form.Item name="catering_somsa_min" label="🥟 Somsa min"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item>
+            </Col>
+            <Col xs={12} md={6}>
+              <Form.Item name="catering_somsa_step" label="🥟 Somsa qadam"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item>
+            </Col>
+            <Col xs={12} md={6}>
+              <Form.Item name="catering_nan_min" label="🍞 Non min"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item>
+            </Col>
+            <Col xs={12} md={6}>
+              <Form.Item name="catering_nan_step" label="🍞 Non qadam"><InputNumber min={1} style={{ width: '100%' }} /></Form.Item>
+            </Col>
+          </Row>
+          <Form.Item name="catering_delivery_per_km_uzs" label="🚗 Dastavka 1 km narxi (so'm)"
+            extra="Yandex ulanmaganda ishlatiladi" style={{ maxWidth: 400 }}>
+            <InputNumber min={0} style={{ width: '100%' }} step={1000}
+              formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+              parser={(v) => v.replace(/,/g, '')} />
+          </Form.Item>
+        </Card>
+      </>)}
+      {selectedBranchId && <Alert type="info" message="Catering sozlamalari faqat asosiy restoran darajasida." />}
+    </>
+  )
+
+  const localeTab = (
+    <Card title={<><GlobalOutlined /> Bot tili</>} size="small">
+      <Form.Item name="language" style={{ maxWidth: 250, marginBottom: 0 }}>
+        <Select options={[
+          { value: 'uz', label: "🇺🇿 O'zbek tili" },
+          { value: 'ru', label: '🇷🇺 Rus tili' },
+        ]} />
+      </Form.Item>
+    </Card>
+  )
+
+  const tabItems = [
+    { key: 'restaurant', label: <><ShopOutlined /> Restoran</>, children: restaurantTab },
+    { key: 'hours', label: <><ClockCircleOutlined /> Ish vaqti</>, children: workHoursTab },
+    { key: 'delivery', label: <><CarOutlined /> Dastavka</>, children: deliveryTab },
+    { key: 'payment', label: <><CreditCardOutlined /> To'lov</>, children: paymentTab },
+    { key: 'catering', label: <><GiftOutlined /> Catering</>, children: cateringTab },
+    { key: 'locale', label: <><GlobalOutlined /> Til</>, children: localeTab },
+  ]
+
+  return (
+    <div style={{ maxWidth: 1000, margin: '0 auto' }}>
+      <Title level={4} style={{ marginBottom: 24 }}>⚙️ Sozlamalar</Title>
+
+      <Form form={form} layout="vertical" requiredMark="optional">
+        <Tabs
+          activeKey={activeTab}
+          onChange={setActiveTab}
+          type="card"
+          items={tabItems}
+          style={{ marginBottom: 16 }}
+        />
+        <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave}
+          size="large" block
+          style={{ background: '#fa8c16', borderColor: '#fa8c16', height: 48, fontSize: 16, fontWeight: 600, marginBottom: 32 }}>
+          Sozlamalarni saqlash
         </Button>
       </Form>
 
-      {/* ── Profil ── */}
-      <Title level={4} style={{ marginBottom: 24 }}>👤 Profil sozlamalari</Title>
+      {/* Profil */}
+      <Title level={4} style={{ marginBottom: 16 }}>👤 Profil</Title>
       <Form form={profileForm} layout="vertical" requiredMark="optional">
-        <Card
-          title={<><UserOutlined /> Admin profili</>}
-          style={{ marginBottom: 16 }}
-          size="small"
-        >
+        <Card title={<><UserOutlined /> Admin profili</>} size="small" style={{ marginBottom: 16 }}>
           <Row gutter={16}>
             <Col xs={24} md={12}>
-              <Form.Item
-                name="username"
-                label="Username (login)"
-                rules={[{ required: true, message: 'Username kiriting' }]}
-              >
+              <Form.Item name="username" label="Username (login)" rules={[{ required: true }]}>
                 <Input prefix={<UserOutlined />} placeholder="admin" />
               </Form.Item>
             </Col>
           </Row>
           <Row gutter={16}>
             <Col xs={24} md={12}>
-              <Form.Item
-                name="new_password"
-                label="Yangi parol"
-                extra="O'zgartirmoqchi bo'lsangiz kiriting"
-              >
-                <Input.Password prefix={<LockOutlined />} placeholder="Yangi parol" />
+              <Form.Item name="new_password" label="Yangi parol" extra="O'zgartirmoqchi bo'lsangiz kiriting">
+                <Input.Password prefix={<LockOutlined />} />
               </Form.Item>
             </Col>
             <Col xs={24} md={12}>
-              <Form.Item
-                name="confirm_password"
-                label="Parolni tasdiqlang"
-                dependencies={['new_password']}
-                rules={[
-                  ({ getFieldValue }) => ({
-                    validator(_, value) {
-                      if (!value && !getFieldValue('new_password')) return Promise.resolve()
-                      if (value === getFieldValue('new_password')) return Promise.resolve()
-                      return Promise.reject('Parollar mos emas!')
-                    },
-                  }),
-                ]}
-              >
-                <Input.Password prefix={<LockOutlined />} placeholder="Parolni takrorlang" />
+              <Form.Item name="confirm_password" label="Parolni tasdiqlang" dependencies={['new_password']}
+                rules={[({ getFieldValue }) => ({
+                  validator(_, v) {
+                    if (!v && !getFieldValue('new_password')) return Promise.resolve()
+                    if (v === getFieldValue('new_password')) return Promise.resolve()
+                    return Promise.reject('Parollar mos emas!')
+                  },
+                })]}>
+                <Input.Password prefix={<LockOutlined />} />
               </Form.Item>
             </Col>
           </Row>
         </Card>
-
-        <Button
-          type="primary"
-          icon={<SaveOutlined />}
-          loading={savingProfile}
-          onClick={handleProfileSave}
-          size="large"
-          block
-          style={{ height: 48, fontSize: 16, fontWeight: 600 }}
-        >
+        <Button type="primary" icon={<SaveOutlined />} loading={savingProfile} onClick={handleProfileSave}
+          size="large" block style={{ height: 48, fontSize: 16, fontWeight: 600 }}>
           Profilni saqlash
         </Button>
       </Form>

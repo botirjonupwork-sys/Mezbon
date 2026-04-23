@@ -117,6 +117,14 @@ class SettingsUpdate(BaseModel):
     catering_nan_min: Optional[int] = None
     catering_nan_step: Optional[int] = None
     catering_delivery_per_km_uzs: Optional[float] = None
+    # To'lov gateway'lar
+    click_merchant_id: Optional[str] = None
+    click_service_id: Optional[str] = None
+    click_secret_key: Optional[str] = None
+    click_enabled: Optional[bool] = None
+    payme_merchant_id: Optional[str] = None
+    payme_secret_key: Optional[str] = None
+    payme_enabled: Optional[bool] = None
 
 
 class AdminCreate(BaseModel):
@@ -698,6 +706,14 @@ async def get_settings(
         "catering_nan_min": rest.catering_nan_min or 40,
         "catering_nan_step": rest.catering_nan_step or 40,
         "catering_delivery_per_km_uzs": rest.catering_delivery_per_km_uzs or 5000,
+        # To'lov gateway'lar
+        "click_merchant_id": rest.click_merchant_id,
+        "click_service_id": rest.click_service_id,
+        "click_secret_key": rest.click_secret_key,
+        "click_enabled": bool(rest.click_enabled),
+        "payme_merchant_id": rest.payme_merchant_id,
+        "payme_secret_key": rest.payme_secret_key,
+        "payme_enabled": bool(rest.payme_enabled),
     }
 
 
@@ -737,6 +753,13 @@ async def update_settings(
         "catering_nan_min": "catering_nan_min",
         "catering_nan_step": "catering_nan_step",
         "catering_delivery_per_km_uzs": "catering_delivery_per_km_uzs",
+        "click_merchant_id": "click_merchant_id",
+        "click_service_id": "click_service_id",
+        "click_secret_key": "click_secret_key",
+        "click_enabled": "click_enabled",
+        "payme_merchant_id": "payme_merchant_id",
+        "payme_secret_key": "payme_secret_key",
+        "payme_enabled": "payme_enabled",
     }
     for form_key, db_key in update_map.items():
         val = getattr(data, form_key, None)

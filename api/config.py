@@ -43,6 +43,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"  # .env da qo'shimcha variable bo'lsa e'tiborsiz
 
 
 settings = Settings()

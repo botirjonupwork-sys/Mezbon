@@ -89,6 +89,17 @@ class Restaurant(Base):
     # Dastavka km narxi (har restaurant uchun)
     catering_delivery_per_km_uzs = Column(Float, default=5000.0)
 
+    # Click merchant API
+    click_merchant_id = Column(String)
+    click_service_id = Column(String)
+    click_secret_key = Column(String)
+    click_enabled = Column(Boolean, default=False)
+
+    # Payme merchant API
+    payme_merchant_id = Column(String)
+    payme_secret_key = Column(String)
+    payme_enabled = Column(Boolean, default=False)
+
     branches = relationship("Branch", back_populates="restaurant")
 
 
