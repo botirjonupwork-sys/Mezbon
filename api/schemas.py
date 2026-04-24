@@ -18,6 +18,7 @@ class UserOut(BaseModel):
     full_name: str
     phone: str
     language: str
+    selected_branch_id: Optional[int] = None
     created_at: datetime
 
     class Config:

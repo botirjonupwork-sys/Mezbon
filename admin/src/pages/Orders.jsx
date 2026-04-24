@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { Table, Tag, Card, Typography, Space, Button, DatePicker, Descriptions, message, Popconfirm, Badge, Segmented } from 'antd'
-import { ReloadOutlined, CheckCircleOutlined, CarOutlined, CloseCircleOutlined, SoundOutlined } from '@ant-design/icons'
+import { Table, Tag, Card, Typography, Space, Button, DatePicker, message, Popconfirm, Badge, Segmented, Modal, Divider, Tooltip } from 'antd'
+import { ReloadOutlined, CheckCircleOutlined, CarOutlined, CloseCircleOutlined, SoundOutlined, EnvironmentOutlined, PhoneOutlined, MessageOutlined, ShopOutlined, ClockCircleOutlined, GiftOutlined, CreditCardOutlined, UserOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { getOrders, updateOrderStatus } from '../api'
 import { useBranchStore } from '../store/branch'
@@ -28,17 +28,21 @@ const statusText = {
   cancelled:  '❌ Bekor',
 }
 
-// Ovozli signal — Web Audio API orqali jarangli bell
+const deliverySubtypeText = {
+  onsite: '🏠 Joyiga borib yopib berish',
+  pickup: '🛍 Olib ketish (saboy)',
+  delivery: '🚗 Dastavka',
+}
+const paymentMethodText = { cash: '💵 Naqd', card: '💳 Karta', click: '💳 Click', payme: '💳 Payme' }
+const paymentTimingText = { now: '⚡ Hozir', later: '⏱ Buyurtma olganda' }
+
 function playNotificationSound() {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)()
-
-    // 1-chi bell — yuqori ton
     const play = (freq, startTime, duration) => {
       const osc = ctx.createOscillator()
       const gain = ctx.createGain()
-      osc.connect(gain)
-      gain.connect(ctx.destination)
+      osc.connect(gain); gain.connect(ctx.destination)
       osc.type = 'sine'
       osc.frequency.setValueAtTime(freq, ctx.currentTime + startTime)
       gain.gain.setValueAtTime(0.3, ctx.currentTime + startTime)
@@ -46,33 +50,203 @@ function playNotificationSound() {
       osc.start(ctx.currentTime + startTime)
       osc.stop(ctx.currentTime + startTime + duration)
     }
-
-    // Ding-dong-ding pattern (3 marta)
-    play(880, 0, 0.3)       // ding
-    play(660, 0.35, 0.3)    // dong
-    play(880, 0.7, 0.4)     // ding (uzunroq)
-
-    // Ikkinchi set — kuchliroq
-    play(988, 1.2, 0.3)
-    play(784, 1.55, 0.3)
-    play(988, 1.9, 0.5)
-
+    play(880, 0, 0.3); play(660, 0.35, 0.3); play(880, 0.7, 0.4)
+    play(988, 1.2, 0.3); play(784, 1.55, 0.3); play(988, 1.9, 0.5)
     setTimeout(() => ctx.close(), 3000)
-  } catch (e) {
-    console.warn('Audio play failed:', e)
-  }
+  } catch (e) { console.warn('Audio play failed:', e) }
 }
 
-const POLL_INTERVAL = 10000 // 10 sekund
+const POLL_INTERVAL = 10000
+
+// ─── Order Detail Modal ─────────────────────────────────
+function OrderDetailModal({ order, open, onClose, onStatusChange }) {
+  if (!order) return null
+
+  const isCatering = order.order_kind === 'catering'
+  const total = (order.total_price || 0) + (order.delivery_fee || 0)
+  const hasLocation = order.latitude && order.longitude
+  const yandexMapUrl = hasLocation
+    ? `https://yandex.uz/maps/?pt=${order.longitude},${order.latitude}&z=17&l=map`
+    : null
+
+  const renderActions = () => {
+    const { status } = order
+    if (status === 'delivered' || status === 'cancelled') return null
+    return (
+      <Space wrap>
+        {status === 'pending' && (
+          <Popconfirm title="Buyurtmani qabul qilish?" onConfirm={() => onStatusChange(order.id, 'confirmed')}>
+            <Button type="primary" icon={<CheckCircleOutlined />} size="large">Qabul qilish</Button>
+          </Popconfirm>
+        )}
+        {['confirmed', 'preparing', 'ready', 'delivering'].includes(status) && (
+          <Popconfirm title="Yetkazildimi?" onConfirm={() => onStatusChange(order.id, 'delivered')}>
+            <Button icon={<CarOutlined />} size="large" style={{ background: '#52c41a', borderColor: '#52c41a', color: '#fff' }}>
+              Yetkazildi
+            </Button>
+          </Popconfirm>
+        )}
+        <Popconfirm title="Bekor qilish?" onConfirm={() => onStatusChange(order.id, 'cancelled')}>
+          <Button danger icon={<CloseCircleOutlined />} size="large">Bekor qilish</Button>
+        </Popconfirm>
+      </Space>
+    )
+  }
+
+  return (
+    <Modal
+      open={open} onCancel={onClose} footer={null} width={760} destroyOnClose
+      title={
+        <Space>
+          <Text strong style={{ fontSize: 18 }}>Buyurtma #{order.id}</Text>
+          <Tag color={statusColor[order.status]}>{statusText[order.status]}</Tag>
+          {isCatering && <Tag color="purple"><GiftOutlined /> Catering</Tag>}
+        </Space>
+      }
+    >
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+        {/* Mijoz */}
+        <Card size="small" title={<><UserOutlined /> Mijoz</>}>
+          <div style={{ marginBottom: 6 }}><Text strong>{order.user?.full_name || '—'}</Text></div>
+          <div><PhoneOutlined /> <a href={`tel:${order.user?.phone}`}>{order.user?.phone || '—'}</a></div>
+          {order.user?.telegram_id && (
+            <div style={{ marginTop: 4, color: '#666', fontSize: 12 }}>TG: {order.user.telegram_id}</div>
+          )}
+        </Card>
+
+        {/* Vaqt va tur */}
+        <Card size="small" title={<><ClockCircleOutlined /> Vaqt va tur</>}>
+          <div style={{ marginBottom: 6 }}>
+            <Text type="secondary">Yaratildi:</Text>{' '}
+            {order.created_at ? new Date(order.created_at).toLocaleString('uz') : '—'}
+          </div>
+          <div>
+            <Text type="secondary">Yetkazish:</Text>{' '}
+            {order.delivery_type === 'delivery' ? '🚗 Dastavka' : '🏪 Saboy olib ketish'}
+          </div>
+        </Card>
+      </div>
+
+      {/* Manzil va xarita */}
+      {(order.address || hasLocation) && (
+        <Card size="small" title={<><EnvironmentOutlined /> Yetkazish manzili</>} style={{ marginBottom: 16 }}>
+          <div style={{ marginBottom: 8 }}>
+            <Text strong>{order.address || 'Manzil ko\'rsatilmagan'}</Text>
+          </div>
+          {hasLocation && (
+            <>
+              <Space style={{ marginBottom: 8 }} wrap>
+                <Tag color="blue">📍 {order.latitude.toFixed(6)}, {order.longitude.toFixed(6)}</Tag>
+                <Button type="link" size="small" href={yandexMapUrl} target="_blank">
+                  🗺 Yandex Maps'da ochish
+                </Button>
+                <Button type="link" size="small"
+                  href={`https://www.google.com/maps?q=${order.latitude},${order.longitude}`}
+                  target="_blank">
+                  🌍 Google Maps'da ochish
+                </Button>
+              </Space>
+              <iframe
+                title={`Buyurtma #${order.id} xaritasi`}
+                src={`https://yandex.com/map-widget/v1/?ll=${order.longitude}%2C${order.latitude}&z=16&pt=${order.longitude}%2C${order.latitude}%2Cpm2rdm&mode=search`}
+                style={{
+                  width: '100%', height: 280, border: 0, borderRadius: 8,
+                  display: 'block', background: '#f0f2f5',
+                }}
+                loading="lazy"
+                allowFullScreen
+              />
+            </>
+          )}
+        </Card>
+      )}
+
+      {/* Catering ma'lumotlari */}
+      {isCatering && (
+        <Card size="small" title={<><GiftOutlined /> Catering ma'lumotlari</>} style={{ marginBottom: 16, background: '#fff7e6' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
+            <div><Text type="secondary">Sana:</Text> <Text strong>{order.schedule_date || '—'}</Text></div>
+            <div><Text type="secondary">Vaqt:</Text> <Text strong>{order.schedule_time || '—'}</Text></div>
+            <div><Text type="secondary">Tur:</Text> {deliverySubtypeText[order.delivery_subtype] || order.delivery_subtype || '—'}</div>
+            <div><Text type="secondary">To'lov:</Text> {paymentTimingText[order.payment_timing] || order.payment_timing || '—'}</div>
+          </div>
+        </Card>
+      )}
+
+      {/* Mahsulotlar */}
+      <Card size="small" title={`🛒 Mahsulotlar (${order.items?.length || 0} tur)`} style={{ marginBottom: 16 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ borderBottom: '2px solid #f0f0f0', background: '#fafafa' }}>
+              <th style={{ textAlign: 'left', padding: '8px' }}>Nomi</th>
+              <th style={{ textAlign: 'center', padding: '8px', width: 70 }}>Soni</th>
+              <th style={{ textAlign: 'right', padding: '8px', width: 110 }}>Narxi</th>
+              <th style={{ textAlign: 'right', padding: '8px', width: 120 }}>Jami</th>
+            </tr>
+          </thead>
+          <tbody>
+            {order.items?.map((item, idx) => (
+              <tr key={idx} style={{ borderBottom: '1px solid #f0f0f0' }}>
+                <td style={{ padding: '8px' }}>{item.product_name}</td>
+                <td style={{ textAlign: 'center', padding: '8px' }}>{item.quantity}</td>
+                <td style={{ textAlign: 'right', padding: '8px' }}>{(item.price || 0).toLocaleString()} so'm</td>
+                <td style={{ textAlign: 'right', padding: '8px', fontWeight: 600 }}>
+                  {((item.price || 0) * item.quantity).toLocaleString()} so'm
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      {/* Izoh — sariq fonda alohida */}
+      {order.comment && (
+        <Card size="small" title={<><MessageOutlined /> Mijoz izohi</>}
+          style={{ marginBottom: 16, background: '#fffbe6', borderColor: '#ffe58f' }}>
+          <Text style={{ fontSize: 14, fontStyle: 'italic' }}>{order.comment}</Text>
+        </Card>
+      )}
+
+      {/* Summa */}
+      <Card size="small" title={<><CreditCardOutlined /> To'lov</>} style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+          <Text>Mahsulotlar:</Text>
+          <Text>{(order.total_price || 0).toLocaleString()} so'm</Text>
+        </div>
+        {order.delivery_fee > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+            <Text>Dastavka:</Text>
+            <Text>{order.delivery_fee.toLocaleString()} so'm</Text>
+          </div>
+        )}
+        <Divider style={{ margin: '8px 0' }} />
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <Text strong style={{ fontSize: 16 }}>Jami:</Text>
+          <Text strong style={{ fontSize: 18, color: '#fa8c16' }}>{total.toLocaleString()} so'm</Text>
+        </div>
+        {order.payment_method && (
+          <div style={{ marginTop: 8, color: '#666' }}>
+            To'lov turi: {paymentMethodText[order.payment_method] || order.payment_method}
+            {order.payment_status && <Tag color={order.payment_status === 'paid' ? 'green' : 'orange'} style={{ marginLeft: 8 }}>{order.payment_status}</Tag>}
+          </div>
+        )}
+      </Card>
+
+      <Divider />
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>{renderActions()}</div>
+    </Modal>
+  )
+}
 
 export default function Orders() {
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
   const [dateRange, setDateRange] = useState([dayjs().subtract(7, 'day'), dayjs()])
-  const [pageSize, setPageSize] = useState(10)
+  const [pageSize, setPageSize] = useState(15)
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [newOrderFlash, setNewOrderFlash] = useState(false)
-  const [orderKind, setOrderKind] = useState('all')  // 'all' | 'regular' | 'catering'
+  const [orderKind, setOrderKind] = useState('all')
+  const [selectedOrder, setSelectedOrder] = useState(null)
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
   const restaurantId = useAuthStore((s) => s.restaurantId)
   const prevOrderIdsRef = useRef(new Set())
@@ -94,44 +268,40 @@ export default function Orders() {
       const newOrders = res.data || []
       setOrders(newOrders)
 
-      // Yangi zakaz kelganini tekshirish
       if (!isFirstLoadRef.current) {
         const newIds = newOrders.map(o => o.id)
         const prevIds = prevOrderIdsRef.current
         const freshOrders = newIds.filter(id => !prevIds.has(id))
-
         if (freshOrders.length > 0) {
-          // Yangi zakaz keldi!
           if (soundEnabled) playNotificationSound()
-          message.info({
-            content: `🔔 ${freshOrders.length} ta yangi zakaz tushdi!`,
-            duration: 5,
-            style: { marginTop: '20px' },
-          })
+          message.info({ content: `🔔 ${freshOrders.length} ta yangi zakaz tushdi!`, duration: 5 })
           setNewOrderFlash(true)
           setTimeout(() => setNewOrderFlash(false), 3000)
         }
       }
       isFirstLoadRef.current = false
       prevOrderIdsRef.current = new Set(newOrders.map(o => o.id))
+
+      // Modal ochiq bo'lsa, yangi versiyani qo'yish
+      if (selectedOrder) {
+        const updated = newOrders.find(o => o.id === selectedOrder.id)
+        if (updated) setSelectedOrder(updated)
+      }
     } catch {
       if (!silent) message.error('Zakazlarni yuklashda xato')
     } finally {
       if (!silent) setLoading(false)
     }
-  }, [dateRange, soundEnabled, selectedBranchId, orderKind])
+  }, [dateRange, soundEnabled, selectedBranchId, orderKind, restaurantId, selectedOrder])
 
-  // Birinchi yuklash + branch o'zgarganda
   useEffect(() => {
     isFirstLoadRef.current = true
     fetchOrders(dateRange)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedBranchId, orderKind])
 
-  // Polling — har 10 sekundda yangi zakazlarni tekshirish
   useEffect(() => {
-    pollTimerRef.current = setInterval(() => {
-      fetchOrders(dateRange, true)
-    }, POLL_INTERVAL)
+    pollTimerRef.current = setInterval(() => fetchOrders(dateRange, true), POLL_INTERVAL)
     return () => clearInterval(pollTimerRef.current)
   }, [dateRange, fetchOrders])
 
@@ -140,163 +310,102 @@ export default function Orders() {
       await updateOrderStatus(orderId, newStatus)
       message.success(`Zakaz #${orderId}: ${statusText[newStatus]}`)
       fetchOrders(dateRange)
-    } catch {
-      message.error('Holatni o\'zgartirishda xato')
-    }
+      if (selectedOrder?.id === orderId && (newStatus === 'delivered' || newStatus === 'cancelled')) {
+        setSelectedOrder(null)
+      }
+    } catch { message.error('Holatni o\'zgartirishda xato') }
   }
 
   const handleRangeChange = (dates) => {
     if (dates && dates.length === 2) {
-      setDateRange(dates)
-      isFirstLoadRef.current = true
-      fetchOrders(dates)
+      setDateRange(dates); isFirstLoadRef.current = true; fetchOrders(dates)
     }
-  }
-
-  // Expandable row — to'liq zakaz ma'lumotlari
-  const expandedRowRender = (record) => {
-    return (
-      <div style={{ padding: '8px 0' }}>
-        <Descriptions column={{ xs: 1, sm: 2, md: 3 }} size="small" bordered>
-          <Descriptions.Item label="Zakaz raqami">
-            <Text strong>#{record.id}</Text>
-          </Descriptions.Item>
-          <Descriptions.Item label="Holat">
-            <Tag color={statusColor[record.status]}>{statusText[record.status]}</Tag>
-          </Descriptions.Item>
-          <Descriptions.Item label="Vaqt">
-            {record.created_at ? new Date(record.created_at).toLocaleString('uz') : '—'}
-          </Descriptions.Item>
-
-          <Descriptions.Item label="Mijoz ismi">
-            {record.user?.full_name || '—'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Telefon">
-            <a href={`tel:${record.user?.phone}`}>{record.user?.phone || '—'}</a>
-          </Descriptions.Item>
-          <Descriptions.Item label="Yetkazish turi">
-            {record.delivery_type === 'delivery' ? '🚗 Dastavka' : '🏪 Saboy olib ketish'}
-          </Descriptions.Item>
-
-          <Descriptions.Item label="Manzil" span={2}>
-            {record.address || '—'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Izoh">
-            {record.comment || '—'}
-          </Descriptions.Item>
-
-          <Descriptions.Item label="Mahsulotlar" span={3}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
-                  <th style={{ textAlign: 'left', padding: '4px 8px' }}>Nomi</th>
-                  <th style={{ textAlign: 'center', padding: '4px 8px' }}>Soni</th>
-                  <th style={{ textAlign: 'right', padding: '4px 8px' }}>Narxi</th>
-                  <th style={{ textAlign: 'right', padding: '4px 8px' }}>Jami</th>
-                </tr>
-              </thead>
-              <tbody>
-                {record.items?.map((item, idx) => (
-                  <tr key={idx} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                    <td style={{ padding: '4px 8px' }}>{item.product_name}</td>
-                    <td style={{ textAlign: 'center', padding: '4px 8px' }}>{item.quantity}</td>
-                    <td style={{ textAlign: 'right', padding: '4px 8px' }}>{(item.price || 0).toLocaleString()} so'm</td>
-                    <td style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 600 }}>
-                      {((item.price || 0) * item.quantity).toLocaleString()} so'm
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Descriptions.Item>
-
-          <Descriptions.Item label="Mahsulotlar summasi">
-            <Text strong>{(record.total_price || 0).toLocaleString()} so'm</Text>
-          </Descriptions.Item>
-          <Descriptions.Item label="Dastavka narxi">
-            {record.delivery_fee ? `${record.delivery_fee.toLocaleString()} so'm` : '—'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Umumiy summa">
-            <Text strong style={{ fontSize: 16, color: '#fa8c16' }}>
-              {((record.total_price || 0) + (record.delivery_fee || 0)).toLocaleString()} so'm
-            </Text>
-          </Descriptions.Item>
-        </Descriptions>
-      </div>
-    )
   }
 
   const pendingCount = orders.filter(o => o.status === 'pending').length
 
+  // Compact columns
   const columns = [
-    { title: '#', dataIndex: 'id', width: 60, render: (id) => <b>#{id}</b> },
     {
-      title: 'Mijoz', dataIndex: 'user',
-      render: (u) => u ? `${u.full_name} (${u.phone})` : '—'
+      title: '#', dataIndex: 'id', width: 60, fixed: 'left',
+      render: (id, r) => (
+        <Space size={4}>
+          <b>#{id}</b>
+          {r.order_kind === 'catering' && <Tooltip title="Catering"><GiftOutlined style={{ color: '#722ed1' }} /></Tooltip>}
+        </Space>
+      )
     },
     {
-      title: 'Mahsulotlar',
-      dataIndex: 'items',
-      ellipsis: true,
-      render: (items) =>
-        items?.map((i) => `${i.product_name} x${i.quantity}`).join(', ') || '—'
+      title: 'Mijoz', dataIndex: 'user', ellipsis: true,
+      render: (u) => u ? (
+        <div>
+          <div style={{ fontWeight: 500 }}>{u.full_name || '—'}</div>
+          <div style={{ fontSize: 11, color: '#888' }}>{u.phone || ''}</div>
+        </div>
+      ) : '—'
     },
     {
-      title: 'Summa', dataIndex: 'total_price',
-      render: (v) => `${(v || 0).toLocaleString()} so'm`
+      title: 'Mahsulotlar', dataIndex: 'items', ellipsis: true,
+      render: (items) => (
+        <Tooltip title={items?.map((i) => `${i.product_name} ×${i.quantity}`).join(', ')}>
+          <Text style={{ fontSize: 12 }}>
+            {items?.length || 0} tur · {items?.reduce((s, i) => s + (i.quantity || 0), 0) || 0} ta
+          </Text>
+        </Tooltip>
+      )
     },
     {
-      title: 'Tur', dataIndex: 'delivery_type', width: 100,
+      title: 'Summa', dataIndex: 'total_price', width: 120, align: 'right',
+      render: (v, r) => (
+        <Text strong style={{ color: '#fa8c16' }}>
+          {((v || 0) + (r.delivery_fee || 0)).toLocaleString()} so'm
+        </Text>
+      )
+    },
+    {
+      title: '📍', dataIndex: 'latitude', width: 50, align: 'center',
+      render: (_, r) => r.latitude && r.longitude
+        ? <Tooltip title={r.address || 'Lokatsiya bor'}><EnvironmentOutlined style={{ color: '#1677ff', fontSize: 16 }} /></Tooltip>
+        : <Text type="secondary">—</Text>
+    },
+    {
+      title: 'Tur', dataIndex: 'delivery_type', width: 70, align: 'center',
       render: (v) => v === 'delivery'
-        ? <Tag color="blue">🚗</Tag>
-        : <Tag color="green">🏪</Tag>
+        ? <Tooltip title="Dastavka"><Tag color="blue" style={{ margin: 0 }}>🚗</Tag></Tooltip>
+        : <Tooltip title="Saboy"><Tag color="green" style={{ margin: 0 }}>🏪</Tag></Tooltip>
     },
     {
       title: 'Holat', dataIndex: 'status', width: 130,
-      render: (s) => <Tag color={statusColor[s]}>{statusText[s]}</Tag>
+      render: (s) => <Tag color={statusColor[s]} style={{ margin: 0 }}>{statusText[s]}</Tag>
     },
     {
-      title: 'Vaqt', dataIndex: 'created_at',
-      width: 140,
-      render: (v) => v ? new Date(v).toLocaleString('uz') : '—'
+      title: 'Vaqt', dataIndex: 'created_at', width: 95,
+      render: (v) => v ? (
+        <Tooltip title={new Date(v).toLocaleString('uz')}>
+          <Text style={{ fontSize: 12 }}>{dayjs(v).format('DD.MM HH:mm')}</Text>
+        </Tooltip>
+      ) : '—'
     },
     {
-      title: 'Amallar', width: 130, fixed: 'right',
+      title: 'Amallar', width: 110, fixed: 'right', align: 'center',
       render: (_, record) => {
         const { status } = record
-        if (status === 'delivered') return <Tag color="green">✅</Tag>
-        if (status === 'cancelled') return <Tag color="red">❌</Tag>
-
+        if (status === 'delivered') return <Tag color="green" style={{ margin: 0 }}>✅</Tag>
+        if (status === 'cancelled') return <Tag color="red" style={{ margin: 0 }}>❌</Tag>
         return (
-          <Space size={4} wrap>
+          <Space size={4} onClick={(e) => e.stopPropagation()}>
             {status === 'pending' && (
-              <Popconfirm
-                title="Qabul qilish?"
-                onConfirm={() => handleStatusChange(record.id, 'confirmed')}
-              >
-                <Button type="primary" size="small" icon={<CheckCircleOutlined />}>
-                  Qabul
-                </Button>
+              <Popconfirm title="Qabul qilish?" onConfirm={() => handleStatusChange(record.id, 'confirmed')}>
+                <Button type="primary" size="small" icon={<CheckCircleOutlined />} />
               </Popconfirm>
             )}
-
             {['confirmed', 'preparing', 'ready', 'delivering'].includes(status) && (
-              <Popconfirm
-                title="Yetkazildimi?"
-                onConfirm={() => handleStatusChange(record.id, 'delivered')}
-              >
+              <Popconfirm title="Yetkazildimi?" onConfirm={() => handleStatusChange(record.id, 'delivered')}>
                 <Button size="small" icon={<CarOutlined />}
-                  style={{ background: '#52c41a', borderColor: '#52c41a', color: '#fff' }}
-                >
-                  Tayyor
-                </Button>
+                  style={{ background: '#52c41a', borderColor: '#52c41a', color: '#fff' }} />
               </Popconfirm>
             )}
-
-            <Popconfirm
-              title="Bekor qilish?"
-              onConfirm={() => handleStatusChange(record.id, 'cancelled')}
-            >
+            <Popconfirm title="Bekor qilish?" onConfirm={() => handleStatusChange(record.id, 'cancelled')}>
               <Button danger size="small" icon={<CloseCircleOutlined />} />
             </Popconfirm>
           </Space>
@@ -311,43 +420,27 @@ export default function Orders() {
         <Space>
           <Title level={4} style={{ margin: 0 }}>Zakazlar</Title>
           {pendingCount > 0 && (
-            <Badge
-              count={`${pendingCount} ta yangi`}
-              style={{ backgroundColor: '#fa8c16' }}
-            />
+            <Badge count={`${pendingCount} ta yangi`} style={{ backgroundColor: '#fa8c16' }} />
           )}
         </Space>
-        <Button
-          size="small"
-          type={soundEnabled ? 'primary' : 'default'}
-          icon={<SoundOutlined />}
+        <Button size="small" type={soundEnabled ? 'primary' : 'default'} icon={<SoundOutlined />}
           onClick={() => setSoundEnabled(!soundEnabled)}
-          style={soundEnabled ? { background: '#fa8c16', borderColor: '#fa8c16' } : {}}
-        >
+          style={soundEnabled ? { background: '#fa8c16', borderColor: '#fa8c16' } : {}}>
           {soundEnabled ? 'Ovoz: ON' : 'Ovoz: OFF'}
         </Button>
       </div>
 
       <Card>
         <Space style={{ marginBottom: 16 }} wrap>
-          <Segmented
-            value={orderKind}
-            onChange={setOrderKind}
+          <Segmented value={orderKind} onChange={setOrderKind}
             options={[
               { label: 'Barchasi', value: 'all' },
               { label: '🍽 Oddiy', value: 'regular' },
               { label: '🎉 Catering', value: 'catering' },
             ]}
           />
-          <RangePicker
-            value={dateRange}
-            onChange={handleRangeChange}
-            format="DD.MM.YYYY"
-            allowClear={false}
-          />
-          <Button icon={<ReloadOutlined />} onClick={() => fetchOrders(dateRange)}>
-            Yangilash
-          </Button>
+          <RangePicker value={dateRange} onChange={handleRangeChange} format="DD.MM.YYYY" allowClear={false} />
+          <Button icon={<ReloadOutlined />} onClick={() => fetchOrders(dateRange)}>Yangilash</Button>
         </Space>
 
         <Table
@@ -355,18 +448,19 @@ export default function Orders() {
           columns={columns}
           rowKey="id"
           loading={loading}
-          expandable={{
-            expandedRowRender,
-            expandRowByClick: true,
-          }}
+          size="small"
+          onRow={(record) => ({
+            onClick: () => setSelectedOrder(record),
+            style: { cursor: 'pointer' },
+          })}
           pagination={{
             pageSize,
-            pageSizeOptions: ['10', '30', '50'],
+            pageSizeOptions: ['15', '30', '50'],
             showSizeChanger: true,
             onShowSizeChange: (_, size) => setPageSize(size),
             showTotal: (total) => `Jami: ${total} ta`,
           }}
-          scroll={{ x: 900 }}
+          scroll={{ x: 950 }}
           rowClassName={(r) =>
             r.status === 'pending'
               ? `ant-table-row-pending${newOrderFlash ? ' order-flash' : ''}`
@@ -374,6 +468,13 @@ export default function Orders() {
           }
         />
       </Card>
+
+      <OrderDetailModal
+        order={selectedOrder}
+        open={!!selectedOrder}
+        onClose={() => setSelectedOrder(null)}
+        onStatusChange={handleStatusChange}
+      />
     </div>
   )
 }

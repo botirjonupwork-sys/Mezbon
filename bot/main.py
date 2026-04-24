@@ -1,14 +1,16 @@
 import asyncio
 import os
+from dotenv import load_dotenv
+
+# .env oldindan yuklanishi kerak — keyingi importlar SECRET_KEY ni o'qiydi
+load_dotenv()
+
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from dotenv import load_dotenv
 from bot.handlers import start, menu, cart, order, review, profile, catering
 from bot import api_client
-
-load_dotenv()
 
 
 async def run_bot(bot_token: str):

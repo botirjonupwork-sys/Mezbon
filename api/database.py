@@ -24,5 +24,14 @@ async def get_db():
 
 async def create_tables():
     from database.models import Base
+    from sqlalchemy import text
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Idempotent migrations for new columns on existing tables
+        for stmt in (
+            "ALTER TABLE users ADD COLUMN selected_branch_id INTEGER REFERENCES branches(id)",
+        ):
+            try:
+                await conn.execute(text(stmt))
+            except Exception:
+                pass  # column already exists

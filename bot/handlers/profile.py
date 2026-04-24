@@ -42,17 +42,28 @@ async def my_orders(message: Message):
 @router.message(F.text == "📞 Bog'lanish")
 async def contact_handler(message: Message):
     s = await get_settings()
-    name       = s.get("restaurant_name", "Muhsina Dollar Somsa")
-    phone      = s.get("phone", "—")
-    address    = s.get("address", "—")
-    work_from  = s.get("work_hours_from", "09:00")
-    work_until = s.get("work_hours_until", "22:00")
+    if not s:
+        await message.answer(
+            "⚠️ Hozircha kompaniya ma'lumotlari mavjud emas.\n"
+            "Iltimos, keyinroq urinib ko'ring yoki administratorga murojaat qiling."
+        )
+        return
 
-    await message.answer(
-        f"📞 <b>Bog'lanish</b>\n\n"
-        f"🏪 <b>{name}</b>\n"
-        f"📱 Telefon: {phone}\n"
-        f"📍 Manzil: {address}\n"
-        f"🕐 Ish vaqti: {work_from} – {work_until}",
-        parse_mode="HTML",
-    )
+    name = s.get("restaurant_name") or s.get("name") or "Muhsina Dollar"
+    phone = s.get("phone")
+    address = s.get("address")
+    work_from = s.get("work_hours_from")
+    work_until = s.get("work_hours_until")
+
+    lines = [f"📞 <b>Bog'lanish</b>\n", f"🏪 <b>{name}</b>"]
+    if phone:
+        lines.append(f"📱 Telefon: <a href='tel:{phone}'>{phone}</a>")
+    if address:
+        lines.append(f"📍 Manzil: {address}")
+    if work_from and work_until:
+        lines.append(f"🕐 Ish vaqti: {work_from} – {work_until}")
+
+    if len(lines) <= 2:
+        lines.append("\n<i>Qo'shimcha ma'lumotlar tez orada qo'shiladi.</i>")
+
+    await message.answer("\n".join(lines), parse_mode="HTML", disable_web_page_preview=True)

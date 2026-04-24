@@ -569,6 +569,18 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
     selected = data.get("selected_items", {})
     items = [{"product_id": int(pid), "quantity": q} for pid, q in selected.items() if q > 0]
 
+    required = ("group", "delivery_subtype", "schedule_date", "schedule_time", "phone", "payment_method", "payment_timing")
+    missing = [k for k in required if not data.get(k)]
+    if missing or not items:
+        await callback.message.answer(
+            "❌ Sessiya tugagan ko'rinadi (botning qayta ishga tushishi yoki uzoq vaqt kutish sababli).\n\n"
+            "Iltimos, /start bosib buyurtmani qaytadan boshlang.",
+            reply_markup=main_menu_kb(),
+        )
+        await clear_state_preserve_branch(state)
+        await callback.answer("Sessiya yo'qolgan", show_alert=True)
+        return
+
     order_data = {
         "group": data.get("group"),
         "items": items,

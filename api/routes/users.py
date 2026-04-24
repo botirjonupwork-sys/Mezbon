@@ -1,11 +1,41 @@
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from api.database import get_db
 from api.schemas import UserCreate, UserOut, AddressCreate, AddressOut
-from database.models import User, Address
+from database.models import User, Address, Branch, Restaurant
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+# Public router for bot/customer-facing endpoints
+public_router = APIRouter(tags=["public"])
+
+
+class SelectBranchRequest(BaseModel):
+    branch_id: Optional[int] = None
+
+
+@public_router.get("/restaurants/{restaurant_id}/info")
+async def restaurant_public_info(restaurant_id: int, db: AsyncSession = Depends(get_db)):
+    """Restoran haqida ommaviy ma'lumot — bot va mijoz uchun (auth shart emas)."""
+    result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
+    rest = result.scalar_one_or_none()
+    if not rest:
+        raise HTTPException(404, "Restoran topilmadi")
+    return {
+        "id": rest.id,
+        "name": rest.name,
+        "logo_url": rest.logo_url,
+        "address": rest.address,
+        "phone": rest.phone,
+        "work_hours_from": rest.work_hours_from,
+        "work_hours_until": rest.work_hours_until,
+        "min_order": rest.min_order,
+        "restaurant_lat": rest.restaurant_lat,
+        "restaurant_lon": rest.restaurant_lon,
+    }
 
 
 @router.post("/", response_model=UserOut)
@@ -29,6 +59,29 @@ async def get_user(telegram_id: str, db: AsyncSession = Depends(get_db)):
     user = result.scalar_one_or_none()
     if not user:
         raise HTTPException(404, "Foydalanuvchi topilmadi")
+    return user
+
+
+@router.post("/{telegram_id}/branch", response_model=UserOut)
+async def set_user_branch(
+    telegram_id: str,
+    data: SelectBranchRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Foydalanuvchi tanlagan filialni saqlash."""
+    result = await db.execute(select(User).where(User.telegram_id == telegram_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "Foydalanuvchi topilmadi")
+
+    if data.branch_id is not None:
+        b_result = await db.execute(select(Branch).where(Branch.id == data.branch_id))
+        if not b_result.scalar_one_or_none():
+            raise HTTPException(404, "Filial topilmadi")
+
+    user.selected_branch_id = data.branch_id
+    await db.commit()
+    await db.refresh(user)
     return user
 
 

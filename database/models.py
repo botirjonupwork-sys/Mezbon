@@ -143,8 +143,10 @@ class User(Base):
     full_name = Column(String, nullable=False)
     phone = Column(String, nullable=False)
     language = Column(String, default="uz")
+    selected_branch_id = Column(Integer, ForeignKey("branches.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    selected_branch = relationship("Branch", foreign_keys=[selected_branch_id])
     orders = relationship("Order", back_populates="user")
     addresses = relationship("Address", back_populates="user")
     reviews = relationship("Review", back_populates="user")

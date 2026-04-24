@@ -51,6 +51,20 @@ async def create_user(telegram_id: str, full_name: str, phone: str):
         return r.json()
 
 
+async def set_user_branch(telegram_id: str, branch_id):
+    """branch_id: int yoki None"""
+    """Foydalanuvchining tanlangan filialini DB'ga saqlash. User bo'lmasa False qaytaradi."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                f"{BASE_URL}/users/{telegram_id}/branch",
+                json={"branch_id": branch_id},
+            )
+            return r.status_code == 200
+    except Exception:
+        return False
+
+
 async def get_categories():
     async with httpx.AsyncClient() as client:
         r = await client.get(
@@ -115,16 +129,18 @@ async def add_address(telegram_id: str, title: str, address: str):
 
 
 async def get_settings() -> dict:
-    """Restoran sozlamalarini olish (restaurant_id bilan)."""
+    """Restoran haqida ommaviy ma'lumot (auth shart emas)."""
     async with httpx.AsyncClient() as client:
         try:
             r = await client.get(
-                f"{BASE_URL}/admin/settings",
-                params={"restaurant_id": _restaurant_id},
+                f"{BASE_URL}/restaurants/{_restaurant_id}/info",
                 timeout=3.0,
             )
             if r.status_code == 200:
-                return r.json()
+                d = r.json()
+                # Bot eski "restaurant_name" kalitidan foydalanadi
+                d["restaurant_name"] = d.get("name", "")
+                return d
         except Exception:
             pass
     return {}

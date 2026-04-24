@@ -3,7 +3,7 @@ from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from bot.states import Registration
-from bot.api_client import get_user, create_user, get_nearest_branches, get_branch, get_restaurant_branches
+from bot.api_client import get_user, create_user, get_nearest_branches, get_branch, get_restaurant_branches, set_user_branch
 from bot.keyboards.main import main_menu_kb, phone_kb, branch_location_kb, branches_kb
 
 router = Router()
@@ -13,19 +13,30 @@ router = Router()
 async def start_handler(message: Message, state: FSMContext):
     data = await state.get_data()
     branch_id = data.get("branch_id")
+    branch_name = data.get("branch_name", "")
 
-    # Agar branch tanlanmagan bo'lsa — avtomatik aniqlash
+    # 1) FSM da yo'q bo'lsa — DB'dan saqlangan filialni olish
+    if not branch_id:
+        user = await get_user(str(message.from_user.id))
+        if user and user.get("selected_branch_id"):
+            saved_branch = await get_branch(user["selected_branch_id"])
+            if saved_branch:
+                branch_id = saved_branch["id"]
+                branch_name = saved_branch["name"]
+                await state.update_data(branch_id=branch_id, branch_name=branch_name)
+
+    # 2) Hali ham yo'q bo'lsa — restoranda 1 ta filial bo'lsa avtomatik tanlash
     if not branch_id:
         branches = await get_restaurant_branches()
         if len(branches) == 1:
-            # Yagona filial — avtomatik tanlash
             b = branches[0]
             branch_id = b["id"]
-            await state.update_data(branch_id=branch_id, branch_name=b["name"])
-            data["branch_name"] = b["name"]
+            branch_name = b["name"]
+            await state.update_data(branch_id=branch_id, branch_name=branch_name)
+            # Agar user mavjud bo'lsa, DB'ga ham saqlab qo'yamiz
+            await set_user_branch(str(message.from_user.id), branch_id)
 
     if branch_id:
-        branch_name = data.get("branch_name", "")
         if not branch_name:
             branch = await get_branch(branch_id)
             branch_name = branch["name"] if branch else ""
@@ -113,8 +124,9 @@ async def branch_selected(callback: CallbackQuery, state: FSMContext):
         )
         return
 
-    # Filial ID ni saqlash
+    # Filial ID ni saqlash (FSM + DB)
     await state.update_data(branch_id=branch_id, branch_name=branch["name"])
+    await set_user_branch(str(callback.from_user.id), branch_id)
 
     await callback.message.answer(
         f"✅ <b>{branch['name']}</b> filiali tanlandi!\n\n"
@@ -186,6 +198,10 @@ async def _finish_registration(message: Message, state: FSMContext, phone: str):
         full_name=data["full_name"],
         phone=phone,
     )
+
+    # FSM'da filial tanlangan bo'lsa, ro'yxatdan o'tgach DB'ga ham saqlaymiz
+    if branch_id:
+        await set_user_branch(str(message.from_user.id), branch_id)
 
     await state.clear()
 
