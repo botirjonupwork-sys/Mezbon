@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Enum
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Enum, JSON
 from sqlalchemy.orm import relationship, DeclarativeBase
 from sqlalchemy.sql import func
 from datetime import datetime
@@ -58,7 +58,9 @@ class Restaurant(Base):
     restaurant_lat = Column(Float, default=41.2995)
     restaurant_lon = Column(Float, default=69.2401)
 
-    plan = Column(String, default="free")
+    plan = Column(String, default="free")  # Backward compat — plan slug
+    plan_id = Column(Integer, ForeignKey("plans.id"), nullable=True)  # Yangi: tariflar bilan FK
+    plan_expires_at = Column(DateTime, nullable=True)  # Tarif amal qilish muddati (None = cheksiz/Free)
     status = Column(String, default="active")
     commission_percent = Column(Float, default=0.0)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -100,7 +102,23 @@ class Restaurant(Base):
     payme_secret_key = Column(String)
     payme_enabled = Column(Boolean, default=False)
 
+    # AI Call Operator (faqat Pro tarif)
+    ai_agent_enabled = Column(Boolean, default=False)
+    ai_agent_prompt = Column(Text)              # Restoran uchun maxsus system-prompt prefiksi
+    ai_agent_voice = Column(String, default="female")   # 'male' | 'female'
+    ai_agent_provider = Column(String, default="openai")  # 'openai' | 'vapi' | 'retell'
+    ai_agent_model = Column(String, default="gpt-4o-mini")
+    ai_agent_api_key = Column(String)           # Restoran o'z kalitini kiritsa shu, aks holda env
+
+    # POS / Printer integratsiyasi (Hybrid Connect)
+    # 'NONE' | 'NEONALISA' | 'GENERIC_ANDROID' | 'BLUETOOTH_PRINTER'
+    pos_system_type = Column(String, default="NONE")
+    # Har bir POS turi uchun maxsus sozlamalar (api_key, terminal_ip, printer_mac, ...)
+    # Postgres'da JSONB, SQLite'da TEXT — SQLAlchemy JSON dialektga moslab tanlaydi.
+    pos_config = Column(JSON, default=dict)
+
     branches = relationship("Branch", back_populates="restaurant")
+    plan_obj = relationship("Plan", back_populates="restaurants", foreign_keys=[plan_id])
 
 
 # ── Branch (Filial) ─────────────────────────────────
@@ -359,17 +377,72 @@ class CateringSubscriber(Base):
 # ── Platform (SaaS) ─────────────────────────────────
 
 class Plan(Base):
+    """SaaS tariflar — restoran qaysi funksiyalardan foydalana olishini belgilaydi.
+
+    Booleanflag'lar PostgreSQL va SQLite ikkalasida ham ishlaydi.
+    `order_limit=0` cheksiz degan ma'noni anglatadi.
+    """
     __tablename__ = "plans"
 
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False)
     slug = Column(String, unique=True, nullable=False)
     description = Column(Text)
-    monthly_price = Column(Float, default=0.0)
-    commission_percent = Column(Float, default=0.0)
+    monthly_price = Column(Float, nullable=False, default=0.0)
+    commission_percent = Column(Float, nullable=False, default=0.0)
+    # Funksional bayroqlar — feature gating uchun
+    has_catering = Column(Boolean, nullable=False, default=False)
+    has_ai_agent = Column(Boolean, nullable=False, default=False)
+    has_yandex = Column(Boolean, nullable=False, default=False)
+    order_limit = Column(Integer, nullable=False, default=0)  # 0 = cheksiz
+    # Eski JSON features (backward compat)
     features = Column(Text, default="[]")
-    is_active = Column(Boolean, default=True)
+    is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    restaurants = relationship("Restaurant", back_populates="plan_obj")
+
+
+class Payment(Base):
+    """SaaS tarif uchun to'lov yozuvi.
+
+    Pul `amount_tiyin` (int) sifatida saqlanadi — 1 so'm = 100 tiyin.
+    Click/Payme API'lari tiyin bilan ishlaydi, suzuvchi nuqta xatosi yo'q.
+    """
+    __tablename__ = "payments"
+
+    id = Column(Integer, primary_key=True)
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False)
+    plan_id = Column(Integer, ForeignKey("plans.id"), nullable=True)
+    # int (tiyin) — float emas, masalan 500,000 so'm = 50,000,000 tiyin
+    amount_tiyin = Column(Integer, nullable=False)
+    status = Column(String, nullable=False, default="pending")  # pending | success | failed
+    provider = Column(String, nullable=False)                   # click | payme
+    external_id = Column(String, nullable=True)                 # provayder tomonidan transaction id
+    payment_url = Column(String, nullable=True)                 # mijoz to'lov sahifasi URL'i
+    merchant_trans_id = Column(String, unique=True, nullable=True)  # bizning order_id (idempotency)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    paid_at = Column(DateTime, nullable=True)
+
+
+class SuperAdminAction(Base):
+    """Super-admin har bir harakatining audit log'i.
+
+    Bu jadvalga har bir status o'zgarishi, plan o'zgartirish, maintenance
+    yoki global sozlama o'zgarishi yoziladi. O'chirib bo'lmaydi (faqat
+    insert) — manipulyatsiyani aniqlash uchun.
+    """
+    __tablename__ = "super_admin_actions"
+
+    id = Column(Integer, primary_key=True)
+    actor = Column(String, nullable=False)              # super-admin login
+    action = Column(String, nullable=False)             # 'restaurant.update' | 'maintenance.set' | ...
+    target_type = Column(String, nullable=True)        # 'restaurant' | 'plan' | 'platform' | None
+    target_id = Column(Integer, nullable=True)
+    details = Column(Text, nullable=True)               # JSON ko'rinishida (eski/yangi qiymatlar)
+    ip = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
 class CommissionPayment(Base):

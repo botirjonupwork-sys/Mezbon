@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from database.models import Restaurant, Branch, Order, OrderItem, Product, User
 from api.services.yandex_delivery import YandexDeliveryClient, YandexDeliveryError
+from api.auth_deps import get_restaurant_plan, restaurant_has_feature
 
 
 async def dispatch_order_to_provider(
@@ -39,6 +40,12 @@ async def dispatch_order_to_provider(
         return None  # O'z kuryer — hech nima qilinmaydi
 
     if provider == "yandex":
+        # Tarif tekshiruvi — has_yandex flag yoqilmagan bo'lsa Yandex'ga
+        # bormaymiz; "own" ga fallback qilamiz (zakaz bekor bo'lmasin)
+        plan = await get_restaurant_plan(restaurant_id, db)
+        if not restaurant_has_feature(plan, "yandex"):
+            print(f"[delivery] Yandex feature joriy tarifda yo'q (restaurant_id={restaurant_id}); 'own' ga fallback")
+            return None
         return await _dispatch_yandex(order, restaurant, db)
 
     return None

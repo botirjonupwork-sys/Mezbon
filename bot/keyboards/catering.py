@@ -111,28 +111,46 @@ def format_date_uz(d) -> str:
     return f"{d.day}-{MONTH_UZ.get(d.month, '')}, {WEEKDAY_UZ[d.weekday()]}"
 
 
-def date_kb() -> InlineKeyboardMarkup:
-    """30 kunlik sana — kamida 24 soat oldin."""
+# Ish vaqti — barcha mavjud slotlar (08:00 dan 22:00 gacha, 30 daq.)
+ALL_TIME_SLOTS = [
+    f"{h:02d}:{m:02d}"
+    for h in range(8, 23)
+    for m in (0, 30)
+    if not (h == 22 and m == 30)
+]
+
+
+def date_kb(booked: dict | None = None) -> InlineKeyboardMarkup:
+    """30 kunlik sana — kamida 24 soat oldin. To'liq band kunlar 🔒 bilan."""
+    booked = booked or {}
     tomorrow = datetime.now().date() + timedelta(days=1)
+
+    def label_for(d) -> tuple[str, str]:
+        """(text, callback_data) qaytaradi."""
+        key = d.isoformat()
+        busy_times = [t for t in booked.get(key, []) if t]
+        is_full = len(set(busy_times)) >= len(ALL_TIME_SLOTS)
+        partial = len(busy_times) > 0 and not is_full
+        prefix = "🔒 " if is_full else ("🟡 " if partial else "")
+        text = f"{prefix}{d.day}-{MONTH_UZ[d.month]} ({WEEKDAY_UZ[d.weekday()]})"
+        cb = f"cat_busy_date:{key}" if is_full else f"cat_date:{key}"
+        return text, cb
+
     rows = []
-    # Ertangi kun birinchi
-    rows.append([
-        InlineKeyboardButton(
-            text=f"📅 Erta ({tomorrow.day}-{MONTH_UZ[tomorrow.month]})",
-            callback_data=f"cat_date:{tomorrow.isoformat()}",
-        ),
-    ])
-    # Keyingi 28 kun (2 ta ustun)
+    text, cb = label_for(tomorrow)
+    rows.append([InlineKeyboardButton(text=f"📅 Erta — {text}", callback_data=cb)])
+
     row = []
     for i in range(2, 30):
         d = tomorrow + timedelta(days=i - 1)
-        label = f"{d.day}-{MONTH_UZ[d.month]} ({WEEKDAY_UZ[d.weekday()]})"
-        row.append(InlineKeyboardButton(text=label, callback_data=f"cat_date:{d.isoformat()}"))
+        text, cb = label_for(d)
+        row.append(InlineKeyboardButton(text=text, callback_data=cb))
         if len(row) == 2:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
+
     rows.append([InlineKeyboardButton(text="✏️ Boshqa sana", callback_data="cat_date_custom")])
     rows.append([InlineKeyboardButton(text="⬅️ Ortga", callback_data="cat_back_dlv")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -140,19 +158,22 @@ def date_kb() -> InlineKeyboardMarkup:
 
 # ── Vaqt tanlash ─────────────────────────────────────
 
-def time_kb() -> InlineKeyboardMarkup:
-    """08:00–22:00 oralig'ida 30 daqiqa qadam bilan."""
+def time_kb(busy_times: list | None = None) -> InlineKeyboardMarkup:
+    """08:00–22:00 oralig'ida 30 daqiqa qadam. Band vaqtlar 🔒 bilan."""
+    busy_set = set(busy_times or [])
     rows = []
     row = []
-    for hour in range(8, 23):
-        for minute in (0, 30):
-            if hour == 22 and minute == 30:
-                continue
-            time_str = f"{hour:02d}:{minute:02d}"
-            row.append(InlineKeyboardButton(text=time_str, callback_data=f"cat_time:{time_str}"))
-            if len(row) == 4:
-                rows.append(row)
-                row = []
+    for time_str in ALL_TIME_SLOTS:
+        if time_str in busy_set:
+            text = f"🔒 {time_str}"
+            cb = f"cat_busy_time:{time_str}"
+        else:
+            text = time_str
+            cb = f"cat_time:{time_str}"
+        row.append(InlineKeyboardButton(text=text, callback_data=cb))
+        if len(row) == 4:
+            rows.append(row)
+            row = []
     if row:
         rows.append(row)
     rows.append([InlineKeyboardButton(text="✏️ Boshqa vaqt", callback_data="cat_time_custom")])

@@ -10,6 +10,7 @@ import Reviews from './pages/Reviews'
 import Settings from './pages/Settings'
 import Admins from './pages/Admins'
 import Couriers from './pages/Couriers'
+import Billing from './pages/Billing'
 
 function PrivateRoute({ children }) {
   const isAuth = useAuthStore((s) => s.isAuth)
@@ -37,6 +38,7 @@ export default function App() {
           <Route path="settings" element={<Settings />} />
           <Route path="couriers" element={<Couriers />} />
           <Route path="admins" element={<Admins />} />
+          <Route path="billing" element={<Billing />} />
         </Route>
       </Routes>
     </BrowserRouter>

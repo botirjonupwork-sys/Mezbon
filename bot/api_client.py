@@ -128,6 +128,24 @@ async def add_address(telegram_id: str, title: str, address: str):
         return r.json()
 
 
+async def get_catering_booked(branch_id: int = None) -> dict:
+    """Catering uchun band qilingan kun va vaqtlar.
+
+    Returns: {"YYYY-MM-DD": ["HH:MM", ...], ...}
+    """
+    params = {"restaurant_id": _restaurant_id}
+    if branch_id:
+        params["branch_id"] = branch_id
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            r = await client.get(f"{BASE_URL}/catering/booked-dates", params=params)
+            if r.status_code == 200:
+                return (r.json() or {}).get("booked", {})
+    except Exception:
+        pass
+    return {}
+
+
 async def get_settings() -> dict:
     """Restoran haqida ommaviy ma'lumot (auth shart emas)."""
     async with httpx.AsyncClient() as client:
@@ -271,4 +289,10 @@ async def create_catering_order(telegram_id: str, order_data: dict, branch_id: i
         )
         if r.status_code in (200, 201):
             return r.json()
-        return {"error": r.text}
+        # Detail xabarini chiqarib qaytarish (409 va boshq.)
+        try:
+            body = r.json()
+            detail = body.get("detail") if isinstance(body, dict) else None
+        except Exception:
+            detail = None
+        return {"error": detail or r.text, "status_code": r.status_code}

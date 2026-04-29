@@ -9,6 +9,7 @@ import RestaurantForm from './pages/RestaurantForm'
 import Settings from './pages/Settings'
 import Bots from './pages/Bots'
 import Tariffs from './pages/Tariffs'
+import GlobalSettings from './pages/GlobalSettings'
 
 function PrivateRoute({ children }) {
   const isAuth = useAuthStore((s) => s.isAuth)
@@ -36,6 +37,7 @@ export default function App() {
             <Route path="settings" element={<Settings />} />
             <Route path="bots" element={<Bots />} />
             <Route path="tariffs" element={<Tariffs />} />
+            <Route path="global" element={<GlobalSettings />} />
           </Route>
         </Routes>
       </BrowserRouter>

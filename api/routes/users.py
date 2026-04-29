@@ -53,6 +53,44 @@ async def create_or_get_user(data: UserCreate, db: AsyncSession = Depends(get_db
     return user
 
 
+# ── AI Call Operator orqali kelgan foydalanuvchini yaratish ─────────────
+# Identifikatsiya qoidasi: telegram_id = "phone:+9989..." formatida saqlanadi.
+# Bu Telegram orqali kelgan oddiy mijozlardan farq qilish va ovozli kanaldan
+# kelgan foydalanuvchilarni alohida tanib olish uchun.
+async def get_or_create_phone_user(
+    db: AsyncSession,
+    phone: str,
+    full_name: Optional[str] = None,
+) -> User:
+    """Ovozli (telefon orqali) kelgan mijozni topadi yoki yaratadi.
+
+    Telefon raqami `+998XXXXXXXXX` formatida bo'lishi kutiladi.
+    Telegram_id sifatida `phone:+998...` saqlanadi — boshqa kanallar bilan to'qnashmaydi.
+    """
+    if not phone:
+        raise ValueError("phone bo'sh bo'lmasligi kerak")
+    phone = phone.strip()
+    if not phone.startswith("+"):
+        # Oddiy formatga keltiramiz (998... → +998...)
+        digits = "".join(ch for ch in phone if ch.isdigit())
+        phone = "+" + digits if digits else phone
+    tg_id = f"phone:{phone}"
+    result = await db.execute(select(User).where(User.telegram_id == tg_id))
+    user = result.scalar_one_or_none()
+    if user:
+        return user
+    user = User(
+        telegram_id=tg_id,
+        full_name=(full_name or "AI mijoz").strip(),
+        phone=phone,
+        language="uz",
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
 @router.get("/{telegram_id}", response_model=UserOut)
 async def get_user(telegram_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.telegram_id == telegram_id))

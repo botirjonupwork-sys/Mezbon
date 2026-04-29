@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 
 from api.database import get_db
 from api.config import settings
+from api.auth_deps import get_restaurant_plan, restaurant_has_feature
 from api.services.currency import get_currency_rate, convert_usd_to_uzs
 from database.models import (
     Product, User, Order, OrderItem, OrderStatus, DeliveryType, Branch, Restaurant
@@ -27,6 +28,18 @@ async def _require_bot_secret(x_bot_secret: Optional[str] = Header(None, alias="
     if not x_bot_secret or x_bot_secret != settings.SECRET_KEY:
         raise HTTPException(403, "Ruxsat berilmadi")
     return True
+
+
+async def _ensure_catering_enabled(restaurant_id: int, db: AsyncSession) -> None:
+    """Restoran tarifi catering'ni qo'llab-quvvatlamasa 403."""
+    plan = await get_restaurant_plan(restaurant_id, db)
+    if not restaurant_has_feature(plan, "catering"):
+        plan_name = plan.name if plan else "tariff yo'q"
+        raise HTTPException(
+            403,
+            f"Catering funksiyasi joriy tarifda ({plan_name}) yoqilmagan. "
+            "Tarifni yangilang."
+        )
 
 router = APIRouter(prefix="/catering", tags=["catering"])
 
@@ -91,6 +104,7 @@ async def get_catering_groups(
     db: AsyncSession = Depends(get_db),
 ):
     """Barcha catering guruhlari va ulardagi mahsulotlar."""
+    await _ensure_catering_enabled(restaurant_id, db)
     result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
     rest = result.scalar_one_or_none()
     if not rest:
@@ -255,6 +269,35 @@ def _validate_group_order(group: str, total: int, rest: Restaurant) -> None:
         raise HTTPException(400, f"Miqdor {step} ga karrali bo'lishi kerak")
 
 
+@router.get("/booked-dates")
+async def booked_dates(
+    restaurant_id: int,
+    branch_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Kelajakdagi catering buyurtma berilgan barcha (sana, vaqt) juftliklari."""
+    await _ensure_catering_enabled(restaurant_id, db)
+    today = datetime.now().date().isoformat()
+    q = select(Order.schedule_date, Order.schedule_time).where(
+        Order.order_kind == "catering",
+        Order.schedule_date >= today,
+        Order.status.notin_([OrderStatus.cancelled, OrderStatus.delivered]),
+    )
+    if branch_id is not None:
+        q = q.where(Order.branch_id == branch_id)
+    else:
+        q = q.where(Order.restaurant_id == restaurant_id)
+    rows = (await db.execute(q)).all()
+
+    by_date: dict[str, list[str]] = {}
+    for d, t in rows:
+        if not d:
+            continue
+        by_date.setdefault(d, []).append(t or "")
+
+    return {"booked": by_date}
+
+
 @router.post("/calculate-price")
 async def calculate_price(
     data: CalculatePriceRequest,
@@ -262,6 +305,7 @@ async def calculate_price(
     db: AsyncSession = Depends(get_db),
 ):
     """Aralash catering buyurtma narxini hisoblash."""
+    await _ensure_catering_enabled(restaurant_id, db)
     result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
     rest = result.scalar_one_or_none()
     if not rest:
@@ -289,6 +333,8 @@ async def create_catering_order(
     db: AsyncSession = Depends(get_db),
 ):
     """Aralash catering buyurtma yaratish."""
+    # Tarif tekshiruvi
+    await _ensure_catering_enabled(restaurant_id, db)
     # Foydalanuvchi
     result = await db.execute(select(User).where(User.telegram_id == telegram_id))
     user = result.scalar_one_or_none()
@@ -316,6 +362,25 @@ async def create_catering_order(
             400,
             "Catering buyurtmalari kamida 24 soat oldin qabul qilinadi. "
             "Tezkor buyurtmalar uchun: +998 98 000 06 04"
+        )
+
+    # Slot konflikti — bir filialda bitta sana/vaqtga faqat bitta catering
+    busy_q = select(Order).where(
+        Order.order_kind == "catering",
+        Order.schedule_date == data.schedule_date,
+        Order.schedule_time == data.schedule_time,
+        Order.status.notin_([OrderStatus.cancelled, OrderStatus.delivered]),
+    )
+    if branch_id is not None:
+        busy_q = busy_q.where(Order.branch_id == branch_id)
+    else:
+        busy_q = busy_q.where(Order.restaurant_id == restaurant_id)
+    busy = (await db.execute(busy_q)).scalar_one_or_none()
+    if busy:
+        raise HTTPException(
+            409,
+            f"Bu vaqt ({data.schedule_date} {data.schedule_time}) band qilingan. "
+            f"Iltimos, boshqa vaqt yoki sana tanlang."
         )
 
     # Narx
@@ -400,6 +465,7 @@ async def legacy_products(
     db: AsyncSession = Depends(get_db),
 ):
     """Eski endpoint — barcha catering mahsulotlari."""
+    await _ensure_catering_enabled(restaurant_id, db)
     result = await db.execute(
         select(Product).where(
             Product.is_active == True,

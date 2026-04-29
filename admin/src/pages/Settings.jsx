@@ -8,8 +8,10 @@ import {
   ShopOutlined, ClockCircleOutlined, CarOutlined,
   UserOutlined, LockOutlined, CreditCardOutlined,
   GiftOutlined, GlobalOutlined, DollarOutlined,
+  RobotOutlined, PrinterOutlined,
 } from '@ant-design/icons'
-import { getSettings, updateSettings, getProfile, updateProfile, getBranchSettings, updateBranchSettings } from '../api'
+import POSSettings from '../components/POSSettings'
+import { getSettings, updateSettings, getProfile, updateProfile, getBranchSettings, updateBranchSettings, getMyPlan } from '../api'
 import { useAuthStore } from '../store/auth'
 import { useBranchStore } from '../store/branch'
 import dayjs from 'dayjs'
@@ -83,9 +85,17 @@ export default function Settings() {
   const [mapLat, setMapLat] = useState(41.2995)
   const [mapLon, setMapLon] = useState(69.2401)
   const [activeTab, setActiveTab] = useState('restaurant')
+  const [aiAllowed, setAiAllowed] = useState(false)  // Pro tarif bormi
   const { setAuth, token, restaurantId } = useAuthStore()
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
   const restParams = restaurantId ? { restaurant_id: restaurantId } : {}
+
+  useEffect(() => {
+    if (!restaurantId) { setAiAllowed(false); return }
+    getMyPlan(restParams)
+      .then((r) => setAiAllowed(!!r.data?.features?.ai_agent))
+      .catch(() => setAiAllowed(false))
+  }, [restaurantId])
 
   useEffect(() => {
     if (!restaurantId && !selectedBranchId) { setLoading(false); return }
@@ -392,6 +402,79 @@ export default function Settings() {
     </>
   )
 
+  const aiAgentTab = (
+    <>
+      {selectedBranchId ? (
+        <Alert type="info" message="AI Operator faqat asosiy restoran darajasida sozlanadi." />
+      ) : !aiAllowed ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="🔒 AI Operator faqat Pro tarifida"
+          description="Tariflar bo'limidan Pro tarifga o'ting — telefon orqali avtomatik buyurtma qabul qilish uchun."
+          style={{ marginBottom: 16 }}
+        />
+      ) : (
+        <Card title={<><RobotOutlined /> AI Call Operator</>} size="small">
+          <Alert type="info" showIcon style={{ marginBottom: 16 }}
+            message="Telefon orqali AI operator"
+            description="Mijoz qo'ng'iroq qilganda AI uning gapini eshitib, menyudan mahsulot tanlab, buyurtma qabul qiladi. Catering (≥100 somsa) buyurtmalari catering kanaliga yo'naltiriladi."
+          />
+          <Form.Item name="ai_agent_enabled" label="AI Operator yoqish" valuePropName="checked"
+            extra="Yoqilgan bo'lsa kelayotgan qo'ng'iroqlar AI tomonidan qabul qilinadi.">
+            <Switch checkedChildren="Yoqiq" unCheckedChildren="O'chiq" />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(p, c) => p.ai_agent_enabled !== c.ai_agent_enabled}>
+            {({ getFieldValue }) => getFieldValue('ai_agent_enabled') && (
+              <>
+                <Form.Item name="ai_agent_prompt" label="AI ko'rsatmasi (system prompt)"
+                  extra="AI mijoz bilan qanday ohangda gaplashishi kerak. Bo'sh qoldirilsa standart shablon ishlatiladi.">
+                  <Input.TextArea
+                    rows={4}
+                    placeholder='Masalan: "Salom, men Muhsina Dollar Somsa restoranining AI operatori. Sizga qanday yordam bera olaman?"'
+                  />
+                </Form.Item>
+                <Row gutter={16}>
+                  <Col xs={24} md={8}>
+                    <Form.Item name="ai_agent_voice" label="Ovoz"
+                      extra="Provayderda mavjud bo'lgan ovoz">
+                      <Select options={[
+                        { value: 'female', label: '👩 Ayol ovozi' },
+                        { value: 'male',   label: '👨 Erkak ovozi' },
+                      ]} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} md={8}>
+                    <Form.Item name="ai_agent_provider" label="Provayder">
+                      <Select options={[
+                        { value: 'openai', label: 'OpenAI (gpt-4o-mini)' },
+                        { value: 'vapi',   label: 'Vapi.ai (premium)' },
+                        { value: 'retell', label: 'Retell AI' },
+                      ]} />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} md={8}>
+                    <Form.Item name="ai_agent_model" label="Model" extra="OpenAI uchun model nomi">
+                      <Input placeholder="gpt-4o-mini" />
+                    </Form.Item>
+                  </Col>
+                </Row>
+                <Form.Item name="ai_agent_api_key" label="API kalit"
+                  extra="OpenAI/Vapi/Retell kalit. Bo'sh qoldirilsa server .env'dagi OPENAI_API_KEY ishlatiladi (test rejim uchun)">
+                  <Input.Password placeholder="sk-..." autoComplete="off" />
+                </Form.Item>
+                <Alert type="info" showIcon
+                  message="Webhook URL"
+                  description={<code>POST {window.location.origin.replace('5173','8000')}/ai/process-call</code>}
+                />
+              </>
+            )}
+          </Form.Item>
+        </Card>
+      )}
+    </>
+  )
+
   const localeTab = (
     <Card title={<><GlobalOutlined /> Bot tili</>} size="small">
       <Form.Item name="language" style={{ maxWidth: 250, marginBottom: 0 }}>
@@ -409,6 +492,8 @@ export default function Settings() {
     { key: 'delivery', label: <><CarOutlined /> Dastavka</>, children: deliveryTab },
     { key: 'payment', label: <><CreditCardOutlined /> To'lov</>, children: paymentTab },
     { key: 'catering', label: <><GiftOutlined /> Catering</>, children: cateringTab },
+    { key: 'ai', label: <><RobotOutlined /> AI Operator</>, children: aiAgentTab },
+    { key: 'pos', label: <><PrinterOutlined /> Terminal/Printer</>, children: <POSSettings restaurantId={restaurantId} /> },
     { key: 'locale', label: <><GlobalOutlined /> Til</>, children: localeTab },
   ]
 

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import httpx
 from dotenv import load_dotenv
@@ -14,6 +15,7 @@ from api.config import settings
 from database.models import Order, OrderItem, OrderStatus, Product, User, Courier, CourierStatus, Branch, Restaurant
 from pos.alice import alice_pos
 from api.services.delivery import dispatch_order_to_provider
+from api.services.pos_adapter import adapter as pos_adapter
 
 STATUS_MSG = {
     "confirmed":  "✅ Zakazingiz qabul qilindi! Tayyorlanishni boshlaymiz.",
@@ -212,6 +214,7 @@ async def update_order_status(
     if not order:
         raise HTTPException(404, "Zakaz topilmadi")
 
+    prev_status = order.status
     order.status = status
     await db.commit()
 
@@ -225,6 +228,23 @@ async def update_order_status(
     if status == OrderStatus.ready and order.delivery_type.value == "delivery":
         print(f"[Orders] Re-notifying couriers: order #{order_id} is ready")
         await _notify_couriers_new_order(db, order)
+
+    # ── POS dispatch — buyurtma tasdiqlangan zahoti chek/kassaga yuboriladi ──
+    # Fire-and-forget: tashqi POS API yiqilsa ham bu chaqiruv asosiy oqimni
+    # bloklamaydi yoki javobini buzib turmaydi.
+    if status == OrderStatus.confirmed and prev_status != OrderStatus.confirmed:
+        async def _pos_dispatch_bg(oid: int):
+            from api.database import AsyncSessionLocal
+            async with AsyncSessionLocal() as bg_db:
+                fresh = (await bg_db.execute(
+                    select(Order).options(selectinload(Order.items)).where(Order.id == oid)
+                )).scalar_one_or_none()
+                if fresh:
+                    await pos_adapter.dispatch_order(bg_db, fresh)
+        try:
+            asyncio.create_task(_pos_dispatch_bg(order_id))
+        except Exception:
+            pass  # asyncio loop yo'q bo'lsa — sokin
 
     return {"success": True, "status": status}
 

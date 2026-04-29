@@ -17,6 +17,22 @@ SECRETS.local.md
 # Database
 *.sqlite
 *.db
+*.db.bak
+*.db.backup
+backups/
+
+# Personal docs (CV) — loyihaga aloqasi yo'q
+CV.md
+CV.pdf
+cv.html
+
+# Platform settings (super-admin tomonidan generatsiya qilinadi, server'da o'z holida saqlanadi)
+platform_settings.json
+super_settings.json
+
+# Alembic temp files
+_alembic_tmp.db
+_fresh.db
 
 # Node
 admin/node_modules/

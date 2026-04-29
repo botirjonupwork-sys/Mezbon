@@ -25,6 +25,15 @@ export const createRestaurant = (data) => api.post('/super/restaurants', data)
 export const updateRestaurant = (id, data) => api.put(`/super/restaurants/${id}`, data)
 export const deleteRestaurant = (id) => api.delete(`/super/restaurants/${id}`)
 
+// ── Yangi super-admin endpointlari (Faza 5+) ──────────
+export const getSuperAdminStats = (params) => api.get('/super-admin/stats', { params })
+export const getSuperAdminRestaurants = () => api.get('/super-admin/restaurants')
+export const patchSuperAdminRestaurant = (id, data) => api.patch(`/super-admin/restaurants/${id}`, data)
+export const getMaintenance = () => api.get('/super-admin/maintenance')
+export const setMaintenance = (data) => api.put('/super-admin/maintenance', data)
+export const getSuperActions = (params) => api.get('/super-admin/actions', { params })
+export const getHealth = () => api.get('/health')
+
 // Profile
 export const getSuperProfile = () => api.get('/super/profile')
 export const updateSuperProfile = (data) => api.put('/super/profile', data)

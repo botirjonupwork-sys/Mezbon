@@ -19,7 +19,8 @@ from aiogram.fsm.context import FSMContext
 
 from bot.states import CateringFlow
 from bot.api_client import (
-    get_catering_groups, calculate_catering_price_multi, create_catering_order
+    get_catering_groups, calculate_catering_price_multi, create_catering_order,
+    get_catering_booked,
 )
 from bot.keyboards.catering import (
     groups_kb, items_selector_kb, ask_qty_menu_kb, delivery_subtype_kb, date_kb, time_kb,
@@ -289,14 +290,29 @@ async def delivery_selected(callback: CallbackQuery, state: FSMContext):
         "pickup": "🛍 Olib ketish (saboy)",
         "delivery": "🚗 Dastavka",
     }
+    data = await state.get_data()
+    booked = await get_catering_booked(data.get("branch_id"))
+    await state.update_data(catering_booked=booked)
     await callback.message.edit_text(
-        f"✅ {labels.get(subtype, subtype)}\n\n📅 Qaysi sanaga kerak?",
-        reply_markup=date_kb(),
+        f"✅ {labels.get(subtype, subtype)}\n\n📅 Qaysi sanaga kerak?\n"
+        f"<i>🔒 — to'liq band, 🟡 — qisman band</i>",
+        reply_markup=date_kb(booked),
+        parse_mode="HTML",
     )
     await callback.answer()
 
 
 # ── 5. Sana ──────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("cat_busy_date:"))
+async def busy_date_clicked(callback: CallbackQuery):
+    await callback.answer("🔒 Bu sana to'liq band qilingan. Boshqa sana tanlang.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("cat_busy_time:"))
+async def busy_time_clicked(callback: CallbackQuery):
+    await callback.answer("🔒 Bu vaqt allaqachon band qilingan. Boshqa vaqt tanlang.", show_alert=True)
+
 
 @router.callback_query(F.data.startswith("cat_date:"))
 async def date_selected(callback: CallbackQuery, state: FSMContext):
@@ -304,9 +320,17 @@ async def date_selected(callback: CallbackQuery, state: FSMContext):
     d = datetime.fromisoformat(date_str).date()
     await state.update_data(schedule_date=date_str)
     await state.set_state(CateringFlow.choosing_time)
+
+    # Real-time band vaqtlarni olish
+    data = await state.get_data()
+    booked = data.get("catering_booked") or await get_catering_booked(data.get("branch_id"))
+    busy_times = booked.get(date_str, [])
+
     await callback.message.edit_text(
-        f"✅ Sana: <b>{format_date_uz(d)}</b>\n\n⏰ Qaysi vaqtga tayyor bo'lsin?",
-        reply_markup=time_kb(),
+        f"✅ Sana: <b>{format_date_uz(d)}</b>\n\n"
+        f"⏰ Qaysi vaqtga tayyor bo'lsin?\n"
+        f"<i>🔒 — band vaqtlar</i>",
+        reply_markup=time_kb(busy_times),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -346,11 +370,19 @@ async def date_custom_input(message: Message, state: FSMContext):
         await message.answer("❌ Eng ko'pi bilan 60 kun oldinga yozilsin")
         return
 
-    await state.update_data(schedule_date=d.isoformat())
+    date_str = d.isoformat()
+    await state.update_data(schedule_date=date_str)
     await state.set_state(CateringFlow.choosing_time)
+
+    data = await state.get_data()
+    booked = data.get("catering_booked") or await get_catering_booked(data.get("branch_id"))
+    busy_times = booked.get(date_str, [])
+
     await message.answer(
-        f"✅ Sana: <b>{format_date_uz(d)}</b>\n\n⏰ Qaysi vaqtga tayyor bo'lsin?",
-        reply_markup=time_kb(),
+        f"✅ Sana: <b>{format_date_uz(d)}</b>\n\n"
+        f"⏰ Qaysi vaqtga tayyor bo'lsin?\n"
+        f"<i>🔒 — band vaqtlar</i>",
+        reply_markup=time_kb(busy_times),
         parse_mode="HTML",
     )
 
@@ -436,6 +468,14 @@ async def _save_phone(message: Message, state: FSMContext, phone: str):
 
 # ── 8. Lokatsiya ─────────────────────────────────────
 
+def _skip_address_kb():
+    from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="⏭ O'tkazib yuborish")]],
+        resize_keyboard=True, one_time_keyboard=True,
+    )
+
+
 @router.message(CateringFlow.entering_location, F.location)
 async def location_received(message: Message, state: FSMContext):
     await state.update_data(
@@ -444,9 +484,10 @@ async def location_received(message: Message, state: FSMContext):
         address_pending=True,
     )
     await message.answer(
-        "✅ Lokatsiya olindi.\n\n"
-        "Manzilni matn bilan kiriting (masalan: <i>To'yxona \"Navoi\"</i>):",
-        reply_markup=ReplyKeyboardRemove(),
+        "✅ Lokatsiya qabul qilindi.\n\n"
+        "Joy nomini ham yozasizmi? (masalan: <i>To'yxona \"Navoi\"</i>)\n"
+        "Agar shart bo'lmasa — <b>⏭ O'tkazib yuborish</b> tugmasini bosing.",
+        reply_markup=_skip_address_kb(),
         parse_mode="HTML",
     )
 
@@ -457,7 +498,12 @@ async def address_text(message: Message, state: FSMContext):
     if not data.get("address_pending"):
         await message.answer("Iltimos, avval lokatsiyani yuboring 📍", reply_markup=location_kb())
         return
-    await state.update_data(address=message.text.strip())
+    text = message.text.strip()
+    if text == "⏭ O'tkazib yuborish":
+        # Lokatsiya bor, matn ixtiyoriy — bo'sh qoldiramiz
+        await state.update_data(address="")
+    else:
+        await state.update_data(address=text)
     await _ask_payment_method(message, state)
 
 
@@ -602,6 +648,22 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
 
     if not result or result.get("error"):
         err = result.get("error") if result else "Noma'lum xato"
+        status_code = result.get("status_code") if result else None
+
+        # Slot konflikti — sana tanlashga qaytaramiz, FSM saqlaymiz
+        if status_code == 409:
+            booked = await get_catering_booked(branch_id)
+            await state.update_data(catering_booked=booked)
+            await state.set_state(CateringFlow.choosing_date)
+            await callback.message.answer(
+                f"⚠️ <b>Bu vaqt allaqachon band qilingan!</b>\n\n{err}\n\n"
+                f"📅 Iltimos, boshqa sana yoki vaqt tanlang:",
+                reply_markup=date_kb(booked),
+                parse_mode="HTML",
+            )
+            await callback.answer("Slot band", show_alert=True)
+            return
+
         await callback.message.answer(
             f"❌ Buyurtma yaratishda xato: {err}",
             reply_markup=main_menu_kb(),

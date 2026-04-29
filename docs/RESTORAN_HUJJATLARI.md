@@ -1,3 +1,4 @@
+
 # 📋 Restoran hamkorlari uchun hujjatlar ro'yxati
 
 **Platforma:** Muhsina Dollar Somsa (delivery SaaS)

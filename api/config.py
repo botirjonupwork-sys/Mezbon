@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     DEBUG: bool = True
     API_URL: str = "http://localhost:8000"
 
+    # Critical alerts (ixtiyoriy) — `log_critical()` shu kanalga ham xabar yuboradi
+    ALERT_BOT_TOKEN: str = ""           # Alohida bot tokeni (asosiy bot bilan to'qnashmaslik)
+    ALERT_CHAT_ID: str = ""              # Telegram chat/group ID (number yoki @username)
+    ALERT_DEDUP_SECONDS: int = 300       # Bir xil xato shu davrda qayta yuborilmaydi
+
     class Config:
         env_file = ".env"
         extra = "ignore"  # .env da qo'shimcha variable bo'lsa e'tiborsiz

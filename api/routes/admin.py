@@ -14,7 +14,7 @@ from api.schemas import CategoryOut
 from api.config import settings
 from api.auth_deps import require_restaurant_admin, require_super_admin
 from database.models import (
-    Product, Category, Order, OrderItem, User, Review, OrderStatus, Courier, Branch, Admin
+    Product, Category, Order, OrderItem, User, Review, OrderStatus, Courier, Branch, Admin, Plan
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -125,6 +125,13 @@ class SettingsUpdate(BaseModel):
     payme_merchant_id: Optional[str] = None
     payme_secret_key: Optional[str] = None
     payme_enabled: Optional[bool] = None
+    # AI Operator
+    ai_agent_enabled: Optional[bool] = None
+    ai_agent_prompt: Optional[str] = None
+    ai_agent_voice: Optional[str] = None
+    ai_agent_provider: Optional[str] = None
+    ai_agent_model: Optional[str] = None
+    ai_agent_api_key: Optional[str] = None
 
 
 class AdminCreate(BaseModel):
@@ -372,6 +379,8 @@ async def get_all_orders(
             "status": order.status.value,
             "delivery_type": order.delivery_type.value,
             "address": order.address,
+            "latitude": float(order.latitude) if order.latitude is not None else None,
+            "longitude": float(order.longitude) if order.longitude is not None else None,
             "comment": order.comment,
             "total_price": order.total_price,
             "delivery_fee": order.delivery_fee,
@@ -714,6 +723,13 @@ async def get_settings(
         "payme_merchant_id": rest.payme_merchant_id,
         "payme_secret_key": rest.payme_secret_key,
         "payme_enabled": bool(rest.payme_enabled),
+        # AI Operator
+        "ai_agent_enabled": bool(rest.ai_agent_enabled),
+        "ai_agent_prompt": rest.ai_agent_prompt or "",
+        "ai_agent_voice": rest.ai_agent_voice or "female",
+        "ai_agent_provider": rest.ai_agent_provider or "openai",
+        "ai_agent_model": rest.ai_agent_model or "gpt-4o-mini",
+        "ai_agent_api_key": rest.ai_agent_api_key or "",
     }
 
 
@@ -760,6 +776,12 @@ async def update_settings(
         "payme_merchant_id": "payme_merchant_id",
         "payme_secret_key": "payme_secret_key",
         "payme_enabled": "payme_enabled",
+        "ai_agent_enabled": "ai_agent_enabled",
+        "ai_agent_prompt": "ai_agent_prompt",
+        "ai_agent_voice": "ai_agent_voice",
+        "ai_agent_provider": "ai_agent_provider",
+        "ai_agent_model": "ai_agent_model",
+        "ai_agent_api_key": "ai_agent_api_key",
     }
     for form_key, db_key in update_map.items():
         val = getattr(data, form_key, None)
@@ -896,3 +918,51 @@ async def delete_admin(admin_id: int, db: AsyncSession = Depends(get_db)):
     await db.delete(admin)
     await db.commit()
     return {"success": True}
+
+
+# ── Plan / tarif ma'lumoti ───────────────────────────
+@router.get("/me/plan")
+async def get_my_plan(
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Joriy restoran tarifi va undagi yoqilgan funksiyalar.
+
+    Frontend sidebar badge va "Locked" menyu elementlarini ko'rsatish uchun ishlatadi.
+    """
+    if not restaurant_id:
+        # Super admin restaurantsiz so'roq qilsa
+        return {"plan": None, "features": {}}
+
+    rest_result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
+    rest = rest_result.scalar_one_or_none()
+    if not rest:
+        raise HTTPException(404, "Restoran topilmadi")
+
+    plan = None
+    if rest.plan_id:
+        plan_result = await db.execute(select(Plan).where(Plan.id == rest.plan_id))
+        plan = plan_result.scalar_one_or_none()
+
+    if not plan:
+        return {
+            "plan": {"id": None, "name": "Tariff yo'q", "slug": None},
+            "features": {"catering": False, "ai_agent": False, "yandex": False},
+            "order_limit": 0,
+        }
+
+    return {
+        "plan": {
+            "id": plan.id,
+            "name": plan.name,
+            "slug": plan.slug,
+            "monthly_price": plan.monthly_price,
+            "commission_percent": plan.commission_percent,
+        },
+        "features": {
+            "catering": bool(plan.has_catering),
+            "ai_agent": bool(plan.has_ai_agent),
+            "yandex": bool(plan.has_yandex),
+        },
+        "order_limit": plan.order_limit,
+    }

@@ -65,6 +65,14 @@ export const updateSettings = (data, params) => api.put('/admin/settings', data,
 
 // ── Profile ──────────────────────────────────────────
 export const getProfile = (params) => api.get('/admin/profile', { params })
+export const getMyPlan = (params) => api.get('/admin/me/plan', { params })
+
+// ── Billing ───────────────────────────────────────────
+export const getBillingPlans = (params) => api.get('/admin/billing/plans', { params })
+export const getBillingPayments = (params) => api.get('/admin/billing/payments', { params })
+export const createInvoice = (data, params) => api.post('/payments/create-invoice', data, { params })
+export const mockCompletePayment = (merchantTransId, params) =>
+  api.post('/payments/mock/complete', null, { params: { ...params, merchant_trans_id: merchantTransId } })
 export const updateProfile = (data, params) => api.put('/admin/profile', data, { params })
 
 // ── Couriers ──────────────────────────────────────────
@@ -88,3 +96,17 @@ export const getCateringOrders = (params) => api.get('/admin/orders', { params: 
 export const getAdminBranches = (params) => api.get('/admin/branches', { params })
 export const getBranchSettings = (branchId) => api.get(`/admin/branches/${branchId}/settings`)
 export const updateBranchSettings = (branchId, data) => api.put(`/admin/branches/${branchId}/settings`, data)
+
+// ── POS / Printer ─────────────────────────────────────
+export const getPOSConfig = (params) => api.get('/admin/pos/config', { params })
+export const updatePOSConfig = (data, params) => api.put('/admin/pos/config', data, { params })
+export const testPOSPrint = (params) => api.post('/admin/pos/test-print', null, { params })
+
+// ── Super Admin ───────────────────────────────────────
+export const getSuperStats = (params) => api.get('/super-admin/stats', { params })
+export const getSuperRestaurants = () => api.get('/super-admin/restaurants')
+export const patchSuperRestaurant = (id, data) => api.patch(`/super-admin/restaurants/${id}`, data)
+export const getMaintenance = () => api.get('/super-admin/maintenance')
+export const setMaintenance = (data) => api.put('/super-admin/maintenance', data)
+export const getSuperActions = (params) => api.get('/super-admin/actions', { params })
+export const getHealth = () => api.get('/health')

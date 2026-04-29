@@ -1,8 +1,13 @@
 """Admin login — Restaurants jadvaldan va .env super admin dan tekshiradi"""
+import base64
 import hashlib
+import hmac
+import json
+import time
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from pydantic import BaseModel
-from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from slowapi import Limiter
@@ -11,6 +16,51 @@ from slowapi.util import get_remote_address
 from api.config import settings
 from api.database import get_db
 from database.models import Restaurant
+
+
+# ── Qisqa muddatli super-admin tokeni (HMAC-SHA256 + exp) ─────────────
+# JWT-like, lekin pyjwt'siz. Format: <payload_b64>.<sig_b64>
+# Payload: {"u": username, "exp": unix_seconds, "is_super": True}
+SUPER_TOKEN_TTL_SECONDS = 60 * 60   # 1 soat
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _b64url_decode(s: str) -> bytes:
+    padded = s + "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(padded.encode())
+
+
+def make_super_token(username: str, ttl_seconds: int = SUPER_TOKEN_TTL_SECONDS) -> str:
+    payload = {"u": username, "exp": int(time.time()) + ttl_seconds, "is_super": True}
+    body = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
+    sig = hmac.new(
+        settings.SECRET_KEY.encode(), body.encode(), hashlib.sha256
+    ).digest()
+    return f"{body}.{_b64url_encode(sig)}"
+
+
+def verify_super_token(token: str) -> Optional[dict]:
+    """Qaytaradi: payload dict yoki None (yaroqsiz/eskirgan)."""
+    if not token or "." not in token:
+        return None
+    try:
+        body, sig = token.rsplit(".", 1)
+        expected = hmac.new(
+            settings.SECRET_KEY.encode(), body.encode(), hashlib.sha256
+        ).digest()
+        if not hmac.compare_digest(_b64url_encode(expected), sig):
+            return None
+        payload = json.loads(_b64url_decode(body))
+    except Exception:
+        return None
+    if not payload.get("is_super"):
+        return None
+    if int(payload.get("exp", 0)) < int(time.time()):
+        return None
+    return payload
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -49,7 +99,7 @@ async def login(request: Request, data: LoginRequest, db: AsyncSession = Depends
     # 1. .env dagi super admin (barcha restoranlarga kirish)
     if data.username == settings.ADMIN_USERNAME and data.password == settings.ADMIN_PASSWORD:
         return LoginResponse(
-            token=settings.SECRET_KEY,
+            token=make_super_token(data.username),
             name=data.username,
             is_super=True,
             restaurant_id=None,
@@ -114,5 +164,7 @@ async def super_login(request: Request, data: SuperLoginRequest):
         data.username == settings.SUPER_ADMIN_USERNAME
         and data.password == settings.SUPER_ADMIN_PASSWORD
     ):
-        return SuperLoginResponse(token=settings.SECRET_KEY, name="Super Admin")
+        return SuperLoginResponse(
+            token=make_super_token(data.username), name="Super Admin",
+        )
     raise HTTPException(401, "Login yoki parol noto'g'ri")
