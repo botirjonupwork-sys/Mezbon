@@ -30,6 +30,11 @@ class CourierRegister(BaseModel):
 # ── Ro'yxatdan o'tish ──────────────────────────────────
 @router.post("/register")
 async def register_courier(data: CourierRegister, db: AsyncSession = Depends(get_db)):
+    """Yangi kuryer ro'yxatdan o'tishi.
+
+    SaaS izolatsiya: courier.restaurant_id branch.restaurant_id'dan olinadi.
+    Branch ko'rsatilmasa — xato (kuryer qaysi restoranniki ekan bilolmaymiz).
+    """
     result = await db.execute(
         select(Courier).where(Courier.telegram_id == data.telegram_id)
     )
@@ -37,12 +42,23 @@ async def register_courier(data: CourierRegister, db: AsyncSession = Depends(get
     if existing:
         raise HTTPException(400, "Siz allaqachon ro'yxatdan o'tgansiz!")
 
+    # Branch'dan restaurant_id aniqlash (SaaS izolatsiya)
+    if not data.branch_id:
+        raise HTTPException(400, "branch_id majburiy — kuryer qaysi filialda ishlashini ko'rsating")
+
+    branch = (await db.execute(
+        select(Branch).where(Branch.id == data.branch_id, Branch.is_active == True)
+    )).scalar_one_or_none()
+    if not branch:
+        raise HTTPException(404, "Filial topilmadi")
+
     courier = Courier(
         telegram_id=data.telegram_id,
         full_name=data.full_name,
         phone=data.phone,
         transport_type=data.transport_type,
         branch_id=data.branch_id,
+        restaurant_id=branch.restaurant_id,  # SaaS izolatsiya
     )
     db.add(courier)
     await db.commit()
@@ -144,8 +160,18 @@ async def accept_order(telegram_id: str, order_id: int, db: AsyncSession = Depen
     order = result.scalar_one_or_none()
     if not order:
         raise HTTPException(404, "Zakaz topilmadi")
+
+    # SaaS izolatsiya: kuryer faqat o'z restoraniining buyurtmalarini qabul qila oladi
+    if courier.restaurant_id and order.restaurant_id and courier.restaurant_id != order.restaurant_id:
+        raise HTTPException(403, "Bu zakaz boshqa restoranniki!")
+
     if order.courier_id and order.courier_id != courier.id:
         raise HTTPException(400, "Bu zakaz boshqa kuryerga tayinlangan!")
+
+    # Status transition validatsiya — faqat ma'lum holatlarda accept mumkin
+    valid_prev = (OrderStatus.confirmed, OrderStatus.preparing, OrderStatus.ready)
+    if order.status not in valid_prev:
+        raise HTTPException(400, f"Bu zakaz holatida ({order.status.value}) qabul qilib bo'lmaydi")
 
     order.courier_id = courier.id
     order.status = OrderStatus.delivering
@@ -203,11 +229,19 @@ async def list_couriers(
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Courier).order_by(Courier.created_at.desc())
+
+    # SaaS izolatsiya: restoran filteri har doim
+    if restaurant_id is None:
+        return []
+    branch_ids_subq = select(Branch.id).where(Branch.restaurant_id == restaurant_id)
+    query = query.where(Courier.branch_id.in_(branch_ids_subq))
+
     if branch_id:
+        # IDOR
+        br = (await db.execute(select(Branch).where(Branch.id == branch_id))).scalar_one_or_none()
+        if not br or br.restaurant_id != restaurant_id:
+            return []
         query = query.where(Courier.branch_id == branch_id)
-    elif restaurant_id:
-        branch_ids = select(Branch.id).where(Branch.restaurant_id == restaurant_id)
-        query = query.where(Courier.branch_id.in_(branch_ids))
     result = await db.execute(query)
     couriers = result.scalars().all()
     return [
@@ -232,6 +266,17 @@ class CourierUpdate(BaseModel):
 
 
 # ── Admin: kuryer ma'lumotlarini yangilash ─────────────
+async def _check_courier_belongs(db, courier, restaurant_id) -> None:
+    """IDOR himoyasi: kuryer joriy restoranniki ekanini tekshirish."""
+    if not restaurant_id:
+        return  # super-admin
+    if not courier.branch_id:
+        return  # restaurant-level kuryer
+    br = (await db.execute(select(Branch).where(Branch.id == courier.branch_id))).scalar_one_or_none()
+    if not br or br.restaurant_id != restaurant_id:
+        raise HTTPException(403, "Bu kuryer sizning restoraningizniki emas")
+
+
 @router.put("/{courier_id}")
 async def update_courier(
     courier_id: int,
@@ -243,6 +288,7 @@ async def update_courier(
     courier = result.scalar_one_or_none()
     if not courier:
         raise HTTPException(404, "Kuryer topilmadi")
+    await _check_courier_belongs(db, courier, restaurant_id)
     for key, value in data.model_dump(exclude_unset=True).items():
         setattr(courier, key, value)
     await db.commit()
@@ -260,6 +306,7 @@ async def delete_courier(
     courier = result.scalar_one_or_none()
     if not courier:
         raise HTTPException(404, "Kuryer topilmadi")
+    await _check_courier_belongs(db, courier, restaurant_id)
     await db.delete(courier)
     await db.commit()
     return {"success": True}
@@ -277,6 +324,7 @@ async def update_courier_status(
     courier = result.scalar_one_or_none()
     if not courier:
         raise HTTPException(404, "Kuryer topilmadi")
+    await _check_courier_belongs(db, courier, restaurant_id)
 
     try:
         courier.status = CourierStatus(status)

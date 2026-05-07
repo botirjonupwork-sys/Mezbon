@@ -105,7 +105,10 @@ async def create_order(telegram_id: str, order_data: dict):
 
 async def get_user_orders(telegram_id: str):
     async with httpx.AsyncClient() as client:
-        r = await client.get(f"{BASE_URL}/orders/user/{telegram_id}")
+        r = await client.get(
+            f"{BASE_URL}/orders/user/{telegram_id}",
+            params={"restaurant_id": _restaurant_id},  # SaaS izolatsiya
+        )
         if r.status_code == 200:
             return r.json()
         return []
@@ -168,7 +171,10 @@ async def create_review(telegram_id: str, rating: int, comment: str = ""):
     async with httpx.AsyncClient() as client:
         r = await client.post(
             f"{BASE_URL}/reviews/",
-            params={"telegram_id": telegram_id},
+            params={
+                "telegram_id": telegram_id,
+                "restaurant_id": _restaurant_id,  # SaaS izolatsiya
+            },
             json={"rating": rating, "comment": comment},
         )
         return r.json()
@@ -296,3 +302,88 @@ async def create_catering_order(telegram_id: str, order_data: dict, branch_id: i
         except Exception:
             detail = None
         return {"error": detail or r.text, "status_code": r.status_code}
+
+
+# ── Telegram Native Payments (faza 4) ─────────────────────────────────
+
+async def tg_payment_prepare(order_id: int, provider: str = "click") -> dict:
+    """`/payments/telegram/prepare` — invoice payload tayyorlash.
+
+    Qaytadi: prices, provider_token, total_tiyin, is_prepayment, ...
+    """
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.post(
+            f"{BASE_URL}/payments/telegram/prepare",
+            json={"order_id": order_id, "provider": provider},
+            headers=_BOT_HEADERS,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+async def tg_payment_summary(order_id: int) -> dict:
+    """`/payments/telegram/summary` — UI uchun ko'rsatma (chek bo'lmagan)."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        r = await client.post(
+            f"{BASE_URL}/payments/telegram/summary",
+            json={"order_id": order_id},
+            headers=_BOT_HEADERS,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+async def tg_payment_precheck(order_id: int) -> dict:
+    """`/payments/telegram/precheck` — pre_checkout_query'da chaqiriladi.
+
+    Qaytadi: {ok: bool, error_message, reason_code}
+    """
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        r = await client.post(
+            f"{BASE_URL}/payments/telegram/precheck",
+            json={"order_id": order_id},
+            headers=_BOT_HEADERS,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+async def tg_payment_confirm(
+    *,
+    order_id: int,
+    amount_tiyin: int,
+    provider: str,
+    telegram_payment_charge_id: str = None,
+    provider_payment_charge_id: str = None,
+    is_prepayment: bool = False,
+    prepayment_percent: int = None,
+) -> dict:
+    """`/payments/telegram/confirm` — successful_payment'da chaqiriladi."""
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.post(
+            f"{BASE_URL}/payments/telegram/confirm",
+            json={
+                "order_id": order_id,
+                "amount_tiyin": amount_tiyin,
+                "provider": provider,
+                "telegram_payment_charge_id": telegram_payment_charge_id,
+                "provider_payment_charge_id": provider_payment_charge_id,
+                "is_prepayment": is_prepayment,
+                "prepayment_percent": prepayment_percent,
+            },
+            headers=_BOT_HEADERS,
+        )
+        r.raise_for_status()
+        return r.json()
+
+
+async def cancel_unpaid_order(order_id: int) -> dict:
+    """`/payments/telegram/cancel-unpaid` — to'lanmagan buyurtmani bekor qilish."""
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        r = await client.post(
+            f"{BASE_URL}/payments/telegram/cancel-unpaid",
+            json={"order_id": order_id},
+            headers=_BOT_HEADERS,
+        )
+        r.raise_for_status()
+        return r.json()

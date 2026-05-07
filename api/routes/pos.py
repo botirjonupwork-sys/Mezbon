@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth_deps import require_restaurant_admin
+from api.auth_deps import get_restaurant_context, require_restaurant_admin
 from api.config import settings
 from api.database import get_db
 from api.services.pos_adapter import POS_TYPES, adapter as pos_adapter
@@ -51,9 +51,13 @@ async def get_pos_config(
 @router.put("/admin/pos/config")
 async def update_pos_config(
     body: POSConfigUpdate,
-    restaurant_id: int = Depends(require_restaurant_admin),
+    restaurant_id: int = Depends(get_restaurant_context),
     db: AsyncSession = Depends(get_db),
 ):
+    """POS sozlamalarini o'zgartirish — super-admin uchun X-Restaurant-Context header.
+
+    Har o'zgartirish `super_admin_actions` jadvaliga audit log yoziladi.
+    """
     if not restaurant_id:
         raise HTTPException(400, "restaurant_id kerak")
     res = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
@@ -82,7 +86,7 @@ async def update_pos_config(
 
 @router.post("/admin/pos/test-print")
 async def test_print(
-    restaurant_id: int = Depends(require_restaurant_admin),
+    restaurant_id: int = Depends(get_restaurant_context),
     db: AsyncSession = Depends(get_db),
 ):
     """Joriy POS sozlamalari bilan "Salom Dunyo" testini yuboradi.

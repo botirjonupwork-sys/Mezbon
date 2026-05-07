@@ -8,6 +8,7 @@ import {
   DeleteOutlined, StopOutlined, CheckOutlined
 } from '@ant-design/icons'
 import { getCouriers, updateCourierStatus, updateCourier, deleteCourier } from '../api'
+import { fmtTashkent, fmtDateOnly } from '../utils/datetime'
 import { useBranchStore } from '../store/branch'
 import { useAuthStore } from '../store/auth'
 
@@ -33,7 +34,7 @@ export default function Couriers() {
   const [editingCourier, setEditingCourier] = useState(null)
   const [form] = Form.useForm()
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
-  const restaurantId = useAuthStore((s) => s.restaurantId)
+  const restaurantId = useAuthStore((s) => s.currentRestaurantId)
 
   const load = () => {
     setLoading(true)
@@ -174,7 +175,7 @@ export default function Couriers() {
     {
       title: 'Sana',
       dataIndex: 'created_at',
-      render: (d) => d ? new Date(d).toLocaleDateString('uz') : '—',
+      render: (d) => fmtDateOnly(d),
     },
     {
       title: 'Amallar',

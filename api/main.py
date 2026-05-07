@@ -13,7 +13,8 @@ from api.logging_config import setup_logging
 from api.services import platform
 from api.routes import (
     users, menu, orders, reviews, admin, auth, couriers, superadmin, branches,
-    catering, billing, ai, health, super_admin, pos,
+    catering, billing, ai, health, super_admin, super_legacy, pos,
+    telegram_payments, registration,
 )
 
 # Logging — eng birinchi sozlanishi shart (boshqa modullar import paytida ham log yozishi mumkin)
@@ -26,9 +27,16 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["300/minute"])
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await create_tables()
-    # Rasm papkasini yaratamiz
     os.makedirs("static/images/products", exist_ok=True)
+
+    # ── APScheduler — daily 10:00 subscription check ──
+    # ENABLE_SCHEDULER=1 (yoki DEBUG=False) bo'lsa avtomatik yoqiladi
+    from api.services.scheduler import start_scheduler, shutdown_scheduler
+    start_scheduler()
+
     yield
+
+    shutdown_scheduler()
 
 
 app = FastAPI(
@@ -78,6 +86,48 @@ _MAINTENANCE_ALLOW_PREFIXES = (
 )
 
 
+# ── Webhook latency tracker (Faza 7) ─────────────────────────────────────
+
+
+_WEBHOOK_KEY_MAP = {
+    "/payments/click/webhook": "click",
+    "/payments/payme/webhook": "payme",
+    "/payments/telegram/prepare": "telegram_prepare",
+    "/payments/telegram/precheck": "telegram_precheck",
+    "/payments/telegram/confirm": "telegram_confirm",
+}
+
+
+@app.middleware("http")
+async def webhook_metrics_middleware(request: Request, call_next):
+    import time as _t
+    path = request.url.path
+    key = _WEBHOOK_KEY_MAP.get(path)
+    if not key:
+        return await call_next(request)
+    t0 = _t.perf_counter()
+    error = None
+    response = None
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        error = type(e).__name__
+        raise
+    finally:
+        try:
+            from api.services import webhook_metrics
+            webhook_metrics.record(
+                endpoint_key=key,
+                duration_ms=(_t.perf_counter() - t0) * 1000,
+                status_code=response.status_code if response else 500,
+                path=path,
+                error=error,
+            )
+        except Exception:
+            pass
+
+
 @app.middleware("http")
 async def maintenance_guard(request: Request, call_next):
     if platform.is_maintenance():
@@ -96,6 +146,76 @@ async def maintenance_guard(request: Request, call_next):
             )
     return await call_next(request)
 
+
+# ── Subscription suspended guard ─────────────────────────────────────────
+# Restoran suspended bo'lsa (10 kun grace tugagan), uning API'lari yopiladi —
+# foydalanuvchi faqat /admin/billing/* va auth orqali qayta tarif sotib olishi mumkin.
+
+_SUSPENSION_ALLOW_PREFIXES = (
+    "/admin/billing",       # tarif sotib olish — yagona yo'l
+    "/payments/",           # to'lov yaratish va webhook
+    "/auth/",               # login/refresh
+    "/super-admin/",        # super-admin har doim ishlaydi
+    "/super/",              # super legacy
+    "/health",
+    "/static/",
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+)
+
+
+@app.middleware("http")
+async def subscription_guard(request: Request, call_next):
+    """Suspended restoranlar uchun 402 Payment Required.
+
+    JWT/legacy token'dan rid'ni o'qib, Restaurant.subscription_status='suspended'
+    bo'lsa, allow-list tashqarisidagi har endpoint 402 qaytaradi.
+
+    Performance eslatma: har request'da bitta DB query (faqat suspended uchun).
+    Yuqori scale paytida cache (Redis) qo'shish kerak.
+    """
+    path = request.url.path
+    if any(path.startswith(p) for p in _SUSPENSION_ALLOW_PREFIXES):
+        return await call_next(request)
+
+    # Token yo'q bo'lsa — tekshirish kerak emas (boshqa middleware/dep ishlaydi)
+    auth = request.headers.get("authorization") or ""
+    if not auth:
+        return await call_next(request)
+
+    # Tezkor tekshiruv — faqat token mavjud bo'lsa
+    try:
+        from api.auth_deps import _parse_token
+        ctx = _parse_token(auth)
+        if not ctx or ctx.is_super or not ctx.restaurant_id:
+            return await call_next(request)
+
+        from api.database import AsyncSessionLocal
+        from sqlalchemy import select
+        from database.models import Restaurant
+        async with AsyncSessionLocal() as db:
+            status = (await db.execute(
+                select(Restaurant.subscription_status).where(Restaurant.id == ctx.restaurant_id)
+            )).scalar_one_or_none()
+            if status == "suspended":
+                return JSONResponse(
+                    status_code=402,
+                    content={
+                        "detail": {
+                            "code": "subscription_suspended",
+                            "message": "Imtiyozli davr tugadi. Hizmatni tiklash uchun "
+                                       "tarif uchun to'lov qiling.",
+                            "billing_url": "/admin/billing/upgrade",
+                        }
+                    },
+                )
+    except Exception:
+        # Middleware xato bersa, asosiy oqimga to'sqinlik qilmaslik
+        pass
+
+    return await call_next(request)
+
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(users.public_router)
@@ -110,7 +230,12 @@ app.include_router(billing.router)
 app.include_router(ai.router)
 app.include_router(health.router)
 app.include_router(super_admin.router)
+app.include_router(super_legacy.router)
 app.include_router(pos.router)
+app.include_router(telegram_payments.router)
+app.include_router(registration.router)
+from api.routes import legal  # noqa: E402
+app.include_router(legal.router)
 
 # Static fayllar (rasmlar)
 os.makedirs("static", exist_ok=True)

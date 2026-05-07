@@ -16,6 +16,15 @@ STATUS_TEXT = {
     "cancelled":  "❌ Bekor qilindi",
 }
 
+PAYMENT_STATUS_TEXT = {
+    "pending":         "💳 To'lov kutilmoqda",
+    "paid":            "✅ To'langan",
+    "partial":         "💰 Qisman",
+    "refunded":        "💸 Qaytarilgan",
+    "partial_refund":  "💸 Qisman qaytarilgan",
+    "cancelled":       "❌ Bekor",
+}
+
 
 @router.message(F.text == "📦 Zakazlarim")
 async def my_orders(message: Message):
@@ -32,9 +41,17 @@ async def my_orders(message: Message):
     text = "📦 <b>Zakazlaringiz:</b>\n\n"
     for order in orders[:10]:
         status = STATUS_TEXT.get(order["status"], order["status"])
-        text += (
-            f"#{order['id']} — {order['total_price']:,.0f} so'm — {status}\n"
+        ps = (order.get("payment_status") or "pending")
+        ps_text = PAYMENT_STATUS_TEXT.get(ps, ps)
+        line = (
+            f"#{order['id']} — <b>{order['total_price']:,.0f} so'm</b>\n"
+            f"   📋 {status}    {ps_text}"
         )
+        # Telegram orqali to'langan bo'lsa, charge_id qisqartirib ko'rsatamiz
+        ch = order.get("payment_charge_id")
+        if ch and ps == "paid":
+            line += f"\n   💳 tx: <code>{str(ch)[:12]}…</code>"
+        text += line + "\n\n"
 
     await message.answer(text, parse_mode="HTML")
 

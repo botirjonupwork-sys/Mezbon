@@ -1,16 +1,21 @@
 import { useEffect, useState } from 'react'
 import {
   Card, Row, Col, Button, Tag, Typography, Space, Alert, Spin, Modal,
-  Table, Empty, Divider, message,
+  Table, Empty, Divider, message, Tooltip, Radio,
 } from 'antd'
 import {
   CheckCircleOutlined, CloseCircleOutlined, CreditCardOutlined,
   ThunderboltOutlined, RocketOutlined, GiftOutlined, RobotOutlined,
-  CalendarOutlined, HistoryOutlined,
+  CalendarOutlined, HistoryOutlined, LockOutlined, ClockCircleOutlined,
+  ThunderboltFilled,
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
-import { getBillingPlans, getBillingPayments, createInvoice, mockCompletePayment } from '../api'
+import {
+  getBillingPlans, getBillingPayments, createInvoice, mockCompletePayment,
+  getBillingStatus, upgradeBillingPlan, getProfile,
+} from '../api'
 import { useAuthStore } from '../store/auth'
+import { fmtTashkent } from '../utils/datetime'
 
 const { Title, Text, Paragraph } = Typography
 
@@ -37,25 +42,70 @@ function PaymentStatusTag({ status }) {
 export default function Billing() {
   const { restaurantId } = useAuthStore()
   const [loading, setLoading] = useState(true)
-  const [creating, setCreating] = useState(null)  // plan_id when creating
+  const [creating, setCreating] = useState(null)
   const [data, setData] = useState({ current_plan_id: null, current_plan_expires_at: null, plans: [] })
   const [payments, setPayments] = useState([])
-  const [paymentModal, setPaymentModal] = useState(null)  // { url, payment_id, merchant_trans_id, amount_uzs }
+  const [paymentModal, setPaymentModal] = useState(null)
+  // Faza 6: Upgrade modal (immediate vs queued)
+  const [upgradeModal, setUpgradeModal] = useState(null)   // { plan, provider }
+  const [billingStatus, setBillingStatus] = useState(null)
+  const [profile, setProfile] = useState(null)             // is_verified ni o'qish uchun
 
   const load = async () => {
     if (!restaurantId) { setLoading(false); return }
     setLoading(true)
     try {
-      const [plansRes, paymentsRes] = await Promise.all([
+      const [plansRes, paymentsRes, statusRes, profileRes] = await Promise.all([
         getBillingPlans({ restaurant_id: restaurantId }),
         getBillingPayments({ restaurant_id: restaurantId }),
+        getBillingStatus({ restaurant_id: restaurantId }).catch(() => ({ data: null })),
+        getProfile({ restaurant_id: restaurantId }).catch(() => ({ data: null })),
       ])
       setData(plansRes.data || { plans: [] })
       setPayments(paymentsRes.data || [])
+      setBillingStatus(statusRes.data)
+      setProfile(profileRes.data)
     } catch (e) {
       message.error('Ma\'lumotlarni yuklashda xato')
     } finally {
       setLoading(false)
+    }
+  }
+
+  // ── Faza 6: Upgrade flow (modal orqali) ─────────────────
+  const openUpgradeModal = (plan, provider) => {
+    if (!profile?.is_verified) {
+      message.warning('Tarif sotib olish uchun INN tasdiqlangan bo\'lishi kerak')
+      return
+    }
+    setUpgradeModal({ plan, provider })
+  }
+
+  const handleUpgrade = async (upgradeType) => {
+    if (!upgradeModal) return
+    setCreating(upgradeModal.plan.id)
+    try {
+      const res = await upgradeBillingPlan({
+        plan_id: upgradeModal.plan.id,
+        upgrade_type: upgradeType,        // 'immediate' yoki 'queued'
+        provider: upgradeModal.provider,
+      }, { restaurant_id: restaurantId })
+      const d = res.data
+      setUpgradeModal(null)
+      setPaymentModal({
+        url: d.payment_url,
+        payment_id: d.payment_id,
+        merchant_trans_id: d.merchant_trans_id,
+        amount_uzs: d.amount_uzs,
+        provider: upgradeModal.provider,
+        upgrade_type: upgradeType,
+        message: d.message,
+      })
+    } catch (e) {
+      const detail = e?.response?.data?.detail
+      message.error(typeof detail === 'string' ? detail : (detail?.message || 'Upgrade xato'))
+    } finally {
+      setCreating(null)
     }
   }
 
@@ -103,7 +153,7 @@ export default function Billing() {
     { title: '#', dataIndex: 'id', width: 60 },
     {
       title: 'Sana', dataIndex: 'created_at',
-      render: (v) => v ? dayjs(v).format('DD.MM.YYYY HH:mm') : '—',
+      render: (v) => fmtTashkent(v),
     },
     {
       title: 'Summa', dataIndex: 'amount_uzs',
@@ -210,13 +260,19 @@ export default function Billing() {
                     <Button block size="large" disabled>
                       Bepul tarif (downgrade)
                     </Button>
+                  ) : !profile?.is_verified ? (
+                    <Tooltip title="INN tasdiqlangan bo'lishi kerak. Super-admin bilan bog'laning.">
+                      <Button block size="large" disabled icon={<LockOutlined />}>
+                        🔒 Tasdiqlash kerak
+                      </Button>
+                    </Tooltip>
                   ) : (
                     <Space.Compact style={{ width: '100%' }}>
                       <Button
                         block size="large" type="primary"
                         loading={creating === plan.id}
                         icon={<CreditCardOutlined />}
-                        onClick={() => handlePay(plan.id, 'click')}
+                        onClick={() => openUpgradeModal(plan, 'click')}
                         style={{ background: '#1677ff' }}
                       >
                         Click
@@ -225,7 +281,7 @@ export default function Billing() {
                         block size="large" type="primary"
                         loading={creating === plan.id}
                         icon={<CreditCardOutlined />}
-                        onClick={() => handlePay(plan.id, 'payme')}
+                        onClick={() => openUpgradeModal(plan, 'payme')}
                         style={{ background: '#00a884' }}
                       >
                         Payme
@@ -238,6 +294,84 @@ export default function Billing() {
           )
         })}
       </Row>
+
+      {/* Faza 6: Upgrade options modal — "Hozir o'tish" vs "Navbat" */}
+      <Modal
+        title={<><RocketOutlined /> Tarifga o'tish — variantni tanlang</>}
+        open={!!upgradeModal}
+        onCancel={() => setUpgradeModal(null)}
+        footer={null}
+        width={620}
+      >
+        {upgradeModal && (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Alert
+              type="info" showIcon
+              message={`Tanlangan tarif: ${upgradeModal.plan.name}`}
+              description={`Oylik narx: ${formatUZS(upgradeModal.plan.monthly_price)} so'm`}
+            />
+
+            {billingStatus?.current_plan && billingStatus.days_left > 0 && (
+              <Alert
+                type="warning"
+                message={`Joriy tarif: ${billingStatus.current_plan.name}`}
+                description={`Qoldi: ${billingStatus.days_left} kun.`}
+              />
+            )}
+
+            <Card hoverable
+              onClick={() => handleUpgrade('immediate')}
+              style={{ borderColor: '#fa8c16', cursor: 'pointer' }}
+            >
+              <Space align="start" size={16}>
+                <div style={{ fontSize: 32 }}>🚀</div>
+                <div>
+                  <Text strong style={{ fontSize: 16 }}>Hozir o'tish</Text>
+                  <Tag color="orange" style={{ marginLeft: 8 }}>Tavsiya</Tag>
+                  <Paragraph type="secondary" style={{ marginBottom: 4, marginTop: 4 }}>
+                    Yangi tarif darhol boshlanadi.
+                    {billingStatus?.days_left > 0 && (
+                      <> Joriy tarifning <b>{billingStatus.days_left} kuni muzlatilib</b> saqlanadi
+                      (30 kun ichida ishlatish mumkin).</>
+                    )}
+                  </Paragraph>
+                  <Button type="primary" icon={<ThunderboltFilled />}
+                    loading={creating === upgradeModal.plan.id}
+                    style={{ background: '#fa8c16', borderColor: '#fa8c16' }}>
+                    Hozir o'tish va to'lash
+                  </Button>
+                </div>
+              </Space>
+            </Card>
+
+            <Card hoverable
+              onClick={() => handleUpgrade('queued')}
+              style={{ borderColor: '#1677ff', cursor: 'pointer' }}
+            >
+              <Space align="start" size={16}>
+                <div style={{ fontSize: 32 }}>📅</div>
+                <div>
+                  <Text strong style={{ fontSize: 16 }}>Navbat bilan o'tish</Text>
+                  <Paragraph type="secondary" style={{ marginBottom: 4, marginTop: 4 }}>
+                    To'lov hozir, lekin yangi tarif faqat
+                    <b> {billingStatus?.current_plan?.name || 'joriy tarif'} 30-kuni tugashi bilan </b>
+                    avtomatik faollashadi. Hech narsa muzlatilmaydi.
+                  </Paragraph>
+                  <Button type="primary" icon={<ClockCircleOutlined />}
+                    loading={creating === upgradeModal.plan.id}>
+                    Navbat bilan to'lash
+                  </Button>
+                </div>
+              </Space>
+            </Card>
+
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              Provayder: <b>{upgradeModal.provider.toUpperCase()}</b>.
+              To'lov muvaffaqiyatli bo'lgach, tarif tanlangan variantga ko'ra qo'llanadi.
+            </Text>
+          </Space>
+        )}
+      </Modal>
 
       {/* Payment modal */}
       <Modal

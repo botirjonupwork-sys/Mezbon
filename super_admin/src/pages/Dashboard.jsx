@@ -9,6 +9,7 @@ import {
 import { Line, Pie } from '@ant-design/charts'
 import dayjs from 'dayjs'
 import { getSuperAdminStats, getHealth } from '../api'
+import { fmtTashkent } from '../utils/datetime'
 
 const { Title, Text } = Typography
 
@@ -147,7 +148,7 @@ export default function Dashboard() {
                 <Text type="secondary">Server vaqti ({health?.server_time?.timezone})</Text>
                 <Text strong>
                   <ApiOutlined />{' '}
-                  {health?.server_time?.iso ? dayjs(health.server_time.iso).format('YYYY-MM-DD HH:mm:ss') : '—'}
+                  {fmtTashkent(health?.server_time?.iso, 'YYYY-MM-DD HH:mm:ss')}
                 </Text>
               </Space>
             </Col>

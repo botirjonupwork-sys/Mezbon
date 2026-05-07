@@ -1,31 +1,28 @@
 import { useEffect, useState, useRef } from 'react'
 import {
   Card, Button, Space, Tag, Table, Typography, Alert, Spin,
-  Badge, Tooltip, Row, Col, Statistic, Divider
+  Badge, Tooltip, Row, Col, Statistic, message, Popconfirm,
 } from 'antd'
 import {
-  PlayCircleOutlined, StopOutlined, ReloadOutlined,
-  RobotOutlined, CheckCircleOutlined, CloseCircleOutlined,
-  CopyOutlined, FileTextOutlined
+  ReloadOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined,
+  WarningOutlined, ThunderboltOutlined,
 } from '@ant-design/icons'
-import { getBotsStatus, startBots, stopBots, restartBots } from '../api'
-import { message } from 'antd'
+import { getBotsStatus, restartBots } from '../api'
 
 const { Title, Text } = Typography
 
 export default function Bots() {
-  const [status, setStatus] = useState(null)
+  const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [actionLoading, setActionLoading] = useState('')
-  const logRef = useRef(null)
+  const [restarting, setRestarting] = useState(false)
   const intervalRef = useRef(null)
 
   const fetchStatus = async () => {
     try {
       const res = await getBotsStatus()
-      setStatus(res.data)
-    } catch {
-      // silent
+      setData(res.data)
+    } catch (e) {
+      // silent for polling
     } finally {
       setLoading(false)
     }
@@ -33,260 +30,163 @@ export default function Bots() {
 
   useEffect(() => {
     fetchStatus()
-    intervalRef.current = setInterval(fetchStatus, 4000)
+    intervalRef.current = setInterval(fetchStatus, 15000)  // har 15 soniya
     return () => clearInterval(intervalRef.current)
   }, [])
 
-  useEffect(() => {
-    if (logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight
-    }
-  }, [status?.logs])
-
-  const handleAction = async (action, label) => {
-    setActionLoading(action)
+  const onRestart = async () => {
+    setRestarting(true)
     try {
-      const fn = action === 'start' ? startBots : action === 'stop' ? stopBots : restartBots
-      const res = await fn()
-      const st = res.data?.status
-      if (st === 'already_running') message.info('Botlar allaqachon ishlayapti')
-      else if (st === 'not_running') message.info('Botlar ishlayotgan emas')
-      else message.success(`${label} bajarildi`)
-      await fetchStatus()
+      const r = await restartBots()
+      if (r.data?.ok) {
+        message.success('Bots service qayta ishga tushirildi (yangi tokenlar yuklanmoqda)')
+        setTimeout(fetchStatus, 5000)
+      } else {
+        message.error(r.data?.error || 'Restart xato')
+      }
     } catch (e) {
-      message.error(e.response?.data?.detail || 'Xato yuz berdi')
+      message.error(e?.response?.data?.detail || 'Xato')
     } finally {
-      setActionLoading('')
+      setRestarting(false)
     }
   }
 
-  const copyCommand = () => {
-    navigator.clipboard.writeText('python scripts/run_all_bots.py')
-    message.success('Nusxalandi')
+  const renderBotCell = (bot) => {
+    if (!bot?.configured) {
+      return <Tag color="default">Token yo'q</Tag>
+    }
+    if (bot.online) {
+      return (
+        <Space direction="vertical" size={0}>
+          <Tag color="green" icon={<CheckCircleOutlined />}>
+            Online
+          </Tag>
+          <Text style={{ fontSize: 11, color: '#666' }}>
+            @{bot.username || '—'}
+          </Text>
+        </Space>
+      )
+    }
+    return (
+      <Tooltip title={bot.error || ''}>
+        <Tag color="red" icon={<CloseCircleOutlined />}>
+          Offline
+        </Tag>
+      </Tooltip>
+    )
   }
 
-  const botColumns = [
+  const columns = [
+    { title: 'ID', dataIndex: 'restaurant_id', width: 60, render: id => <b>#{id}</b> },
     {
       title: 'Restoran',
-      dataIndex: 'name',
-      render: (v, r) => (
+      render: (_, r) => (
         <Space direction="vertical" size={0}>
-          <b>{v}</b>
-          <Text type="secondary" style={{ fontSize: 11 }}>{r.slug}</Text>
+          <b>{r.restaurant_name}</b>
+          <Space size={4}>
+            <Tag color={r.status === 'active' ? 'green' : 'default'} style={{ fontSize: 10 }}>{r.status}</Tag>
+            {r.subscription_status !== 'active' && (
+              <Tag color="orange" style={{ fontSize: 10 }}>{r.subscription_status}</Tag>
+            )}
+          </Space>
         </Space>
       ),
     },
     {
-      title: 'Customer Bot',
-      dataIndex: 'has_bot',
-      width: 140,
-      render: (v) => v
-        ? <Tag color="green" icon={<CheckCircleOutlined />}>Token bor</Tag>
-        : <Tag color="red" icon={<CloseCircleOutlined />}>Token yo'q</Tag>,
+      title: 'Customer Bot', dataIndex: 'customer_bot', width: 160,
+      render: renderBotCell,
     },
     {
-      title: 'Kuryer Bot',
-      dataIndex: 'has_courier_bot',
-      width: 140,
-      render: (v) => v
-        ? <Tag color="green" icon={<CheckCircleOutlined />}>Token bor</Tag>
-        : <Tag color="orange" icon={<CloseCircleOutlined />}>Token yo'q</Tag>,
-    },
-    {
-      title: '',
-      width: 120,
-      render: (_, r) => (
-        <Button size="small" type="link"
-          href={`/restaurants/${r.id}/edit`}
-          onClick={(e) => { e.preventDefault(); window.location.href = `/restaurants/${r.id}/edit` }}>
-          Token qo'shish →
-        </Button>
-      ),
+      title: 'Courier Bot', dataIndex: 'courier_bot', width: 160,
+      render: renderBotCell,
     },
   ]
 
-  const isRunning = status?.running
-  const botsWithToken = status?.restaurants?.filter(r => r.has_bot || r.has_courier_bot).length ?? 0
-  const totalBots = status?.restaurants?.length ?? 0
-
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />
+
+  const summary = data?.summary || {}
 
   return (
     <div>
-      <Title level={4} style={{ marginBottom: 24 }}>
-        <RobotOutlined style={{ marginRight: 8 }} />
-        Bot boshqaruvi
-      </Title>
+      <Space style={{ marginBottom: 16, justifyContent: 'space-between', width: '100%' }}>
+        <Title level={3} style={{ margin: 0 }}>
+          <RobotOutlined /> Botlar holati
+        </Title>
+        <Space>
+          <Button icon={<ReloadOutlined />} onClick={fetchStatus}>Yangilash</Button>
+          <Popconfirm
+            title="Botlarni qayta ishga tushirish?"
+            description="Yangi qo'shilgan tokenlarni o'qish uchun. ~10 soniya."
+            onConfirm={onRestart}
+          >
+            <Button type="primary" icon={<ThunderboltOutlined />} loading={restarting}>
+              Bots service restart
+            </Button>
+          </Popconfirm>
+        </Space>
+      </Space>
 
-      {/* Holat kartasi */}
-      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-        <Col xs={24} sm={8}>
+      <Alert type="info" showIcon style={{ marginBottom: 16 }}
+        message="Bot tokenlari Restaurant.bot_token va courier_bot_token maydonlarida"
+        description="Token kiritish: Restoranlar → tahrir yoki restoran admin Sozlamalar bo'limidan. Yangi token qo'shilganda 'Bots service restart' tugmasini bosing." />
+
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={12} md={6}>
           <Card>
             <Statistic
-              title="Bot holati"
-              value={isRunning ? 'Ishlayapti' : 'To\'xtatilgan'}
-              valueStyle={{ color: isRunning ? '#52c41a' : '#ff4d4f', fontWeight: 700 }}
-              prefix={
-                isRunning
-                  ? <Badge status="processing" color="green" />
-                  : <Badge status="error" />
-              }
-            />
-            {status?.pid && (
-              <Text type="secondary" style={{ fontSize: 11 }}>PID: {status.pid}</Text>
-            )}
-          </Card>
-        </Col>
-        <Col xs={24} sm={8}>
-          <Card>
-            <Statistic
-              title="Token bor restoranlar"
-              value={botsWithToken}
-              suffix={`/ ${totalBots}`}
-              prefix={<RobotOutlined style={{ color: '#722ed1' }} />}
-              valueStyle={{ color: '#722ed1' }}
+              title="Restoranlar"
+              value={summary.total_restaurants || 0}
+              prefix={<RobotOutlined />}
             />
           </Card>
         </Col>
-        <Col xs={24} sm={8}>
-          <Card style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 12, color: '#999', marginBottom: 8 }}>Qo'lda ishlatish</div>
-              <Space>
-                <Text code style={{ fontSize: 12 }}>python scripts/run_all_bots.py</Text>
-                <Tooltip title="Nusxalash">
-                  <Button size="small" icon={<CopyOutlined />} onClick={copyCommand} />
-                </Tooltip>
-              </Space>
-            </div>
+        <Col xs={12} md={6}>
+          <Card>
+            <Statistic
+              title="Customer botlar online"
+              value={summary.customer_bots_online || 0}
+              suffix={`/ ${summary.customer_bots_configured || 0}`}
+              valueStyle={{ color: '#52c41a' }}
+              prefix={<CheckCircleOutlined />}
+            />
+          </Card>
+        </Col>
+        <Col xs={12} md={6}>
+          <Card>
+            <Statistic
+              title="Courier botlar online"
+              value={summary.courier_bots_online || 0}
+              suffix={`/ ${summary.courier_bots_configured || 0}`}
+              valueStyle={{ color: '#1890ff' }}
+              prefix={<CheckCircleOutlined />}
+            />
+          </Card>
+        </Col>
+        <Col xs={12} md={6}>
+          <Card>
+            <Statistic
+              title="Token yo'q"
+              value={(summary.total_restaurants || 0) - (summary.customer_bots_configured || 0)}
+              prefix={<WarningOutlined />}
+              valueStyle={{ color: '#fa8c16' }}
+            />
           </Card>
         </Col>
       </Row>
 
-      {/* Boshqaruv tugmalari */}
-      <Card
-        title="Amallar"
-        style={{ marginBottom: 24 }}
-        extra={
-          <Button size="small" icon={<ReloadOutlined />} onClick={fetchStatus} loading={loading}>
-            Yangilash
-          </Button>
-        }
-      >
-        {botsWithToken === 0 && (
-          <Alert
-            message="Hech qanday bot tokeni kiritilmagan"
-            description="Restoranlar sahifasida restoranlarni tahrirlash orqali bot_token va courier_bot_token kiriting."
-            type="warning"
-            showIcon
-            style={{ marginBottom: 16 }}
-          />
-        )}
-
-        <Space size="middle" wrap>
-          <Button
-            type="primary"
-            size="large"
-            icon={<PlayCircleOutlined />}
-            loading={actionLoading === 'start'}
-            disabled={isRunning || botsWithToken === 0}
-            onClick={() => handleAction('start', 'Ishga tushirildi')}
-            style={{ background: '#52c41a', borderColor: '#52c41a', minWidth: 160 }}
-          >
-            Ishga tushirish
-          </Button>
-
-          <Button
-            size="large"
-            danger
-            icon={<StopOutlined />}
-            loading={actionLoading === 'stop'}
-            disabled={!isRunning}
-            onClick={() => handleAction('stop', 'To\'xtatildi')}
-            style={{ minWidth: 160 }}
-          >
-            To'xtatish
-          </Button>
-
-          <Button
-            size="large"
-            icon={<ReloadOutlined />}
-            loading={actionLoading === 'restart'}
-            disabled={botsWithToken === 0}
-            onClick={() => handleAction('restart', 'Qayta ishga tushirildi')}
-            style={{ minWidth: 160 }}
-          >
-            Restart
-          </Button>
-        </Space>
-
-        <Divider />
-
-        {isRunning ? (
-          <Alert
-            message={`Barcha botlar ishlayapti (PID: ${status.pid})`}
-            type="success"
-            showIcon
-          />
-        ) : (
-          <Alert
-            message="Botlar hozir ishlamayapti"
-            description="Yuqoridagi 'Ishga tushirish' tugmasini bosing."
-            type="info"
-            showIcon
-          />
-        )}
-      </Card>
-
-      {/* Restoranlar jadval */}
-      <Card title="Restoranlar — bot holati" style={{ marginBottom: 24 }}>
+      <Card>
         <Table
-          dataSource={status?.restaurants ?? []}
-          columns={botColumns}
-          rowKey="id"
-          size="small"
+          rowKey="restaurant_id" size="middle"
+          dataSource={data?.items || []}
+          columns={columns}
           pagination={false}
-          rowClassName={(r) => (!r.has_bot && !r.has_courier_bot) ? 'ant-table-row-disabled' : ''}
+          locale={{ emptyText: 'Restoran yo\'q' }}
         />
       </Card>
 
-      {/* Log */}
-      <Card
-        title={<><FileTextOutlined /> Bot log (oxirgi 40 qator)</>}
-        extra={
-          <Tag color={isRunning ? 'green' : 'default'}>
-            {isRunning ? 'Yangilanmoqda...' : 'To\'xtatilgan'}
-          </Tag>
-        }
-      >
-        <div
-          ref={logRef}
-          style={{
-            background: '#1a1a2e',
-            color: '#e0e0e0',
-            fontFamily: 'monospace',
-            fontSize: 12,
-            padding: 16,
-            borderRadius: 6,
-            height: 320,
-            overflowY: 'auto',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-all',
-          }}
-        >
-          {(status?.logs ?? []).length === 0
-            ? <span style={{ color: '#666' }}>Log bo'sh. Botlarni ishga tushiring.</span>
-            : (status.logs ?? []).map((line, i) => {
-                const color =
-                  line.includes('✅') || line.includes('ishga tushdi') ? '#52c41a'
-                  : line.includes('❌') || line.includes('xato') || line.includes('Error') ? '#ff4d4f'
-                  : line.includes('⚠️') || line.includes('warning') ? '#fa8c16'
-                  : '#e0e0e0'
-                return <div key={i} style={{ color, lineHeight: 1.6 }}>{line || '\u00A0'}</div>
-              })
-          }
-        </div>
-      </Card>
+      <div style={{ marginTop: 12, color: '#888', fontSize: 12 }}>
+        💡 Avtomatik yangilanadi har 15 soniyada. Online holat — Telegram bilan jonli ulanish tekshiruvi (getMe API).
+      </div>
     </div>
   )
 }

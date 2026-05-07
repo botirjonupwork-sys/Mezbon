@@ -96,33 +96,71 @@ class LoginResponse(BaseModel):
 @router.post("/login", response_model=LoginResponse)
 @_auth_limiter.limit("5/minute")
 async def login(request: Request, data: LoginRequest, db: AsyncSession = Depends(get_db)):
-    # 1. .env dagi super admin (barcha restoranlarga kirish)
+    """Restaurant admin yoki .env super-admin login.
+
+    JWT access token chiqaradi (1 soat TTL). Eski SHA-256 hash'lar bcrypt'ga
+    avtomatik upgrade qilinadi (foydalanuvchi parolini bilgan paytda).
+    """
+    from api.services.auth_service import make_access_token
+    from api.services.security import hash_password, needs_rehash, verify_password
+
+    # 1. .env dagi super admin
     if data.username == settings.ADMIN_USERNAME and data.password == settings.ADMIN_PASSWORD:
         return LoginResponse(
-            token=make_super_token(data.username),
+            token=make_access_token(restaurant_id=None, is_super=True, username=data.username),
             name=data.username,
             is_super=True,
             restaurant_id=None,
         )
 
-    # 2. Restaurants jadvalidagi adminlar
-    hashed = hashlib.sha256(data.password.encode()).hexdigest()
+    # 2. Restaurants jadvalidagi adminlar — username bo'yicha topib, parolni verify qilamiz
     result = await db.execute(
-        select(Restaurant).where(
-            Restaurant.admin_username == data.username,
-            Restaurant.admin_password_hash == hashed,
-        )
+        select(Restaurant).where(Restaurant.admin_username == data.username)
     )
     restaurant = result.scalar_one_or_none()
-    if restaurant:
-        return LoginResponse(
-            token=f"{settings.SECRET_KEY}:{restaurant.id}",
-            name=restaurant.name,
-            is_super=False,
-            restaurant_id=restaurant.id,
-        )
+    if not restaurant or not restaurant.admin_password_hash:
+        raise HTTPException(401, "Login yoki parol noto'g'ri")
 
-    raise HTTPException(401, "Login yoki parol noto'g'ri")
+    if not verify_password(data.password, restaurant.admin_password_hash):
+        raise HTTPException(401, "Login yoki parol noto'g'ri")
+
+    # Backward compat: SHA-256 hash'ni bcrypt'ga upgrade
+    if needs_rehash(restaurant.admin_password_hash):
+        try:
+            restaurant.admin_password_hash = hash_password(data.password)
+            await db.commit()
+        except Exception:
+            await db.rollback()  # upgrade'siz davom etamiz
+
+    return LoginResponse(
+        token=make_access_token(
+            restaurant_id=restaurant.id, is_super=False, username=data.username,
+        ),
+        name=restaurant.name,
+        is_super=False,
+        restaurant_id=restaurant.id,
+    )
+
+
+@router.post("/refresh")
+@_auth_limiter.limit("10/minute")
+async def refresh_token(request: Request, refresh_token: str = ""):
+    """Refresh token orqali yangi access token olish.
+
+    Body: `{"refresh_token": "..."}` yoki query/header.
+    """
+    from api.services.auth_service import refresh_access_token
+    if not refresh_token:
+        # Body dan ham qabul qilamiz
+        try:
+            body = await request.json()
+            refresh_token = body.get("refresh_token", "")
+        except Exception:
+            pass
+    new = refresh_access_token(refresh_token)
+    if not new:
+        raise HTTPException(401, "Refresh token yaroqsiz yoki muddati o'tgan")
+    return new
 
 
 # ── Bot login (bot_token orqali restaurant aniqlash) ──

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   Table, Button, Tag, Space, Typography, Popconfirm, message, Card,
-  Modal, Form, Input, InputNumber, Switch, Select
+  Modal, Form, Input, InputNumber, Switch
 } from 'antd'
 import { PlusOutlined, EditOutlined, DeleteOutlined, CrownOutlined } from '@ant-design/icons'
 import { getPlans, createPlan, updatePlan, deletePlan } from '../api'
@@ -62,7 +62,12 @@ export default function Tariffs() {
   const openCreate = () => {
     setEditing(null)
     form.resetFields()
-    form.setFieldsValue({ is_active: true, commission_percent: 0, monthly_price: 0, features: [] })
+    form.setFieldsValue({
+      is_active: true, commission_percent: 0, monthly_price: 0, features: [],
+      has_catering: false, has_ai_agent: false, has_yandex: false,
+      has_multi_branch: false, max_branches_limit: 1, order_limit: 0,
+      min_prepayment_percent: 30,
+    })
     setModalOpen(true)
   }
 
@@ -76,6 +81,14 @@ export default function Tariffs() {
       commission_percent: record.commission_percent,
       features: record.features || [],
       is_active: record.is_active,
+      // Funksional flag'lar (faza 3+)
+      has_catering: !!record.has_catering,
+      has_ai_agent: !!record.has_ai_agent,
+      has_yandex: !!record.has_yandex,
+      has_multi_branch: !!record.has_multi_branch,
+      max_branches_limit: record.max_branches_limit ?? 1,
+      order_limit: record.order_limit ?? 0,
+      min_prepayment_percent: record.min_prepayment_percent ?? 30,
     })
     setModalOpen(true)
   }
@@ -132,13 +145,28 @@ export default function Tariffs() {
         : <Tag color="green">Yo'q</Tag>
     },
     {
-      title: 'Imkoniyatlar', dataIndex: 'features',
-      render: (features) => (
-        <Space wrap>
-          {(features || []).slice(0, 3).map((f, i) => <Tag key={i}>{f}</Tag>)}
-          {(features || []).length > 3 && <Text type="secondary">+{features.length - 3} ta</Text>}
+      title: 'Imkoniyatlar',
+      render: (_, r) => (
+        <Space wrap size={4}>
+          {r.has_catering    && <Tag color="orange">🍽 Catering</Tag>}
+          {r.has_ai_agent    && <Tag color="purple">🤖 AI</Tag>}
+          {r.has_yandex      && <Tag color="gold">🚕 Yandex</Tag>}
+          {r.has_multi_branch && <Tag color="blue">🏢 Multi-filial</Tag>}
+          {!r.has_catering && !r.has_ai_agent && !r.has_yandex && !r.has_multi_branch && (
+            <Text type="secondary" style={{ fontSize: 12 }}>—</Text>
+          )}
         </Space>
       )
+    },
+    {
+      title: 'Limit',
+      width: 100,
+      render: (_, r) => (
+        <Space direction="vertical" size={0} style={{ fontSize: 11 }}>
+          <Text>Filial: <b>{r.max_branches_limit === 0 ? '∞' : r.max_branches_limit}</b></Text>
+          <Text type="secondary">Order: <b>{r.order_limit === 0 ? '∞' : r.order_limit}</b></Text>
+        </Space>
+      ),
     },
     {
       title: 'Holat', dataIndex: 'is_active',
@@ -236,7 +264,47 @@ export default function Tariffs() {
               />
             </Form.Item>
           </Space>
-          <Form.Item name="features" label="Imkoniyatlar">
+          {/* ── Funksional imkoniyatlar (faza 3+) ──────────── */}
+          <Card size="small" style={{ marginBottom: 16, background: '#f9f0ff', border: '1px solid #d3adf7' }}>
+            <Text strong style={{ display: 'block', marginBottom: 12, color: '#722ed1' }}>
+              🎯 Funksional imkoniyatlar
+            </Text>
+            <Space direction="vertical" style={{ width: '100%' }} size={8}>
+              <Form.Item name="has_catering" valuePropName="checked" style={{ marginBottom: 4 }}>
+                <Switch /> <Text style={{ marginLeft: 8 }}>🍽 Catering (tadbir buyurtmalari)</Text>
+              </Form.Item>
+              <Form.Item name="has_ai_agent" valuePropName="checked" style={{ marginBottom: 4 }}>
+                <Switch /> <Text style={{ marginLeft: 8 }}>🤖 AI Call Operator</Text>
+              </Form.Item>
+              <Form.Item name="has_yandex" valuePropName="checked" style={{ marginBottom: 4 }}>
+                <Switch /> <Text style={{ marginLeft: 8 }}>🚕 Yandex Delivery integratsiyasi</Text>
+              </Form.Item>
+              <Form.Item name="has_multi_branch" valuePropName="checked" style={{ marginBottom: 4 }}>
+                <Switch /> <Text style={{ marginLeft: 8 }}>🏢 Bir nechta filial</Text>
+              </Form.Item>
+            </Space>
+          </Card>
+
+          <Space style={{ width: '100%' }} size={16}>
+            <Form.Item name="max_branches_limit" label="Filial limiti"
+              tooltip="0 = cheksiz; Free=1, Basic=3, Pro=0"
+              style={{ flex: 1 }}>
+              <InputNumber style={{ width: '100%' }} min={0} max={100} />
+            </Form.Item>
+            <Form.Item name="order_limit" label="Buyurtma limiti / oy"
+              tooltip="0 = cheksiz"
+              style={{ flex: 1 }}>
+              <InputNumber style={{ width: '100%' }} min={0} step={50} />
+            </Form.Item>
+            <Form.Item name="min_prepayment_percent" label="Min. oldindan to'lov %"
+              tooltip="Pro/Basic uchun katta orderlarda majburiy"
+              style={{ flex: 1 }}>
+              <InputNumber style={{ width: '100%' }} min={0} max={100} step={5} />
+            </Form.Item>
+          </Space>
+
+          <Form.Item name="features" label="Qo'shimcha imkoniyatlar (UI)"
+            tooltip="Mijozlarga ko'rsatish uchun qo'shimcha matn-tag'lar">
             <FeaturesEditor />
           </Form.Item>
           <Form.Item name="is_active" label="Holat" valuePropName="checked">

@@ -12,7 +12,7 @@ import uuid
 from api.database import get_db
 from api.schemas import CategoryOut
 from api.config import settings
-from api.auth_deps import require_restaurant_admin, require_super_admin
+from api.auth_deps import get_branch_context, get_restaurant_context, require_restaurant_admin, require_super_admin
 from database.models import (
     Product, Category, Order, OrderItem, User, Review, OrderStatus, Courier, Branch, Admin, Plan
 )
@@ -125,6 +125,23 @@ class SettingsUpdate(BaseModel):
     payme_merchant_id: Optional[str] = None
     payme_secret_key: Optional[str] = None
     payme_enabled: Optional[bool] = None
+    # Faza 1.4: Telegram Native Payments tokenlari + test/live rejim
+    telegram_provider_token_click: Optional[str] = None
+    telegram_provider_token_payme: Optional[str] = None
+    payment_test_mode: Optional[bool] = None
+    # Faza 6: Soliq va huquqiy
+    is_vat_payer: Optional[bool] = None
+    vat_percent: Optional[float] = None
+    # Faza 8: yetkazib berish bo'yicha majburiy prepayment
+    enforce_prepayment_for_delivery: Optional[bool] = None
+    # Faza 9: ertangi catering ro'yxati Telegram chat ID
+    catering_notifier_chat_id: Optional[str] = None
+    # Telegram botlar (BotFather'dan)
+    bot_token: Optional[str] = None
+    courier_bot_token: Optional[str] = None
+    # Faza 4-5: catering xizmat haqi va prepayment limiti
+    catering_service_fee: Optional[float] = None
+    prepayment_required_above: Optional[float] = None
     # AI Operator
     ai_agent_enabled: Optional[bool] = None
     ai_agent_prompt: Optional[str] = None
@@ -143,6 +160,7 @@ class ProfileUpdate(BaseModel):
     name: Optional[str] = None
     username: Optional[str] = None
     new_password: Optional[str] = None
+    current_password: Optional[str] = None  # Faza 9: parol o'zgartirsa majburiy
 
 
 def _get_restaurant_branches(restaurant_id: int):
@@ -210,6 +228,38 @@ async def delete_image(
     return {"success": False, "reason": "not_found"}
 
 
+# ── Resource widget (mashina holati — filial darajasida) ─────
+@router.get("/stats/resources")
+async def stats_resources(
+    ctx: dict = Depends(get_branch_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mashinalar real-time holati — filial darajasida.
+
+    `X-Branch-Context` header (yoki `?branch_id=`) majburiy.
+    `get_branch_context` rid+bid pair'ni qaytaradi va filial restoranga
+    tegishliligini IDOR'dan himoya qiladi.
+
+    Branch berilmagan bo'lsa — restoranning birinchi faol filiali ishlatiladi.
+    """
+    from api.services.resources import get_capacity_snapshot
+    from database.models import Branch
+
+    rid = ctx["restaurant_id"]
+    bid = ctx["branch_id"]
+    if bid is None:
+        # Branch berilmagan — birinchi faol filialni topamiz
+        first = (await db.execute(
+            select(Branch).where(Branch.restaurant_id == rid, Branch.is_active == True)
+            .order_by(Branch.id).limit(1)
+        )).scalar_one_or_none()
+        if not first:
+            raise HTTPException(404, "Hech qanday faol filial topilmadi")
+        bid = first.id
+
+    return await get_capacity_snapshot(db, restaurant_id=rid, branch_id=bid)
+
+
 # ── Statistika ────────────────────────────────────────
 @router.get("/stats")
 async def get_stats(
@@ -235,15 +285,27 @@ async def get_stats(
     else:
         d_to = date.today()
 
+    # SaaS izolatsiya: restoran context majburiy
+    if restaurant_id is None:
+        return {"today_orders": 0, "today_revenue": 0, "total_users": 0,
+                "active_orders": 0, "average_rating": 0, "total_reviews": 0}
+
+    branch_ids = _get_restaurant_branches(restaurant_id)
+    rest_filter = (Order.restaurant_id == restaurant_id) | Order.branch_id.in_(branch_ids)
+
+    if branch_id:
+        # IDOR
+        br = (await db.execute(select(Branch).where(Branch.id == branch_id))).scalar_one_or_none()
+        if not br or br.restaurant_id != restaurant_id:
+            return {"today_orders": 0, "today_revenue": 0, "total_users": 0,
+                    "active_orders": 0, "average_rating": 0, "total_reviews": 0}
+        rest_filter = (Order.branch_id == branch_id)
+
     order_filters = [
         func.date(Order.created_at) >= d_from,
         func.date(Order.created_at) <= d_to,
+        rest_filter,
     ]
-    if branch_id:
-        order_filters.append(Order.branch_id == branch_id)
-    elif restaurant_id:
-        branch_ids = _get_restaurant_branches(restaurant_id)
-        order_filters.append(Order.branch_id.in_(branch_ids))
 
     orders_q = await db.execute(
         select(func.count(Order.id)).where(*order_filters)
@@ -258,38 +320,29 @@ async def get_stats(
     )
     revenue = revenue_q.scalar() or 0.0
 
-    if restaurant_id:
-        branch_ids = _get_restaurant_branches(restaurant_id)
-        user_subq = select(Order.user_id).where(Order.branch_id.in_(branch_ids)).distinct()
-        total_users = await db.execute(select(func.count()).select_from(
-            select(User.id).where(User.id.in_(user_subq)).subquery()
-        ))
-    else:
-        total_users = await db.execute(select(func.count(User.id)))
+    user_subq = select(Order.user_id).where(rest_filter).distinct()
+    total_users = await db.execute(select(func.count()).select_from(
+        select(User.id).where(User.id.in_(user_subq)).subquery()
+    ))
     users_count = total_users.scalar() or 0
 
-    active_filters = [
-        Order.status.notin_([OrderStatus.delivered, OrderStatus.cancelled])
-    ]
-    if branch_id:
-        active_filters.append(Order.branch_id == branch_id)
-    elif restaurant_id:
-        branch_ids = _get_restaurant_branches(restaurant_id)
-        active_filters.append(Order.branch_id.in_(branch_ids))
     active_orders = await db.execute(
-        select(func.count(Order.id)).where(*active_filters)
+        select(func.count(Order.id)).where(
+            rest_filter,
+            Order.status.notin_([OrderStatus.delivered, OrderStatus.cancelled]),
+        )
     )
     active_count = active_orders.scalar() or 0
 
     review_q = select(
         func.avg(Review.rating).label("avg"),
         func.count(Review.id).label("total")
-    )
+    ).where(Review.branch_id.in_(branch_ids))
     if branch_id:
-        review_q = review_q.where(Review.branch_id == branch_id)
-    elif restaurant_id:
-        branch_ids = _get_restaurant_branches(restaurant_id)
-        review_q = review_q.where(Review.branch_id.in_(branch_ids))
+        review_q = select(
+            func.avg(Review.rating).label("avg"),
+            func.count(Review.id).label("total")
+        ).where(Review.branch_id == branch_id)
     avg_rating = await db.execute(review_q)
     rating_row = avg_rating.one()
 
@@ -317,16 +370,35 @@ async def get_all_orders(
 ):
     query = select(Order).order_by(Order.created_at.desc())
 
+    # SaaS izolatsiya: restoran filteri HAR DOIM qo'llaniladi (super-admin tashqari)
+    if restaurant_id is None:
+        # Super-admin context tanlamagan — bo'sh ro'yxat (xavfsizlik default'i)
+        return []
+
+    branch_ids = _get_restaurant_branches(restaurant_id)
+    # Faqat restoran ichidagi orderlar
+    query = query.where(
+        (Order.restaurant_id == restaurant_id) | Order.branch_id.in_(branch_ids)
+    )
+
+    # Qo'shimcha branch filtri — branch shu restoraniga tegishli bo'lishi shart
     if branch_id:
+        # IDOR himoyasi: branch_id boshqa restoraniki bo'lsa — bo'sh
+        br = (await db.execute(select(Branch).where(Branch.id == branch_id))).scalar_one_or_none()
+        if not br or br.restaurant_id != restaurant_id:
+            return []
         query = query.where(Order.branch_id == branch_id)
-    elif restaurant_id:
-        branch_ids = _get_restaurant_branches(restaurant_id)
-        query = query.where(
-            (Order.restaurant_id == restaurant_id) | Order.branch_id.in_(branch_ids)
-        )
 
     if order_kind:
         query = query.where(Order.order_kind == order_kind)
+
+    # To'lanmagan karta zakazlari platformaga ko'rinmasin (to'lov kutilmoqda).
+    # Faqat naqd yoki to'langan/qisman to'langan zakazlar ko'rsatiladi.
+    query = query.where(
+        (Order.payment_method == "cash")
+        | (Order.payment_method == None)  # noqa: E711 — SQL IS NULL
+        | (Order.payment_status.in_(["paid", "partial", "refunded"]))
+    )
 
     if status:
         try:
@@ -408,28 +480,47 @@ async def list_products(
     restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     category_id: Optional[int] = None,
     product_type: Optional[str] = None,  # 'regular' | 'catering' | None (barchasi)
+    catering_category: Optional[str] = None,  # 'Somsalar' | 'Nonlar' | 'Ichimliklar' ...
+    catering_group: Optional[str] = None,     # 'somsa' | 'nan' (logika)
     db: AsyncSession = Depends(get_db),
 ):
+    """Mahsulotlar ro'yxati. Filterlar:
+
+    - `product_type=regular|catering` — asosiy turi
+    - `catering_category=Somsalar` — UI display kategoriyasi (frontend tab'lar uchun)
+    - `catering_group=somsa|nan` — logik guruh (catering algoritmlari uchun)
+    - `category_id`, `branch_id` — boshqa standart filterlar
+
+    Kombinatsiya misollar:
+        ?product_type=catering&catering_category=Somsalar
+        ?product_type=catering&catering_group=nan
+    """
     query = select(Product).where(Product.is_active == True).order_by(Product.category_id, Product.id)
+
+    # SaaS izolatsiya: restoran filteri HAR DOIM
+    if restaurant_id is None:
+        return []
+    branch_ids = _get_restaurant_branches(restaurant_id)
+    query = query.where(
+        (Product.restaurant_id == restaurant_id) | Product.branch_id.in_(branch_ids)
+    )
+
     if product_type:
         query = query.where(Product.product_type == product_type)
+    if catering_category:
+        query = query.where(Product.catering_category == catering_category)
+    if catering_group:
+        query = query.where(Product.catering_group == catering_group)
     if category_id:
         query = query.where(Product.category_id == category_id)
     if branch_id:
-        # Shu filialniki + restaurant darajasidagi (branch_id NULL) mahsulotlar
-        br = await db.execute(select(Branch).where(Branch.id == branch_id))
-        branch = br.scalar_one_or_none()
-        if branch:
-            query = query.where(
-                (Product.branch_id == branch_id) |
-                ((Product.restaurant_id == branch.restaurant_id) & (Product.branch_id.is_(None)))
-            )
-        else:
-            query = query.where(Product.branch_id == branch_id)
-    elif restaurant_id:
-        branch_ids = _get_restaurant_branches(restaurant_id)
+        # IDOR: branch shu restoranga tegishli bo'lishi shart
+        br = (await db.execute(select(Branch).where(Branch.id == branch_id))).scalar_one_or_none()
+        if not br or br.restaurant_id != restaurant_id:
+            return []
         query = query.where(
-            (Product.restaurant_id == restaurant_id) | Product.branch_id.in_(branch_ids)
+            (Product.branch_id == branch_id) |
+            ((Product.restaurant_id == restaurant_id) & (Product.branch_id.is_(None)))
         )
     result = await db.execute(query)
     products = result.scalars().all()
@@ -450,6 +541,7 @@ async def list_products(
             "branch_id": p.branch_id,
             "product_type": p.product_type or "regular",
             "catering_group": p.catering_group,
+            "catering_category": p.catering_category,
             "unit_price_usd": p.unit_price_usd,
             "unit_price_pickup_uzs": p.unit_price_pickup_uzs,
             "unit_type": p.unit_type or "piece",
@@ -471,14 +563,18 @@ async def create_product(
     db: AsyncSession = Depends(get_db),
 ):
     dump = data.model_dump()
-    # branch_id bo'lsa — shu branchning restaurant_id sini olish
+    # SaaS izolatsiya: restoran admin uchun restaurant_id majburiy va o'zinikidan
+    if not restaurant_id:
+        raise HTTPException(400, "Super-admin: restaurant_id query majburiy")
+
+    # branch_id boshqa restoraniki bo'lsa — silently null qil
     if dump.get("branch_id"):
         br = await db.execute(select(Branch).where(Branch.id == dump["branch_id"]))
         branch = br.scalar_one_or_none()
-        if branch:
-            dump["restaurant_id"] = branch.restaurant_id
-    elif restaurant_id:
-        dump["restaurant_id"] = restaurant_id
+        if not branch or branch.restaurant_id != restaurant_id:
+            dump["branch_id"] = None
+    dump["restaurant_id"] = restaurant_id
+
     product = Product(**dump)
     db.add(product)
     await db.commit()
@@ -498,16 +594,25 @@ async def update_product(
     if not product:
         raise HTTPException(404, "Mahsulot topilmadi")
 
-    # Faqat yuborilgan maydonlarni yangilash (qolganlarini o'zgartirmaslik)
+    # SaaS izolatsiya: faqat o'z restorani mahsulotini tahrirsa bo'ladi
+    if restaurant_id and product.restaurant_id and product.restaurant_id != restaurant_id:
+        raise HTTPException(403, "Bu mahsulot sizning restoraningizniki emas")
+
+    # Faqat yuborilgan maydonlarni yangilash
     dump = data.model_dump(exclude_unset=True)
 
-    # branch_id yangilansa — restaurant_id ni ham yangilash
+    # branch_id yangilansa — boshqa restoraniki bo'lsa silently null
     if "branch_id" in dump and dump["branch_id"]:
         br = await db.execute(select(Branch).where(Branch.id == dump["branch_id"]))
         branch = br.scalar_one_or_none()
-        if branch:
-            dump["restaurant_id"] = branch.restaurant_id
-    elif restaurant_id and "restaurant_id" not in dump:
+        if not branch or (restaurant_id and branch.restaurant_id != restaurant_id):
+            dump["branch_id"] = None
+    if restaurant_id:
+        dump["restaurant_id"] = restaurant_id
+
+    # Foydalanuvchi DB'dagi restaurant_id ni qo'lda override qilolmasligi kerak
+    if restaurant_id and dump.get("restaurant_id") != restaurant_id:
+        dump.pop("restaurant_id", None)
         dump["restaurant_id"] = restaurant_id
 
     for key, value in dump.items():
@@ -518,11 +623,18 @@ async def update_product(
 
 
 @router.delete("/products/{product_id}")
-async def delete_product(product_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_product(
+    product_id: int,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(select(Product).where(Product.id == product_id))
     product = result.scalar_one_or_none()
     if not product:
         raise HTTPException(404, "Mahsulot topilmadi")
+    # IDOR: faqat o'z restorani mahsulotini o'chirsa bo'ladi
+    if restaurant_id and product.restaurant_id and product.restaurant_id != restaurant_id:
+        raise HTTPException(403, "Bu mahsulot sizning restoraningizniki emas")
     product.is_active = False
     await db.commit()
     return {"success": True}
@@ -536,21 +648,22 @@ async def list_categories(
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Category).where(Category.is_active == True).order_by(Category.order)
+
+    # SaaS izolatsiya
+    if restaurant_id is None:
+        return []
+    branch_ids = _get_restaurant_branches(restaurant_id)
+    query = query.where(
+        (Category.restaurant_id == restaurant_id) | Category.branch_id.in_(branch_ids)
+    )
+
     if branch_id:
-        # Shu filialniki + restaurant darajasidagi (branch_id NULL) kategoriyalar
-        br = await db.execute(select(Branch).where(Branch.id == branch_id))
-        branch = br.scalar_one_or_none()
-        if branch:
-            query = query.where(
-                (Category.branch_id == branch_id) |
-                ((Category.restaurant_id == branch.restaurant_id) & (Category.branch_id.is_(None)))
-            )
-        else:
-            query = query.where(Category.branch_id == branch_id)
-    elif restaurant_id:
-        branch_ids = _get_restaurant_branches(restaurant_id)
+        br = (await db.execute(select(Branch).where(Branch.id == branch_id))).scalar_one_or_none()
+        if not br or br.restaurant_id != restaurant_id:
+            return []
         query = query.where(
-            (Category.restaurant_id == restaurant_id) | Category.branch_id.in_(branch_ids)
+            (Category.branch_id == branch_id) |
+            ((Category.restaurant_id == restaurant_id) & (Category.branch_id.is_(None)))
         )
     result = await db.execute(query)
     return result.scalars().all()
@@ -563,13 +676,17 @@ async def create_category(
     db: AsyncSession = Depends(get_db),
 ):
     dump = data.model_dump()
+    if not restaurant_id:
+        raise HTTPException(400, "Super-admin: restaurant_id query majburiy")
+
+    # branch_id boshqa restoraniki bo'lsa — silently null qil (restaurant-level category)
     if dump.get("branch_id"):
         br = await db.execute(select(Branch).where(Branch.id == dump["branch_id"]))
         branch = br.scalar_one_or_none()
-        if branch:
-            dump["restaurant_id"] = branch.restaurant_id
-    elif restaurant_id:
-        dump["restaurant_id"] = restaurant_id
+        if not branch or branch.restaurant_id != restaurant_id:
+            dump["branch_id"] = None  # restaurant-level
+
+    dump["restaurant_id"] = restaurant_id  # JWT'dan, har doim
     cat = Category(**dump)
     db.add(cat)
     await db.commit()
@@ -581,12 +698,15 @@ async def create_category(
 async def update_category(
     cat_id: int,
     data: CategoryUpdate,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(Category).where(Category.id == cat_id))
     cat = result.scalar_one_or_none()
     if not cat:
         raise HTTPException(404, "Kategoriya topilmadi")
+    if restaurant_id and cat.restaurant_id and cat.restaurant_id != restaurant_id:
+        raise HTTPException(403, "Bu kategoriya sizning restoraningizniki emas")
     for key, value in data.model_dump(exclude_unset=True).items():
         setattr(cat, key, value)
     await db.commit()
@@ -594,11 +714,17 @@ async def update_category(
 
 
 @router.delete("/categories/{cat_id}")
-async def delete_category(cat_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_category(
+    cat_id: int,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(select(Category).where(Category.id == cat_id))
     cat = result.scalar_one_or_none()
     if not cat:
         raise HTTPException(404, "Kategoriya topilmadi")
+    if restaurant_id and cat.restaurant_id and cat.restaurant_id != restaurant_id:
+        raise HTTPException(403, "Bu kategoriya sizning restoraningizniki emas")
     cat.is_active = False
     await db.commit()
     return {"success": True}
@@ -611,19 +737,23 @@ async def list_users(
     restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    # SaaS izolatsiya: faqat shu restoran orderlari bilan bog'liq mijozlar
+    if restaurant_id is None:
+        return []
+    branch_ids = _get_restaurant_branches(restaurant_id)
     if branch_id:
+        # IDOR
+        br = (await db.execute(select(Branch).where(Branch.id == branch_id))).scalar_one_or_none()
+        if not br or br.restaurant_id != restaurant_id:
+            return []
         subq = select(Order.user_id).where(Order.branch_id == branch_id).distinct()
-        result = await db.execute(
-            select(User).where(User.id.in_(subq)).order_by(User.created_at.desc())
-        )
-    elif restaurant_id:
-        branch_ids = _get_restaurant_branches(restaurant_id)
-        subq = select(Order.user_id).where(Order.branch_id.in_(branch_ids)).distinct()
-        result = await db.execute(
-            select(User).where(User.id.in_(subq)).order_by(User.created_at.desc())
-        )
     else:
-        result = await db.execute(select(User).order_by(User.created_at.desc()))
+        subq = select(Order.user_id).where(
+            (Order.restaurant_id == restaurant_id) | Order.branch_id.in_(branch_ids)
+        ).distinct()
+    result = await db.execute(
+        select(User).where(User.id.in_(subq)).order_by(User.created_at.desc())
+    )
     users = result.scalars().all()
     return [
         {
@@ -639,9 +769,20 @@ async def list_users(
 
 
 @router.get("/users/{user_id}/orders")
-async def get_user_orders(user_id: int, db: AsyncSession = Depends(get_db)):
+async def get_user_orders(
+    user_id: int,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mijoz buyurtmalari — faqat shu restoran ichidagi (SaaS izolatsiya)."""
+    if restaurant_id is None:
+        return []
+    branch_ids = _get_restaurant_branches(restaurant_id)
     result = await db.execute(
-        select(Order).where(Order.user_id == user_id).order_by(Order.created_at.desc())
+        select(Order).where(
+            Order.user_id == user_id,
+            (Order.restaurant_id == restaurant_id) | Order.branch_id.in_(branch_ids),
+        ).order_by(Order.created_at.desc())
     )
     orders = result.scalars().all()
 
@@ -723,6 +864,19 @@ async def get_settings(
         "payme_merchant_id": rest.payme_merchant_id,
         "payme_secret_key": rest.payme_secret_key,
         "payme_enabled": bool(rest.payme_enabled),
+        # Faza 1.4: Telegram Native Payments
+        "telegram_provider_token_click": rest.telegram_provider_token_click or "",
+        "telegram_provider_token_payme": rest.telegram_provider_token_payme or "",
+        "payment_test_mode": bool(rest.payment_test_mode),
+        "is_vat_payer": bool(rest.is_vat_payer),
+        "vat_percent": float(rest.vat_percent or 12.0),
+        "enforce_prepayment_for_delivery": bool(rest.enforce_prepayment_for_delivery),
+        "catering_notifier_chat_id": rest.catering_notifier_chat_id or "",
+        "bot_token": rest.bot_token or "",
+        "courier_bot_token": rest.courier_bot_token or "",
+        # Faza 4-5: to'lov sozlamalari
+        "catering_service_fee": float(rest.catering_service_fee or 0),
+        "prepayment_required_above": float(rest.prepayment_required_above or 0),
         # AI Operator
         "ai_agent_enabled": bool(rest.ai_agent_enabled),
         "ai_agent_prompt": rest.ai_agent_prompt or "",
@@ -736,9 +890,12 @@ async def get_settings(
 @router.put("/settings")
 async def update_settings(
     data: SettingsUpdate,
-    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
+    restaurant_id: int = Depends(get_restaurant_context),
     db: AsyncSession = Depends(get_db),
 ):
+    """Restoran sozlamalarini saqlash — super-admin X-Restaurant-Context header bilan
+    boshqa restoranni yangilashi mumkin (audit log'ga yozuv tushadi).
+    """
     if not restaurant_id:
         raise HTTPException(400, "restaurant_id kerak")
     result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
@@ -776,6 +933,17 @@ async def update_settings(
         "payme_merchant_id": "payme_merchant_id",
         "payme_secret_key": "payme_secret_key",
         "payme_enabled": "payme_enabled",
+        "telegram_provider_token_click": "telegram_provider_token_click",
+        "telegram_provider_token_payme": "telegram_provider_token_payme",
+        "payment_test_mode": "payment_test_mode",
+        "is_vat_payer": "is_vat_payer",
+        "vat_percent": "vat_percent",
+        "enforce_prepayment_for_delivery": "enforce_prepayment_for_delivery",
+        "catering_notifier_chat_id": "catering_notifier_chat_id",
+        "bot_token": "bot_token",
+        "courier_bot_token": "courier_bot_token",
+        "catering_service_fee": "catering_service_fee",
+        "prepayment_required_above": "prepayment_required_above",
         "ai_agent_enabled": "ai_agent_enabled",
         "ai_agent_prompt": "ai_agent_prompt",
         "ai_agent_voice": "ai_agent_voice",
@@ -798,11 +966,64 @@ async def get_profile(
     restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    """Joriy admin va restoran profili.
+
+    Restaurant admin uchun: o'z restorani ma'lumotlari (INN, balans, status).
+    Super admin uchun (rid=None): platform-level info.
+
+    Faza 1: INN, is_verified, subscription_status va balans ham qaytariladi.
+    """
     if restaurant_id:
         result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
         rest = result.scalar_one_or_none()
-        if rest:
-            return {"name": rest.name, "username": rest.admin_username}
+        if not rest:
+            return {"name": settings.ADMIN_USERNAME, "username": settings.ADMIN_USERNAME}
+
+        # Balans hisobi: cancelled emas total revenue (so'm)
+        from database.models import Order, OrderStatus
+        revenue = (await db.execute(
+            select(func.coalesce(func.sum(Order.total_price), 0))
+            .where(Order.restaurant_id == restaurant_id, Order.status != OrderStatus.cancelled)
+        )).scalar() or 0.0
+        # To'langan to'lovlar (paid)
+        from database.models import Payment
+        paid_total_tiyin = (await db.execute(
+            select(func.coalesce(func.sum(Payment.amount_tiyin), 0))
+            .where(Payment.restaurant_id == restaurant_id, Payment.status == "success")
+        )).scalar() or 0
+        # Komissiya to'lovlari
+        from database.models import CommissionPayment
+        commission_paid = (await db.execute(
+            select(func.coalesce(func.sum(CommissionPayment.amount), 0))
+            .where(CommissionPayment.restaurant_id == restaurant_id,
+                   CommissionPayment.status == "confirmed")
+        )).scalar() or 0.0
+
+        return {
+            # Identity
+            "name": rest.name,
+            "username": rest.admin_username,
+            "slug": rest.slug,
+            "inn": rest.inn,
+            "phone": rest.phone,
+            "address": rest.address,
+            "logo_url": rest.logo_url,
+            # Verifikatsiya va holat
+            "is_verified": bool(rest.is_verified),
+            "status": rest.status or "active",                       # admin-level
+            "subscription_status": rest.subscription_status or "active",  # billing-level
+            # Tarif
+            "plan_id": rest.plan_id,
+            "plan_expires_at": rest.plan_expires_at.isoformat() if rest.plan_expires_at else None,
+            "commission_percent": float(rest.commission_percent or 0),
+            # Balans / moliyaviy hisob
+            "balance": {
+                "orders_revenue_uzs": float(revenue),
+                "paid_total_tiyin": int(paid_total_tiyin),
+                "commission_paid_uzs": float(commission_paid),
+            },
+        }
+
     return {"name": settings.ADMIN_USERNAME, "username": settings.ADMIN_USERNAME}
 
 
@@ -817,15 +1038,41 @@ async def update_profile(
     restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    """Restoran admin profili: login (username) va/yoki parol o'zgartirish.
+
+    Parol o'zgartirish uchun **eski parol majburiy** (xavfsizlik talabi).
+    Faqat login o'zgartirsa eski parol shart emas.
+    """
     if restaurant_id:
         result = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
         rest = result.scalar_one_or_none()
         if not rest:
             raise HTTPException(404, "Restoran topilmadi")
-        if data.username:
-            rest.admin_username = data.username
+
+        # Parol o'zgartirilayotgan bo'lsa — eski parolni tekshirish
         if data.new_password:
+            if not data.current_password:
+                raise HTTPException(400, "Parolni o'zgartirish uchun eski parol kerak")
+            current_hash = _hashlib.sha256(data.current_password.encode()).hexdigest()
+            # Eski parol bcrypt yoki SHA-256 bo'lishi mumkin (backward compat)
+            from api.services.auth_service import verify_password
+            stored = rest.admin_password_hash or ""
+            if not (stored == current_hash or verify_password(data.current_password, stored)):
+                raise HTTPException(403, "Eski parol noto'g'ri")
             rest.admin_password_hash = _hashlib.sha256(data.new_password.encode()).hexdigest()
+
+        if data.username:
+            # Username unique tekshirish (boshqa restoran ishlatmasligi shart)
+            existing = (await db.execute(
+                select(Restaurant).where(
+                    Restaurant.admin_username == data.username,
+                    Restaurant.id != rest.id,
+                )
+            )).scalar_one_or_none()
+            if existing:
+                raise HTTPException(409, "Bu login band — boshqa nom tanlang")
+            rest.admin_username = data.username
+
         await db.commit()
         return {"success": True, "username": rest.admin_username}
 
@@ -910,14 +1157,106 @@ async def create_admin(
 
 
 @router.delete("/admins/{admin_id}")
-async def delete_admin(admin_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_admin(
+    admin_id: int,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
+    db: AsyncSession = Depends(get_db),
+):
     result = await db.execute(select(Admin).where(Admin.id == admin_id))
     admin = result.scalar_one_or_none()
     if not admin:
         raise HTTPException(404, "Admin topilmadi")
+    if restaurant_id and admin.restaurant_id != restaurant_id:
+        raise HTTPException(403, "Bu admin sizning restoraningizniki emas")
     await db.delete(admin)
     await db.commit()
     return {"success": True}
+
+
+# ── Catering notifier — manual trigger (sinov uchun) ─
+
+@router.post("/catering-notifier/test")
+async def trigger_catering_notifier(
+    restaurant_id: int = Depends(require_restaurant_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Hozir ertangi catering ro'yxatini joriy restoranga yuborish (sinov)."""
+    from api.services.catering_notifier import send_tomorrow_catering_notifications
+    # Faqat shu restoran uchun chaqirish — boshqalarni o'tkazib yuborish
+    res = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
+    rest = res.scalar_one_or_none()
+    if not rest:
+        raise HTTPException(404, "Restoran topilmadi")
+    if not (rest.catering_notifier_chat_id or "").strip():
+        raise HTTPException(400, "Avval Settings'da Catering notifier chat ID ni o'rnating")
+    # Vaqtincha boshqa restoranlarni notifier'dan o'chirib, faqat shu uchun chaqiramiz
+    # Soddalik uchun: to'g'ridan-to'g'ri shu restoran uchun ishlatamiz
+    from api.services.catering_notifier import _send_telegram, _format_orders_message
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    from sqlalchemy.orm import selectinload
+    import os
+
+    bot_token = (os.getenv("CATERING_NOTIFIER_BOT_TOKEN") or "").strip()
+    if not bot_token:
+        raise HTTPException(503, "CATERING_NOTIFIER_BOT_TOKEN env'da o'rnatilmagan")
+
+    tz = ZoneInfo("Asia/Tashkent")
+    tomorrow = (datetime.now(tz) + timedelta(days=1)).date()
+    orders_q = await db.execute(
+        select(Order)
+        .options(selectinload(Order.items), selectinload(Order.user))
+        .where(
+            Order.restaurant_id == restaurant_id,
+            Order.order_kind == "catering",
+            Order.status != OrderStatus.cancelled,
+            Order.schedule_date == tomorrow.isoformat(),
+        )
+        .order_by(Order.schedule_time)
+    )
+    orders = list(orders_q.scalars().all())
+    text = _format_orders_message(datetime.combine(tomorrow, datetime.min.time()), orders)
+    ok = await _send_telegram(bot_token, rest.catering_notifier_chat_id, text)
+    return {"ok": ok, "orders_count": len(orders), "chat_id": rest.catering_notifier_chat_id}
+
+
+# ── Bot tokenlarini sinash ─────────────────────────
+
+@router.post("/bots/check")
+async def check_bot_tokens(
+    restaurant_id: int = Depends(require_restaurant_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Joriy restoran bot tokenlarini Telegram getMe() orqali tekshirish."""
+    import httpx
+    res = await db.execute(select(Restaurant).where(Restaurant.id == restaurant_id))
+    rest = res.scalar_one_or_none()
+    if not rest:
+        raise HTTPException(404, "Restoran topilmadi")
+
+    async def _check(token: Optional[str]) -> dict:
+        if not token:
+            return {"configured": False, "online": False}
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(f"https://api.telegram.org/bot{token}/getMe")
+            if r.status_code == 200:
+                d = r.json().get("result", {})
+                return {
+                    "configured": True, "online": True,
+                    "username": d.get("username"),
+                    "first_name": d.get("first_name"),
+                    "id": d.get("id"),
+                }
+            return {"configured": True, "online": False, "error": f"HTTP {r.status_code}"}
+        except Exception as e:
+            return {"configured": True, "online": False, "error": str(e)[:80]}
+
+    return {
+        "customer_bot": await _check(rest.bot_token),
+        "courier_bot": await _check(rest.courier_bot_token),
+        "note": "Yangi tokenlarni Telegram'dan ulash uchun super-admin'dan 'Bots service restart' so'rang",
+    }
 
 
 # ── Plan / tarif ma'lumoti ───────────────────────────

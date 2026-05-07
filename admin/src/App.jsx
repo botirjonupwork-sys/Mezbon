@@ -11,6 +11,9 @@ import Settings from './pages/Settings'
 import Admins from './pages/Admins'
 import Couriers from './pages/Couriers'
 import Billing from './pages/Billing'
+import Settlement from './pages/Settlement'
+import Catering from './pages/Catering'
+import Branches from './pages/Branches'
 
 function PrivateRoute({ children }) {
   const isAuth = useAuthStore((s) => s.isAuth)
@@ -32,6 +35,8 @@ export default function App() {
         >
           <Route index element={<Dashboard />} />
           <Route path="orders" element={<Orders />} />
+          <Route path="catering" element={<Catering />} />
+          <Route path="branches" element={<Branches />} />
           <Route path="menu" element={<Menu />} />
           <Route path="users" element={<Users />} />
           <Route path="reviews" element={<Reviews />} />
@@ -39,6 +44,7 @@ export default function App() {
           <Route path="couriers" element={<Couriers />} />
           <Route path="admins" element={<Admins />} />
           <Route path="billing" element={<Billing />} />
+          <Route path="settlement" element={<Settlement />} />
         </Route>
       </Routes>
     </BrowserRouter>

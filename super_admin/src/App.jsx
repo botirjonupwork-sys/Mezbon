@@ -9,6 +9,8 @@ import RestaurantForm from './pages/RestaurantForm'
 import Settings from './pages/Settings'
 import Bots from './pages/Bots'
 import Tariffs from './pages/Tariffs'
+import Finance from './pages/Finance'
+import Analytics from './pages/Analytics'
 import GlobalSettings from './pages/GlobalSettings'
 
 function PrivateRoute({ children }) {
@@ -38,6 +40,8 @@ export default function App() {
             <Route path="bots" element={<Bots />} />
             <Route path="tariffs" element={<Tariffs />} />
             <Route path="global" element={<GlobalSettings />} />
+            <Route path="finance" element={<Finance />} />
+            <Route path="analytics" element={<Analytics />} />
           </Route>
         </Routes>
       </BrowserRouter>

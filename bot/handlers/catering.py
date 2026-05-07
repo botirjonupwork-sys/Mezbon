@@ -520,21 +520,19 @@ async def _ask_payment_method(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("cat_pay_m:"))
 async def payment_method_selected(callback: CallbackQuery, state: FSMContext):
     method = callback.data.split(":")[1]
-    await state.update_data(payment_method=method)
-    await state.set_state(CateringFlow.choosing_payment_timing)
-    await callback.message.edit_text(
-        "⏰ To'lov vaqtini tanlang:",
-        reply_markup=payment_timing_kb(),
-    )
+    # Catering — har doim oldindan to'lov majburiy (firibgarlik xavfini kamaytirish).
+    # "Buyurtma olganda to'lash" varianti olib tashlangan.
+    await state.update_data(payment_method=method, payment_timing="now")
+    await _show_confirmation(callback.message, state, edit=True)
     await callback.answer()
 
 
-# ── 10. To'lov vaqti ─────────────────────────────────
+# ── 10. To'lov vaqti — endi ishlatilmaydi (har doim "now") ──────────────
 
 @router.callback_query(F.data.startswith("cat_pay_t:"))
 async def payment_timing_selected(callback: CallbackQuery, state: FSMContext):
-    timing = callback.data.split(":")[1]
-    await state.update_data(payment_timing=timing)
+    # Eskilik bilan kelgan callback'larni "now" deb qabul qilamiz
+    await state.update_data(payment_timing="now")
     await _show_confirmation(callback.message, state, edit=True)
     await callback.answer()
 
@@ -672,6 +670,44 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
+    pay_method = data.get("payment_method", "cash")
+    pay_timing = data.get("payment_timing", "later")
+    payment_info = result.get("payment_info")
+
+    # ── Telegram Native Payments — karta + hozir to'lov ──
+    # Bu rejimda buyurtma faqat to'lovdan keyin tasdiqlanadi.
+    # Hozir esa "to'lov kutilmoqda" deb ko'rsatamiz (qisqa, ortiqcha xabarsiz).
+    if pay_method == "card" and pay_timing == "now":
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        order_id = result["id"]
+        pending_text = (
+            f"💳 <b>To'lov kutilmoqda — Buyurtma #{order_id}</b>\n\n"
+            f"📦 Jami: {result['total_quantity']} ta\n"
+            f"💰 To'lanadigan summa: <b>{result['total_price_uzs']:,.0f} so'm</b>\n\n"
+            f"⬇️ Pastdagi tugmani bosib to'lovni yakunlang.\n"
+            f"<i>To'lov o'tmasa, buyurtma tasdiqlanmaydi.</i>"
+        )
+        pay_kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text="💳 To'lashga o'tish (Click)",
+                callback_data=f"tgpay:{order_id}:click",
+            ),
+        ], [
+            InlineKeyboardButton(
+                text="💳 To'lashga o'tish (Payme)",
+                callback_data=f"tgpay:{order_id}:payme",
+            ),
+        ], [
+            InlineKeyboardButton(
+                text="❌ Buyurtmani bekor qilish",
+                callback_data=f"tgpay_cancel:{order_id}",
+            ),
+        ]])
+        await callback.message.edit_text(pending_text, parse_mode="HTML", reply_markup=pay_kb)
+        await clear_state_preserve_branch(state)
+        await callback.answer()
+        return
+
     text = (
         f"✅ <b>Buyurtma #{result['id']} qabul qilindi!</b>\n\n"
         f"{result.get('message', '')}\n\n"
@@ -679,8 +715,8 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
         f"💰 {result['total_price_uzs']:,.0f} so'm (${result['total_price_usd']:.2f})"
     )
 
-    payment_info = result.get("payment_info")
-    if payment_info and data.get("payment_timing") == "now":
+    # ── Manual karta (now to'lov, lekin Telegram payment sozlanmagan fallback) ──
+    if payment_info and pay_timing == "now":
         text += (
             f"\n\n💳 <b>To'lov uchun karta:</b>\n"
             f"<code>{payment_info['card_number']}</code>\n"

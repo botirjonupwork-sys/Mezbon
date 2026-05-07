@@ -7,6 +7,7 @@ import {
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { getStats, getOrders, getReviewStats } from '../api'
+import { fmtTashkent } from '../utils/datetime'
 import { useBranchStore } from '../store/branch'
 import { useAuthStore } from '../store/auth'
 
@@ -39,7 +40,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [dateRange, setDateRange] = useState([dayjs(), dayjs()])
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
-  const restaurantId = useAuthStore((s) => s.restaurantId)
+  const restaurantId = useAuthStore((s) => s.currentRestaurantId)
 
   const fetchAll = async (range) => {
     setLoading(true)
@@ -96,7 +97,7 @@ export default function Dashboard() {
     },
     {
       title: 'Vaqt', dataIndex: 'created_at',
-      render: (v) => v ? new Date(v).toLocaleString('uz') : '—'
+      render: (v) => fmtTashkent(v)
     },
   ]
 

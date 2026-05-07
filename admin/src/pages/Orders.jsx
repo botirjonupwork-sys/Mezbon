@@ -2,7 +2,8 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import { Table, Tag, Card, Typography, Space, Button, DatePicker, message, Popconfirm, Badge, Segmented, Modal, Divider, Tooltip } from 'antd'
 import { ReloadOutlined, CheckCircleOutlined, CarOutlined, CloseCircleOutlined, SoundOutlined, EnvironmentOutlined, PhoneOutlined, MessageOutlined, ShopOutlined, ClockCircleOutlined, GiftOutlined, CreditCardOutlined, UserOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
-import { getOrders, updateOrderStatus } from '../api'
+import { getOrders, updateOrderStatus, refundOrder } from '../api'
+import { fmtTashkent } from '../utils/datetime'
 import { useBranchStore } from '../store/branch'
 import { useAuthStore } from '../store/auth'
 
@@ -59,7 +60,7 @@ function playNotificationSound() {
 const POLL_INTERVAL = 10000
 
 // ─── Order Detail Modal ─────────────────────────────────
-function OrderDetailModal({ order, open, onClose, onStatusChange }) {
+function OrderDetailModal({ order, open, onClose, onStatusChange, onRefund }) {
   if (!order) return null
 
   const isCatering = order.order_kind === 'catering'
@@ -86,9 +87,29 @@ function OrderDetailModal({ order, open, onClose, onStatusChange }) {
             </Button>
           </Popconfirm>
         )}
-        <Popconfirm title="Bekor qilish?" onConfirm={() => onStatusChange(order.id, 'cancelled')}>
-          <Button danger icon={<CloseCircleOutlined />} size="large">Bekor qilish</Button>
-        </Popconfirm>
+        {order.payment_status === 'paid' ? (
+          <Popconfirm
+            title="Bekor qilish + pul qaytarish?"
+            description={
+              <div style={{ maxWidth: 280 }}>
+                <div>Mijozga pul qaytariladi va buyurtma bekor qilinadi.</div>
+                <div style={{ marginTop: 6 }}>
+                  <Tag color="blue">{'≥'}24h</Tag> 100% qaytariladi<br/>
+                  <Tag color="orange">6–24h</Tag> 50%<br/>
+                  <Tag color="red">{'<'}6h</Tag> 0% (kech)
+                </div>
+              </div>
+            }
+            okText="Refund qil" cancelText="Yo'q"
+            onConfirm={() => onRefund(order.id)}
+          >
+            <Button danger icon={<CloseCircleOutlined />} size="large">Bekor qilish + Refund</Button>
+          </Popconfirm>
+        ) : (
+          <Popconfirm title="Bekor qilish?" onConfirm={() => onStatusChange(order.id, 'cancelled')}>
+            <Button danger icon={<CloseCircleOutlined />} size="large">Bekor qilish</Button>
+          </Popconfirm>
+        )}
       </Space>
     )
   }
@@ -118,7 +139,7 @@ function OrderDetailModal({ order, open, onClose, onStatusChange }) {
         <Card size="small" title={<><ClockCircleOutlined /> Vaqt va tur</>}>
           <div style={{ marginBottom: 6 }}>
             <Text type="secondary">Yaratildi:</Text>{' '}
-            {order.created_at ? new Date(order.created_at).toLocaleString('uz') : '—'}
+            {fmtTashkent(order.created_at)}
           </div>
           <div>
             <Text type="secondary">Yetkazish:</Text>{' '}
@@ -248,7 +269,7 @@ export default function Orders() {
   const [orderKind, setOrderKind] = useState('all')
   const [selectedOrder, setSelectedOrder] = useState(null)
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
-  const restaurantId = useAuthStore((s) => s.restaurantId)
+  const restaurantId = useAuthStore((s) => s.currentRestaurantId)
   const prevOrderIdsRef = useRef(new Set())
   const isFirstLoadRef = useRef(true)
   const pollTimerRef = useRef(null)
@@ -316,6 +337,17 @@ export default function Orders() {
     } catch { message.error('Holatni o\'zgartirishda xato') }
   }
 
+  const handleRefund = async (orderId) => {
+    try {
+      const r = await refundOrder(orderId, '')
+      message.success(`Refund #${r.refund_id} bajarildi (zakaz #${orderId})`)
+      fetchOrders(dateRange)
+      if (selectedOrder?.id === orderId) setSelectedOrder(null)
+    } catch (e) {
+      message.error(e?.response?.data?.detail || 'Refund qilishda xato')
+    }
+  }
+
   const handleRangeChange = (dates) => {
     if (dates && dates.length === 2) {
       setDateRange(dates); isFirstLoadRef.current = true; fetchOrders(dates)
@@ -381,8 +413,8 @@ export default function Orders() {
     {
       title: 'Vaqt', dataIndex: 'created_at', width: 95,
       render: (v) => v ? (
-        <Tooltip title={new Date(v).toLocaleString('uz')}>
-          <Text style={{ fontSize: 12 }}>{dayjs(v).format('DD.MM HH:mm')}</Text>
+        <Tooltip title={fmtTashkent(v)}>
+          <Text style={{ fontSize: 12 }}>{fmtTashkent(v, 'DD.MM HH:mm')}</Text>
         </Tooltip>
       ) : '—'
     },
@@ -474,6 +506,7 @@ export default function Orders() {
         open={!!selectedOrder}
         onClose={() => setSelectedOrder(null)}
         onStatusChange={handleStatusChange}
+        onRefund={handleRefund}
       />
     </div>
   )

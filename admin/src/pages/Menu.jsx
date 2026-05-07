@@ -13,7 +13,7 @@ import {
   getCategories, getProducts, toggleStop,
   createProduct, updateProduct, deleteProduct,
   createCategory, updateCategory, deleteCategory, uploadImage, deleteImage,
-  getSettings, updateSettings
+  getSettings, updateSettings, getMyPlan,
 } from '../api'
 import { useBranchStore } from '../store/branch'
 import { useAuthStore } from '../store/auth'
@@ -162,10 +162,11 @@ export default function Menu() {
   const [imageData, setImageData] = useState({ url: null, file: null, previewUrl: null })
   const [pageSize, setPageSize] = useState(10)
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
-  const restaurantId = useAuthStore((s) => s.restaurantId)
+  const restaurantId = useAuthStore((s) => s.currentRestaurantId)
 
   const [activeTab, setActiveTab] = useState('menu')
   const [filterCategoryId, setFilterCategoryId] = useState(null)
+  const [cateringAllowed, setCateringAllowed] = useState(false)
   const [cateringProducts, setCateringProducts] = useState([])
   const [cateringModalOpen, setCateringModalOpen] = useState(false)
   const [editingCatering, setEditingCatering] = useState(null)
@@ -235,6 +236,19 @@ export default function Menu() {
   }
 
   useEffect(() => { fetchData() }, [selectedBranchId, filterCategoryId])
+
+  // Tarif featurelar — Catering ruxsat etilgan bo'lsagina tab ko'rsatamiz
+  useEffect(() => {
+    if (!restaurantId) { setCateringAllowed(false); return }
+    getMyPlan({ restaurant_id: restaurantId })
+      .then((r) => {
+        const allowed = !!(r.data?.features?.catering)
+        setCateringAllowed(allowed)
+        // Agar Catering tab tanlangan, lekin tarifda yo'q — menu'ga qaytaramiz
+        if (!allowed && activeTab === 'catering') setActiveTab('menu')
+      })
+      .catch(() => setCateringAllowed(false))
+  }, [restaurantId])
 
   const handleToggleStop = async (id, checked) => {
     try {
@@ -627,7 +641,7 @@ export default function Menu() {
               </Card>
             ),
           },
-          {
+          cateringAllowed && {
             key: 'catering',
             label: <span>🎉 Catering</span>,
             children: (
@@ -750,7 +764,7 @@ export default function Menu() {
               </div>
             ),
           },
-        ]}
+        ].filter(Boolean)}
       />
 
       {/* ── Catering modal ── */}

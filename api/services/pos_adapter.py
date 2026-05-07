@@ -419,6 +419,9 @@ class POSAdapter:
         Hech qachon exception ko'tarmaydi — xatolar `log_critical` ga yoziladi.
         Buyurtma oqimini halaqit bermaslik uchun bu funksiyani odatda
         `asyncio.create_task` ichida chaqiring.
+
+        Faza 6: muvaffaqiyatli dispatch'da fiskal QR va receipt ID Order'ga
+        yoziladi (mijozga chek yuborish uchun).
         """
         try:
             rest_res = await db.execute(
@@ -434,7 +437,19 @@ class POSAdapter:
 
             uo = await build_universal_order(db, order, fiscal=True)
             driver = self.driver_for(rest)
-            return await driver.dispatch(uo, rest)
+            result = await driver.dispatch(uo, rest)
+
+            # Faza 6: fiskal ma'lumotlarni Order'ga saqlash
+            if result.get("ok"):
+                fq = result.get("fiscal_qr")
+                rid = result.get("neon_id") or result.get("receipt_id")
+                if fq or rid:
+                    if fq:
+                        order.fiscal_qr = fq
+                    if rid:
+                        order.fiscal_receipt_id = str(rid)
+                    await db.commit()
+            return result
         except Exception as e:
             log_critical(
                 "pos", "POSAdapter ichki xato", error=str(e),

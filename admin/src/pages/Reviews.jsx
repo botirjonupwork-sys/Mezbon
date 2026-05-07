@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Table, Card, Rate, Typography, Statistic, Row, Col, Tooltip, message } from 'antd'
 import { getReviews, getReviewStats } from '../api'
+import { fmtDateOnly } from '../utils/datetime'
 import { useBranchStore } from '../store/branch'
 import { useAuthStore } from '../store/auth'
 
@@ -12,7 +13,7 @@ export default function Reviews() {
   const [loading, setLoading] = useState(true)
   const [pageSize, setPageSize] = useState(10)
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
-  const restaurantId = useAuthStore((s) => s.restaurantId)
+  const restaurantId = useAuthStore((s) => s.currentRestaurantId)
 
   useEffect(() => {
     setLoading(true)
@@ -72,7 +73,7 @@ export default function Reviews() {
     },
     {
       title: 'Sana', dataIndex: 'created_at',
-      render: (v) => v ? new Date(v).toLocaleDateString('uz') : '—'
+      render: (v) => fmtDateOnly(v)
     },
   ]
 

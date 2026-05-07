@@ -3,7 +3,7 @@ from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from bot.states import Registration
-from bot.api_client import get_user, create_user, get_nearest_branches, get_branch, get_restaurant_branches, set_user_branch
+from bot.api_client import get_user, create_user, get_nearest_branches, get_branch, get_restaurant_branches, set_user_branch, get_restaurant_id
 from bot.keyboards.main import main_menu_kb, phone_kb, branch_location_kb, branches_kb
 
 router = Router()
@@ -15,51 +15,87 @@ async def start_handler(message: Message, state: FSMContext):
     branch_id = data.get("branch_id")
     branch_name = data.get("branch_name", "")
 
-    # 1) FSM da yo'q bo'lsa — DB'dan saqlangan filialni olish
+    # 1) FSM da yo'q bo'lsa — DB'dan saqlangan filialni olish (faqat shu restoranniki)
+    current_rid = get_restaurant_id()
     if not branch_id:
         user = await get_user(str(message.from_user.id))
         if user and user.get("selected_branch_id"):
             saved_branch = await get_branch(user["selected_branch_id"])
-            if saved_branch:
+            # SaaS izolatsiya: saqlangan branch shu restoranniki ekanini tekshirish
+            if saved_branch and saved_branch.get("restaurant_id") == current_rid:
                 branch_id = saved_branch["id"]
                 branch_name = saved_branch["name"]
                 await state.update_data(branch_id=branch_id, branch_name=branch_name)
+            elif saved_branch:
+                # Boshqa restoranniki — bu user'ning shu botda boshqa branch tanlashi kerak
+                pass
 
-    # 2) Hali ham yo'q bo'lsa — restoranda 1 ta filial bo'lsa avtomatik tanlash
+    # 2) Hali ham yo'q bo'lsa — filiallar sonini tekshiramiz
     if not branch_id:
         branches = await get_restaurant_branches()
         if len(branches) == 1:
+            # 1 ta filial bor — avtomatik tanlash
             b = branches[0]
             branch_id = b["id"]
             branch_name = b["name"]
             await state.update_data(branch_id=branch_id, branch_name=branch_name)
-            # Agar user mavjud bo'lsa, DB'ga ham saqlab qo'yamiz
             await set_user_branch(str(message.from_user.id), branch_id)
+        elif len(branches) == 0:
+            # Filial yo'q — restoran asosiy ma'lumotidan foydalanamiz
+            await state.update_data(branch_id=None, branch_name=None, no_branches=True)
+
+    # Restoran nomi va salomlash xabarini ko'rsatish
+    from bot.api_client import get_settings
+    settings_data = await get_settings()
+    rest_name = settings_data.get("restaurant_name") or settings_data.get("name") or "Bizning restoran"
 
     if branch_id:
+        # Filial tanlangan
         if not branch_name:
             branch = await get_branch(branch_id)
             branch_name = branch["name"] if branch else ""
         await message.answer(
-            f"🥟 <b>Muhsina Dollar Somsa</b> ga xush kelibsiz!\n\n"
+            f"🥟 <b>{rest_name}</b> ga xush kelibsiz!\n\n"
             f"📍 Filial: <b>{branch_name}</b>\n\n"
             f"Bizning mazali taomlarimizdan buyurtma bering!",
             reply_markup=main_menu_kb(),
             parse_mode="HTML",
         )
     else:
-        await message.answer(
-            "🥟 <b>Muhsina Dollar Somsa</b> ga xush kelibsiz!\n\n"
-            "📍 Avval yaqin filialini topish uchun joylashuvingizni yuboring!",
-            reply_markup=branch_location_kb(),
-            parse_mode="HTML",
-        )
+        # Hali filial tanlanmagan — sonini tekshiramiz
+        data = await state.get_data()
+        no_branches = data.get("no_branches", False)
+        if no_branches:
+            # Filiallar yo'q — to'g'ridan-to'g'ri menyu
+            await message.answer(
+                f"🥟 <b>{rest_name}</b> ga xush kelibsiz!\n\n"
+                f"Bizning mazali taomlarimizdan buyurtma bering!",
+                reply_markup=main_menu_kb(),
+                parse_mode="HTML",
+            )
+        else:
+            # Bir nechta filial — tanlash kerak
+            await message.answer(
+                f"🥟 <b>{rest_name}</b> ga xush kelibsiz!\n\n"
+                "📍 Avval yaqin filialini topish uchun joylashuvingizni yuboring!",
+                reply_markup=branch_location_kb(),
+                parse_mode="HTML",
+            )
 
 
 # ── Filial tanlash ─────────────────────────────────────
 
 @router.message(F.text == "📍 Filial tanlash")
-async def branch_select_start(message: Message):
+async def branch_select_start(message: Message, state: FSMContext):
+    branches = await get_restaurant_branches()
+    if len(branches) == 0:
+        await state.update_data(no_branches=True, branch_id=None)
+        await message.answer(
+            "ℹ️ Bu restoranda hozircha filiallar yo'q.\n"
+            "Buyurtma berishingiz mumkin — restoran asosiy manzilida xizmat ko'rsatiladi.",
+            reply_markup=main_menu_kb(),
+        )
+        return
     await message.answer(
         "📍 Yaqin filiallarni topish uchun joylashuvingizni yuboring:",
         reply_markup=branch_location_kb(),
@@ -81,9 +117,11 @@ async def branch_location_received(message: Message, state: FSMContext):
 
     branches = await get_nearest_branches(lat, lon)
     if not branches:
+        # Filial yo'q — restoran asosiy ma'lumotidan foydalanamiz
+        await state.update_data(no_branches=True, branch_id=None)
         await message.answer(
-            "😔 Hozircha filiallar topilmadi.\n"
-            "Iltimos, keyinroq urinib ko'ring.",
+            "ℹ️ Bu restoranda hozircha filiallar yo'q.\n"
+            "Lekin buyurtma berishingiz mumkin — restoran sizga xizmat ko'rsatadi.",
             reply_markup=main_menu_kb(),
         )
         return

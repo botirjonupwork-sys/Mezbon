@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 from typing import Optional, List, Dict
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 from api.database import get_db
 from api.config import settings
@@ -31,14 +31,23 @@ async def _require_bot_secret(x_bot_secret: Optional[str] = Header(None, alias="
 
 
 async def _ensure_catering_enabled(restaurant_id: int, db: AsyncSession) -> None:
-    """Restoran tarifi catering'ni qo'llab-quvvatlamasa 403."""
+    """Restoran tarifi catering'ni qo'llab-quvvatlamasa **402 Payment Required**.
+
+    Frontend bu javobni ushlab "tarifni yangilash" sahifasini ochishi mumkin.
+    Yangi kod `Depends(require_plan_feature("catering"))` ishlatishi tavsiya etiladi —
+    bu funksiya backward compat uchun qoldirilgan.
+    """
     plan = await get_restaurant_plan(restaurant_id, db)
     if not restaurant_has_feature(plan, "catering"):
-        plan_name = plan.name if plan else "tariff yo'q"
+        plan_name = plan.name if plan else "tarif yo'q"
         raise HTTPException(
-            403,
-            f"Catering funksiyasi joriy tarifda ({plan_name}) yoqilmagan. "
-            "Tarifni yangilang."
+            402,
+            {
+                "code": "plan_feature_required",
+                "feature": "catering",
+                "current_plan": plan_name,
+                "message": f"Catering joriy tarifda ({plan_name}) yoqilmagan. Tarifni yangilang.",
+            },
         )
 
 router = APIRouter(prefix="/catering", tags=["catering"])
@@ -275,10 +284,20 @@ async def booked_dates(
     branch_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Kelajakdagi catering buyurtma berilgan barcha (sana, vaqt) juftliklari."""
+    """Kelajakdagi catering uchun TO'LIQ band (sana, vaqt) juftliklari.
+
+    Mantiq (faza 3+): har (date, time) slot uchun nechta order bor — agar
+    `count >= filial_car_count` bo'lsa, slot "to'liq band" deb hisoblanadi.
+    Aks holda mashina hali bo'sh (yana zakaz qabul qilish mumkin).
+
+    Misol: 5 ta mashinali filial → 10:00 ga 4 ta order tushgan → slot HALI ham
+    `available` (1 ta mashina bo'sh). 5-chi order tushganda → `booked`.
+    """
+    from database.models import Branch
     await _ensure_catering_enabled(restaurant_id, db)
     today = datetime.now().date().isoformat()
-    q = select(Order.schedule_date, Order.schedule_time).where(
+
+    q = select(Order.schedule_date, Order.schedule_time, Order.branch_id).where(
         Order.order_kind == "catering",
         Order.schedule_date >= today,
         Order.status.notin_([OrderStatus.cancelled, OrderStatus.delivered]),
@@ -289,13 +308,109 @@ async def booked_dates(
         q = q.where(Order.restaurant_id == restaurant_id)
     rows = (await db.execute(q)).all()
 
-    by_date: dict[str, list[str]] = {}
-    for d, t in rows:
-        if not d:
+    # Filial → car_count map
+    branch_q = select(Branch.id, Branch.delivery_car_count).where(
+        Branch.restaurant_id == restaurant_id
+    )
+    branch_caps = dict((await db.execute(branch_q)).all())
+
+    # (branch_id, date, time) bo'yicha hisoblagich
+    counts: dict[tuple, int] = {}
+    for d, t, bid in rows:
+        if not d or not t:
             continue
-        by_date.setdefault(d, []).append(t or "")
+        key = (bid, d, t)
+        counts[key] = counts.get(key, 0) + 1
+
+    # Faqat to'liq band'larni qaytarish
+    by_date: dict[str, list[str]] = {}
+    for (bid, d, t), cnt in counts.items():
+        cap = max(1, int(branch_caps.get(bid, 5) or 5))
+        if cnt >= cap:
+            by_date.setdefault(d, []).append(t)
 
     return {"booked": by_date}
+
+
+@router.get("/available-slots")
+async def available_slots(
+    date: str,
+    restaurant_id: int,
+    branch_id: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Tanlangan sana uchun 08:00–22:00 oralig'ida bo'sh vaqt-slot'lar.
+
+    Telegram WebApp uchun mo'ljallangan: foydalanuvchi sana tanlaganda har soat
+    bo'sh-bandligini ko'rsatadi. Slot bo'sh deb hisoblanishi uchun shu soatdan
+    boshlab `CATERING_DURATION_MINUTES` (4 soat) davomida hech bo'lmasa bitta
+    mashina bo'sh bo'lishi kerak.
+
+    Args:
+        date: YYYY-MM-DD formatida (`?date=2026-05-15`)
+        restaurant_id: restoran ID
+
+    Response:
+        {
+          "date": "2026-05-15",
+          "restaurant_id": 1,
+          "slots": [
+            {"time": "08:00", "status": "active"},
+            {"time": "09:00", "status": "busy"},
+            ...
+          ]
+        }
+    """
+    from api.services.resources import CATERING_DURATION_MINUTES, check_slot_availability
+
+    # Sana validatsiyasi
+    try:
+        target_date = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(400, "Sana formati: YYYY-MM-DD")
+
+    today = datetime.now().date()
+    if target_date < today:
+        raise HTTPException(400, "O'tgan sanada slot bo'lmaydi")
+
+    # Restoranning mavjudligi va catering yoqilganligi
+    await _ensure_catering_enabled(restaurant_id, db)
+
+    # branch_id berilmagan bo'lsa birinchi faol filialni olish
+    if branch_id is None:
+        from database.models import Branch
+        first = (await db.execute(
+            select(Branch).where(
+                Branch.restaurant_id == restaurant_id,
+                Branch.is_active == True,
+            ).order_by(Branch.id).limit(1)
+        )).scalar_one_or_none()
+        if not first:
+            raise HTTPException(404, "Faol filial topilmadi")
+        branch_id = first.id
+
+    # 08:00 dan 22:00 gacha har soat
+    slots: list[dict] = []
+    for hour in range(8, 22):
+        slot_start = datetime.combine(target_date, time(hour=hour, minute=0))
+        slot_end = slot_start + timedelta(minutes=CATERING_DURATION_MINUTES)
+
+        # Bo'sh mashina bormi (filial darajasida)?
+        is_available = await check_slot_availability(
+            db, restaurant_id=restaurant_id, branch_id=branch_id,
+            slot_start=slot_start, slot_end=slot_end,
+        )
+        slots.append({
+            "time": f"{hour:02d}:00",
+            "status": "active" if is_available else "busy",
+        })
+
+    return {
+        "date": date,
+        "restaurant_id": restaurant_id,
+        "branch_id": branch_id,
+        "slots": slots,
+    }
 
 
 @router.post("/calculate-price")
@@ -347,6 +462,19 @@ async def create_catering_order(
     if not rest:
         raise HTTPException(404, "Restoran topilmadi")
 
+    # ── branch_id fallback: agar berilmagan bo'lsa birinchi faol filial
+    # (catering uchun branch_id majburiy — admin panel filteri shu orqali ishlaydi)
+    if branch_id is None:
+        from database.models import Branch
+        first = (await db.execute(
+            select(Branch).where(
+                Branch.restaurant_id == restaurant_id,
+                Branch.is_active == True,
+            ).order_by(Branch.id).limit(1)
+        )).scalar_one_or_none()
+        if first:
+            branch_id = first.id
+
     # Validation
     total = sum(it.quantity for it in data.items if it.quantity > 0)
     _validate_group_order(data.group, total, rest)
@@ -388,6 +516,14 @@ async def create_catering_order(
     breakdown = await _compute_catering_price(
         data.items, data.delivery_subtype, data.distance_km, rate, db, restaurant_id
     )
+
+    # Catering mahsulotlarining narxi belgilanmagan bo'lsa — to'lov yarata olmaymiz
+    if (breakdown.get("total_price_uzs") or 0) <= 0:
+        raise HTTPException(
+            400,
+            "Tanlangan catering mahsulotlarining narxi belgilanmagan. "
+            "Restoran administratoriga murojaat qiling.",
+        )
 
     # Buyurtma
     order = Order(

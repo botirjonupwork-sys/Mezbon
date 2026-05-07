@@ -5,6 +5,7 @@ import {
 } from 'antd'
 import { PlusOutlined, DeleteOutlined, LockOutlined, UserOutlined } from '@ant-design/icons'
 import { getAdmins, createAdmin, deleteAdmin } from '../api'
+import { fmtDateOnly } from '../utils/datetime'
 import { useAuthStore } from '../store/auth'
 
 const { Title } = Typography
@@ -15,7 +16,7 @@ export default function Admins() {
   const [modalOpen, setModalOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [form] = Form.useForm()
-  const restaurantId = useAuthStore((s) => s.restaurantId)
+  const restaurantId = useAuthStore((s) => s.currentRestaurantId)
 
   const fetchAdmins = () => {
     setLoading(true)
@@ -71,7 +72,7 @@ export default function Admins() {
     },
     {
       title: "Qo'shilgan sana", dataIndex: 'created_at',
-      render: (v) => v ? new Date(v).toLocaleDateString('uz') : '—'
+      render: (v) => fmtDateOnly(v)
     },
     {
       title: 'Huquqlar', dataIndex: 'created_at',

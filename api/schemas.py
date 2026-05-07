@@ -106,6 +106,12 @@ class OrderOut(BaseModel):
     delivery_fee: float
     created_at: datetime
     items: List[OrderItemOut]
+    # Faza 4: to'lov holati mijoz UI'sida ko'rinishi uchun
+    payment_status: Optional[str] = None
+    payment_method: Optional[str] = None
+    payment_provider: Optional[str] = None
+    payment_charge_id: Optional[str] = None
+    paid_amount_tiyin: Optional[int] = None
 
     class Config:
         from_attributes = True

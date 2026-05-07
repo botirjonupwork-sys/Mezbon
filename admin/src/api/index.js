@@ -31,6 +31,9 @@ export const getReviewStats = (params) => api.get('/reviews/stats', { params })
 export const getOrders = (params) => api.get('/admin/orders', { params })
 export const updateOrderStatus = (id, status) =>
   api.patch(`/orders/${id}/status`, null, { params: { status } })
+export const refundOrder = (orderId, reason = '', amount_tiyin = null, apply_policy = true) =>
+  api.post(`/admin/orders/${orderId}/refund`, { order_id: orderId, reason, amount_tiyin, apply_policy }).then(r => r.data)
+export const getRefunds = (params) => api.get('/admin/refunds', { params }).then(r => r.data)
 
 // ── Menu ─────────────────────────────────────────────
 export const getCategories = (params) => api.get('/admin/categories', { params })
@@ -70,6 +73,13 @@ export const getMyPlan = (params) => api.get('/admin/me/plan', { params })
 // ── Billing ───────────────────────────────────────────
 export const getBillingPlans = (params) => api.get('/admin/billing/plans', { params })
 export const getBillingPayments = (params) => api.get('/admin/billing/payments', { params })
+export const getBillingStatus = (params) => api.get('/admin/billing/status', { params })
+export const getSettlement = (params) => api.get('/admin/billing/settlement', { params }).then(r => r.data)
+export const getSettlementCsvUrl = (params) => {
+  const qs = new URLSearchParams(params || {}).toString()
+  return `/api/admin/billing/settlement.csv${qs ? '?' + qs : ''}`
+}
+export const upgradeBillingPlan = (data, params) => api.post('/admin/billing/upgrade', data, { params })
 export const createInvoice = (data, params) => api.post('/payments/create-invoice', data, { params })
 export const mockCompletePayment = (merchantTransId, params) =>
   api.post('/payments/mock/complete', null, { params: { ...params, merchant_trans_id: merchantTransId } })
@@ -90,12 +100,14 @@ export const deleteAdmin = (id) => api.delete(`/admin/admins/${id}`)
 // ── Catering ──────────────────────────────────────────
 export const getCateringProducts = (params) => api.get('/catering/products', { params })
 export const getCurrencyRate = (params) => api.get('/catering/currency', { params })
-export const getCateringOrders = (params) => api.get('/admin/orders', { params: { ...params, order_kind: 'catering' } })
+export const getCateringOrders = (params) =>
+  api.get('/admin/orders', { params: { order_kind: 'catering', limit: 500, ...(params || {}) } }).then(r => r.data)
 
 // ── Branches ──────────────────────────────────────────
 export const getAdminBranches = (params) => api.get('/admin/branches', { params })
 export const getBranchSettings = (branchId) => api.get(`/admin/branches/${branchId}/settings`)
 export const updateBranchSettings = (branchId, data) => api.put(`/admin/branches/${branchId}/settings`, data)
+export const createAdminBranch = (data) => api.post('/admin/branches', data).then(r => r.data)
 
 // ── POS / Printer ─────────────────────────────────────
 export const getPOSConfig = (params) => api.get('/admin/pos/config', { params })
@@ -104,7 +116,8 @@ export const testPOSPrint = (params) => api.post('/admin/pos/test-print', null, 
 
 // ── Super Admin ───────────────────────────────────────
 export const getSuperStats = (params) => api.get('/super-admin/stats', { params })
-export const getSuperRestaurants = () => api.get('/super-admin/restaurants')
+// Admin panelda super-admin restoran tanlashi uchun ham ishlatiladi
+export const getSuperRestaurants = () => api.get('/super-admin/restaurants').catch(() => ({ data: [] }))
 export const patchSuperRestaurant = (id, data) => api.patch(`/super-admin/restaurants/${id}`, data)
 export const getMaintenance = () => api.get('/super-admin/maintenance')
 export const setMaintenance = (data) => api.put('/super-admin/maintenance', data)

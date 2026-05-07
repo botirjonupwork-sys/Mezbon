@@ -9,7 +9,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from api.database import get_db
-from database.models import Branch, Restaurant
+from api.auth_deps import require_super_admin, require_restaurant_admin, get_restaurant_context
+from database.models import Branch, Plan, Restaurant
 
 router = APIRouter(tags=["branches"])
 
@@ -117,13 +118,40 @@ async def list_branches(restaurant_id: int, db: AsyncSession = Depends(get_db)):
     ]
 
 
+async def _check_branch_quota(db: AsyncSession, rest: Restaurant) -> None:
+    """Tarif bo'yicha filiallar sonini tekshirish.
+
+    Free → 1 filial, Basic → 3, Pro → 10 (Plan.max_branches_limit dan o'qiladi).
+    """
+    if not rest.plan_id:
+        # Plan yo'q — Free deb hisoblaymiz
+        max_branches = 1
+    else:
+        plan = await db.get(Plan, rest.plan_id)
+        max_branches = (plan.max_branches_limit or 1) if plan else 1
+
+    current_count = (await db.execute(
+        select(func.count(Branch.id)).where(Branch.restaurant_id == rest.id)
+    )).scalar() or 0
+
+    if current_count >= max_branches:
+        raise HTTPException(403, {
+            "code": "branch_limit_reached",
+            "message": f"Tarif bo'yicha maksimal filiallar soniga yetdingiz "
+                       f"({current_count}/{max_branches}). Tarifni yuqoriga ko'taring.",
+            "current": current_count,
+            "limit": max_branches,
+        })
+
+
 @router.post("/super/restaurants/{restaurant_id}/branches")
-async def create_branch(
+async def create_branch_super(
     restaurant_id: int,
     data: BranchCreate,
+    actor: dict = Depends(require_super_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    # Restoran borligini tekshirish
+    """Super-admin: har qaysi restoran uchun filial qo'shish (tarif limitisiz)."""
     rest = await db.get(Restaurant, restaurant_id)
     if not rest:
         raise HTTPException(404, "Restoran topilmadi")
@@ -147,10 +175,47 @@ async def create_branch(
     return {"id": branch.id, "name": branch.name}
 
 
+@router.post("/admin/branches")
+async def create_branch_admin(
+    data: BranchCreate,
+    rid: int = Depends(require_restaurant_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Restoran admin: o'z restoraniga yangi filial qo'shish.
+
+    Tarif chegarasi (max_branches_limit) tekshiriladi. Faza 10 audit.
+    """
+    rest = await db.get(Restaurant, rid)
+    if not rest:
+        raise HTTPException(404, "Restoran topilmadi")
+
+    # Tarif limiti tekshiruvi
+    await _check_branch_quota(db, rest)
+
+    branch = Branch(
+        restaurant_id=rid,
+        name=data.name,
+        address=data.address,
+        phone=data.phone,
+        latitude=data.latitude,
+        longitude=data.longitude,
+        work_hours_from=data.work_hours_from,
+        work_hours_until=data.work_hours_until,
+        min_order=data.min_order,
+        delivery_base_fee=data.delivery_base_fee,
+        delivery_per_km=data.delivery_per_km,
+    )
+    db.add(branch)
+    await db.commit()
+    await db.refresh(branch)
+    return {"id": branch.id, "name": branch.name}
+
+
 @router.put("/super/branches/{branch_id}")
 async def update_branch(
     branch_id: int,
     data: BranchUpdate,
+    actor: dict = Depends(require_super_admin),
     db: AsyncSession = Depends(get_db),
 ):
     branch = await db.get(Branch, branch_id)
@@ -166,7 +231,11 @@ async def update_branch(
 
 
 @router.delete("/super/branches/{branch_id}")
-async def delete_branch(branch_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_branch(
+    branch_id: int,
+    actor: dict = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_db),
+):
     branch = await db.get(Branch, branch_id)
     if not branch:
         raise HTTPException(404, "Filial topilmadi")
@@ -180,9 +249,10 @@ async def delete_branch(branch_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.get("/admin/branches")
 async def admin_list_branches(
-    restaurant_id: int = Query(...),
+    restaurant_id: int = Depends(get_restaurant_context),
     db: AsyncSession = Depends(get_db),
 ):
+    """Restoran admin: o'z filiallari. IDOR himoyasi via get_restaurant_context."""
     result = await db.execute(
         select(Branch)
         .where(Branch.restaurant_id == restaurant_id, Branch.is_active == True)
@@ -202,10 +272,17 @@ async def admin_list_branches(
 
 
 @router.get("/admin/branches/{branch_id}/settings")
-async def get_branch_settings(branch_id: int, db: AsyncSession = Depends(get_db)):
+async def get_branch_settings(
+    branch_id: int,
+    rid: int = Depends(get_restaurant_context),
+    db: AsyncSession = Depends(get_db),
+):
     branch = await db.get(Branch, branch_id)
     if not branch:
         raise HTTPException(404, "Filial topilmadi")
+    # IDOR: filial joriy restoraniga tegishli bo'lishi shart
+    if branch.restaurant_id != rid:
+        raise HTTPException(403, "Bu filial sizning restoraningiznikidan emas")
 
     return {
         "id": branch.id,
@@ -227,11 +304,15 @@ async def get_branch_settings(branch_id: int, db: AsyncSession = Depends(get_db)
 async def update_branch_settings(
     branch_id: int,
     data: BranchUpdate,
+    rid: int = Depends(get_restaurant_context),
     db: AsyncSession = Depends(get_db),
 ):
+    """Restoran admin: o'z filiali sozlamalarini yangilash. IDOR himoyasi."""
     branch = await db.get(Branch, branch_id)
     if not branch:
         raise HTTPException(404, "Filial topilmadi")
+    if branch.restaurant_id != rid:
+        raise HTTPException(403, "Bu filial sizning restoraningiznikidan emas")
 
     for field, value in data.model_dump(exclude_none=True).items():
         setattr(branch, field, value)

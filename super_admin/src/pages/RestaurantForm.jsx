@@ -142,7 +142,11 @@ export default function RestaurantForm() {
   }, [])
 
   useEffect(() => {
-    if (!isEdit) return
+    if (!isEdit) {
+      // Yangi restoran: oldingi sessiyadan qolgan ma'lumotlarni tozalash
+      form.resetFields()
+      return
+    }
     getRestaurant(id)
       .then((r) => {
         const d = r.data
@@ -154,7 +158,7 @@ export default function RestaurantForm() {
       })
       .catch(() => message.error('Yuklab bo\'lmadi'))
       .finally(() => setFetching(false))
-  }, [id])
+  }, [id, isEdit])
 
   // Load branches when editing
   const loadBranches = async () => {
@@ -277,20 +281,6 @@ export default function RestaurantForm() {
                 rules={[{ required: true, message: 'Nomini kiriting' }, { min: 2, max: 80 }]}
               >
                 <Input placeholder="Muhsina Dollar Somsa" maxLength={80} showCount />
-              </Form.Item>
-            </Col>
-            <Col xs={24} sm={12}>
-              <Form.Item
-                name="slug"
-                label="Slug (URL uchun)"
-                rules={[
-                  { required: true, message: 'Slug kiriting' },
-                  { pattern: /^[a-z0-9\-]+$/, message: 'Faqat kichik harf, raqam va -' },
-                  { min: 2, max: 40 },
-                ]}
-                tooltip="Restoran URL manzili: restoran.buyurtmalar.uz"
-              >
-                <Input placeholder="muhsina" addonBefore="restoran." maxLength={40} />
               </Form.Item>
             </Col>
             <Col xs={24} sm={12}>

@@ -15,13 +15,17 @@ from pydantic import BaseModel
 import base64
 
 from api.database import get_db
-from api.auth_deps import require_restaurant_admin
+from api.auth_deps import require_restaurant_admin, require_super_admin
+from api.services.audit import client_ip, log_security
 from api.services.billing import (
     create_payment_record, handle_click_webhook,
     get_payment_by_merchant_trans, mark_payment_success, mark_payment_failed,
     tiyin_to_uzs, uzs_to_tiyin,
 )
-from database.models import Plan, Restaurant, Payment
+from api.services.subscription import (
+    get_billing_status, upgrade_immediate, upgrade_queued,
+)
+from database.models import Plan, Restaurant, Payment, Order
 
 router = APIRouter(tags=["billing"])
 
@@ -31,6 +35,12 @@ router = APIRouter(tags=["billing"])
 class CreateInvoiceRequest(BaseModel):
     plan_id: int
     provider: str  # "click" | "payme"
+
+
+class UpgradeRequest(BaseModel):
+    plan_id: int
+    upgrade_type: str   # "immediate" | "queued"
+    provider: str = "click"   # Click | Payme — to'lov yaratish uchun
 
 
 # ── Plans ─────────────────────────────────────────────
@@ -61,23 +71,215 @@ async def list_plans(
     return {
         "current_plan_id": current,
         "current_plan_expires_at": expires_at,
-        "plans": [
-            {
-                "id": p.id,
-                "name": p.name,
-                "slug": p.slug,
-                "description": p.description,
-                "monthly_price": p.monthly_price,
-                "monthly_price_tiyin": uzs_to_tiyin(p.monthly_price or 0),
-                "commission_percent": p.commission_percent,
-                "has_catering": bool(p.has_catering),
-                "has_ai_agent": bool(p.has_ai_agent),
-                "has_yandex": bool(p.has_yandex),
-                "order_limit": p.order_limit,
-            }
-            for p in plans
-        ],
+        "plans": [_plan_to_dict(p) for p in plans],
     }
+
+
+def _plan_to_dict(p: Plan) -> dict:
+    """Plan obyektni JSON'ga, ochiq/yopiq imkoniyatlar bilan to'liq ro'yxat.
+
+    Frontend `features` arrayni `{label, enabled}` shaklida ko'rsatadi —
+    har tarifda nimaga ruxsat bor/yo'qligi vizual ko'rinsin.
+    """
+    features = [
+        {"key": "catering",     "label": "Catering (tadbir)",        "enabled": bool(p.has_catering)},
+        {"key": "ai_agent",     "label": "AI Call Operator",         "enabled": bool(p.has_ai_agent)},
+        {"key": "yandex",       "label": "Yandex Delivery",          "enabled": bool(p.has_yandex)},
+        {"key": "multi_branch", "label": "Bir nechta filial",        "enabled": bool(p.has_multi_branch)},
+    ]
+    return {
+        "id": p.id,
+        "name": p.name,
+        "slug": p.slug,
+        "description": p.description,
+        "monthly_price": p.monthly_price,
+        "monthly_price_tiyin": uzs_to_tiyin(p.monthly_price or 0),
+        "commission_percent": p.commission_percent,
+        # Boolean flag'lar (eski frontend uchun backward compat)
+        "has_catering": bool(p.has_catering),
+        "has_ai_agent": bool(p.has_ai_agent),
+        "has_yandex": bool(p.has_yandex),
+        "has_multi_branch": bool(p.has_multi_branch),
+        # Limitlar
+        "order_limit": p.order_limit,             # 0 = cheksiz
+        "max_branches_limit": p.max_branches_limit,  # 0 = cheksiz
+        # Features array — UI uchun yagona format
+        "features": features,
+        "is_active": bool(p.is_active),
+    }
+
+
+# ── Billing status (frozen + grace + next plan) ────────
+
+@router.get("/admin/billing/status")
+async def billing_status(
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Restoranning to'liq billing holati — joriy tarif, frozen kunlari, navbat,
+    grace_period soni, va h.k.
+
+    Frontend Tariflar sahifasida ushbu ma'lumotlarni ko'rsatadi.
+    """
+    if not restaurant_id:
+        raise HTTPException(400, "restaurant_id kerak")
+    rest = (await db.execute(
+        select(Restaurant).where(Restaurant.id == restaurant_id)
+    )).scalar_one_or_none()
+    if not rest:
+        raise HTTPException(404, "Restoran topilmadi")
+    return await get_billing_status(db, restaurant=rest)
+
+
+# ── Tarifni yangilash (Variant A / Variant B) ──────────
+
+@router.post("/admin/billing/upgrade")
+async def upgrade_plan(
+    body: UpgradeRequest,
+    request: Request,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Tarifni yangilash — 2 variant.
+
+    **Variant A "immediate"**: joriy tarif qolgan kunlari `frozen_days` ga
+    saqlanadi, yangi tarif darhol boshlanadi.
+
+    **Variant B "queued"**: yangi tarif uchun to'lov, lekin u eski tarif
+    tugagandan keyin avtomatik faollashadi.
+
+    Talablar:
+        - Restoran INN tasdiqlangan bo'lishi kerak (`is_verified=True`)
+        - Yangi tarif Free emas (Free uchun to'lov yo'q)
+        - Yangi tarif joriy tarif bilan bir xil bo'lmasligi kerak
+    """
+    if not restaurant_id:
+        raise HTTPException(400, "restaurant_id kerak")
+    if body.upgrade_type not in ("immediate", "queued"):
+        raise HTTPException(400, "upgrade_type faqat 'immediate' yoki 'queued'")
+    if body.provider not in ("click", "payme"):
+        raise HTTPException(400, "provider faqat 'click' yoki 'payme'")
+
+    rest = (await db.execute(
+        select(Restaurant).where(Restaurant.id == restaurant_id)
+    )).scalar_one_or_none()
+    if not rest:
+        raise HTTPException(404, "Restoran topilmadi")
+
+    # ── Xavfsizlik: faqat tasdiqlangan restoranlar ────
+    if not rest.is_verified:
+        await log_security(
+            db, action="plan.change", restaurant_id=rest.id,
+            actor_username=rest.admin_username,
+            ip_address=client_ip(request),
+            details={"reason": "not_verified", "requested_plan_id": body.plan_id},
+            success=False,
+        )
+        raise HTTPException(403, {
+            "code": "verification_required",
+            "message": "Tarif sotib olish uchun INN tasdiqlangan bo'lishi kerak. "
+                       "Super-admin bilan bog'laning.",
+        })
+
+    # Suspended restoranlar yangilash huquqiga ega — bu ularning yagona yo'li!
+    # (Lekin ular allaqachon API'ga kira olmasligi mumkin — middleware'da exception
+    # qo'shamiz: /admin/billing/* har doim ochiq.)
+
+    new_plan = (await db.execute(
+        select(Plan).where(Plan.id == body.plan_id)
+    )).scalar_one_or_none()
+    if not new_plan:
+        raise HTTPException(404, "Tarif topilmadi")
+    if not new_plan.is_active:
+        raise HTTPException(400, "Bu tarif faol emas")
+    if new_plan.monthly_price <= 0:
+        raise HTTPException(400, "Free tarif uchun to'lov talab qilinmaydi")
+    if rest.plan_id == new_plan.id and body.upgrade_type == "immediate":
+        raise HTTPException(400, "Joriy tarifda allaqachon turibsiz")
+
+    # ── 1. Invoice yaratish ───────────────────────────
+    payment = await create_payment_record(
+        db,
+        restaurant=rest,
+        plan=new_plan,
+        provider=body.provider,
+    )
+
+    # ── 2. Mock rejimda — to'lovni darhol qo'llash ────
+    # Real provayder uchun: webhook keldi → mark_payment_success → biz upgrade'ni
+    # shu yerga emas, billing.py:mark_payment_success() ichida chaqiramiz (TODO).
+    # Hozircha invoice URL qaytaradi va frontend mijozni to'lov sahifasiga jo'natadi.
+
+    # Payment.upgrade_type ni saqlash
+    payment.upgrade_type = body.upgrade_type
+    await db.commit()
+
+    # ── 3. Audit log ──────────────────────────────────
+    await log_security(
+        db, action="plan.change", restaurant_id=rest.id,
+        actor_username=rest.admin_username,
+        ip_address=client_ip(request),
+        details={
+            "from_plan_id": rest.plan_id,
+            "to_plan_id": new_plan.id,
+            "upgrade_type": body.upgrade_type,
+            "payment_id": payment.id,
+            "amount_tiyin": payment.amount_tiyin,
+        },
+        success=True,
+    )
+
+    return {
+        "ok": True,
+        "payment_id": payment.id,
+        "merchant_trans_id": payment.merchant_trans_id,
+        "amount_tiyin": payment.amount_tiyin,
+        "amount_uzs": tiyin_to_uzs(payment.amount_tiyin),
+        "payment_url": payment.payment_url,
+        "upgrade_type": body.upgrade_type,
+        "message": (
+            "To'lov muvaffaqiyatli o'tgach: "
+            + ("yangi tarif darhol boshlanadi (joriy kunlari muzlatiladi)."
+               if body.upgrade_type == "immediate"
+               else "yangi tarif joriy muddat tugagach faollashadi.")
+        ),
+    }
+
+
+# ── To'lov muvaffaqiyatli bo'lgach upgrade'ni qo'llash ──
+# Bu funksiya billing.py:mark_payment_success() dan keyin chaqiriladi
+# (Click/Payme webhook trigger qiladi).
+
+async def apply_upgrade_after_payment(
+    db: AsyncSession, payment: Payment,
+) -> Optional[dict]:
+    """To'lov muvaffaqiyatli bo'lganidan keyin tarif upgrade'ni qo'llash.
+
+    Bu helper'ni `billing.py:mark_payment_success()` ichidan chaqirish kerak
+    (kelajakda integratsiya qilamiz). Hozir bu funksiya alohida endpointdan
+    yoki test'dan ishlatilishi mumkin.
+    """
+    if payment.status != "success":
+        return None
+    rest = (await db.execute(
+        select(Restaurant).where(Restaurant.id == payment.restaurant_id)
+    )).scalar_one_or_none()
+    if not rest:
+        return None
+    new_plan = (await db.execute(
+        select(Plan).where(Plan.id == payment.plan_id)
+    )).scalar_one_or_none()
+    if not new_plan:
+        return None
+
+    if payment.upgrade_type == "queued":
+        return await upgrade_queued(
+            db, restaurant=rest, new_plan=new_plan, payment_id=payment.id,
+        )
+    # 'immediate', 'initial', 'renewal' — barchasi darhol qo'llanadi
+    return await upgrade_immediate(
+        db, restaurant=rest, new_plan=new_plan, payment_id=payment.id,
+    )
 
 
 @router.get("/admin/billing/payments")
@@ -110,6 +312,300 @@ async def list_payments(
             "paid_at": p.paid_at.isoformat() if p.paid_at else None,
         }
         for p in payments
+    ]
+
+
+# ── Settlement (restoran moliya) ─────────────────────
+
+
+@router.get("/admin/billing/settlement")
+async def settlement_report(
+    date_from: Optional[str] = None,   # YYYY-MM-DD
+    date_to: Optional[str] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Restoran moliyaviy hisoboti — bu davrda qancha pul olgan, komissiya qancha.
+
+    Manbalar:
+      - Order.payment_status='paid' (Order.paid_amount_tiyin) — to'g'ridan-to'g'ri tushum
+      - CommissionPayment — bizning platformaga to'lov hisobi
+      - Refund — qaytarib berilgan summa (manfiy)
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import func
+    from database.models import CommissionPayment, Refund
+
+    if not restaurant_id:
+        raise HTTPException(400, "restaurant_id kerak")
+
+    # Davr — default oxirgi 30 kun
+    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    if date_from:
+        try:
+            dt_from = datetime.strptime(date_from, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(400, "date_from format: YYYY-MM-DD")
+    else:
+        dt_from = today - timedelta(days=30)
+    if date_to:
+        try:
+            dt_to = datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)
+        except ValueError:
+            raise HTTPException(400, "date_to format: YYYY-MM-DD")
+    else:
+        dt_to = today + timedelta(days=1)
+
+    # Buyurtmalar tushumi (faqat to'langan)
+    paid_orders_q = await db.execute(
+        select(
+            func.count(Order.id),
+            func.coalesce(func.sum(Order.paid_amount_tiyin), 0),
+        ).where(
+            Order.restaurant_id == restaurant_id,
+            Order.payment_status.in_(["paid", "partial"]),
+            Order.created_at >= dt_from,
+            Order.created_at < dt_to,
+        )
+    )
+    orders_count, paid_sum_tiyin = paid_orders_q.one()
+    orders_count = int(orders_count or 0)
+    paid_sum_uzs = (paid_sum_tiyin or 0) / 100.0
+
+    # Provider taqsimoti
+    provider_q = await db.execute(
+        select(
+            Order.payment_provider,
+            func.count(Order.id),
+            func.coalesce(func.sum(Order.paid_amount_tiyin), 0),
+        ).where(
+            Order.restaurant_id == restaurant_id,
+            Order.payment_status.in_(["paid", "partial"]),
+            Order.created_at >= dt_from,
+            Order.created_at < dt_to,
+        ).group_by(Order.payment_provider)
+    )
+    by_provider = [
+        {"provider": row[0] or "manual", "count": int(row[1] or 0), "amount_uzs": (row[2] or 0) / 100.0}
+        for row in provider_q.all()
+    ]
+
+    # Komissiya (bizning platformaga to'lanadigan)
+    comm_q = await db.execute(
+        select(func.coalesce(func.sum(CommissionPayment.amount), 0)).where(
+            CommissionPayment.restaurant_id == restaurant_id,
+            CommissionPayment.status == "confirmed",
+            CommissionPayment.paid_at >= dt_from,
+            CommissionPayment.paid_at < dt_to,
+        )
+    )
+    commission_total_uzs = float(comm_q.scalar() or 0)
+
+    # Refund'lar
+    refund_q = await db.execute(
+        select(
+            func.count(Refund.id),
+            func.coalesce(func.sum(Refund.amount_tiyin), 0),
+        ).where(
+            Refund.restaurant_id == restaurant_id,
+            Refund.status == "success",
+            Refund.requested_at >= dt_from,
+            Refund.requested_at < dt_to,
+        )
+    )
+    refunds_count, refunds_sum_tiyin = refund_q.one()
+    refunds_count = int(refunds_count or 0)
+    refunds_sum_uzs = (refunds_sum_tiyin or 0) / 100.0
+
+    net_uzs = paid_sum_uzs - refunds_sum_uzs - commission_total_uzs
+
+    return {
+        "period": {"from": dt_from.date().isoformat(), "to": (dt_to - timedelta(days=1)).date().isoformat()},
+        "orders": {
+            "count": orders_count,
+            "paid_total_uzs": paid_sum_uzs,
+            "by_provider": by_provider,
+        },
+        "refunds": {
+            "count": refunds_count,
+            "total_uzs": refunds_sum_uzs,
+        },
+        "commission_uzs": commission_total_uzs,
+        "net_uzs": net_uzs,
+    }
+
+
+@router.get("/admin/billing/settlement.csv")
+async def settlement_csv(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Settlement davrida buyurtmalar CSV (har qator: order, summa, komissiya)."""
+    from datetime import datetime, timedelta
+    from io import StringIO
+    import csv
+    from fastapi.responses import StreamingResponse
+    from database.models import CommissionPayment
+
+    if not restaurant_id:
+        raise HTTPException(400, "restaurant_id kerak")
+
+    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    dt_from = datetime.strptime(date_from, "%Y-%m-%d") if date_from else today - timedelta(days=30)
+    dt_to = (datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)) if date_to else today + timedelta(days=1)
+
+    res = await db.execute(
+        select(Order).where(
+            Order.restaurant_id == restaurant_id,
+            Order.payment_status.in_(["paid", "partial", "refunded", "partial_refund"]),
+            Order.created_at >= dt_from,
+            Order.created_at < dt_to,
+        ).order_by(Order.id)
+    )
+    orders = res.scalars().all()
+
+    # Commission lookup
+    comm_res = await db.execute(
+        select(CommissionPayment.order_id, func.coalesce(func.sum(CommissionPayment.amount), 0)).where(
+            CommissionPayment.restaurant_id == restaurant_id,
+            CommissionPayment.order_id.in_([o.id for o in orders] or [0]),
+        ).group_by(CommissionPayment.order_id)
+    )
+    comm_by_order = {row[0]: float(row[1] or 0) for row in comm_res.all()}
+
+    buf = StringIO()
+    w = csv.writer(buf)
+    w.writerow(["order_id", "created_at", "payment_method", "payment_provider",
+                "payment_status", "paid_uzs", "commission_uzs", "net_uzs"])
+    for o in orders:
+        paid_uzs = (o.paid_amount_tiyin or 0) / 100.0
+        comm = comm_by_order.get(o.id, 0.0)
+        w.writerow([
+            o.id,
+            o.created_at.isoformat() if o.created_at else "",
+            o.payment_method or "",
+            o.payment_provider or "",
+            o.payment_status or "",
+            f"{paid_uzs:.2f}",
+            f"{comm:.2f}",
+            f"{paid_uzs - comm:.2f}",
+        ])
+    buf.seek(0)
+    filename = f"settlement_{dt_from.date()}_{(dt_to - timedelta(days=1)).date()}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ── Refund endpoints ──────────────────────────────────
+
+
+class RefundRequest(BaseModel):
+    payment_id: Optional[int] = None
+    order_id: Optional[int] = None
+    amount_tiyin: Optional[int] = None  # None → to'liq
+    reason: Optional[str] = ""
+    apply_policy: bool = True            # order uchun cancellation policy qo'llaymizmi
+
+
+@router.post("/admin/billing/refund")
+async def refund_payment_endpoint(
+    body: RefundRequest,
+    db: AsyncSession = Depends(get_db),
+    ctx = Depends(require_super_admin),
+):
+    """Super-admin: SaaS Payment refund yoki Order refund."""
+    from api.services.refunds import refund_saas_payment, refund_order
+
+    admin_id = getattr(ctx, "admin_id", None)
+    if body.payment_id:
+        result = await refund_saas_payment(
+            db, payment_id=body.payment_id,
+            amount_tiyin=body.amount_tiyin,
+            reason=body.reason or "",
+            requested_by_admin_id=admin_id,
+        )
+    elif body.order_id:
+        result = await refund_order(
+            db, order_id=body.order_id,
+            amount_tiyin=body.amount_tiyin,
+            reason=body.reason or "",
+            requested_by_admin_id=admin_id,
+            apply_policy=body.apply_policy,
+        )
+    else:
+        raise HTTPException(400, "payment_id yoki order_id ko'rsatish shart")
+
+    if not result.ok:
+        raise HTTPException(400, result.error or "Refund failed")
+
+    return {
+        "ok": True,
+        "refund_id": result.refund_id,
+        "provider_refund_id": result.provider_refund_id,
+    }
+
+
+@router.post("/admin/orders/{order_id}/refund")
+async def refund_order_endpoint(
+    order_id: int,
+    body: RefundRequest,
+    db: AsyncSession = Depends(get_db),
+    restaurant_id: int = Depends(require_restaurant_admin),
+):
+    """Restoran admini: o'z buyurtmasini bekor qilish + pul qaytarish."""
+    from api.services.refunds import refund_order
+
+    # IDOR himoyasi — order shu restorannikimi
+    order = (await db.execute(
+        select(Order).where(Order.id == order_id, Order.restaurant_id == restaurant_id)
+    )).scalar_one_or_none()
+    if not order:
+        raise HTTPException(404, "Buyurtma topilmadi")
+
+    result = await refund_order(
+        db, order_id=order_id,
+        amount_tiyin=body.amount_tiyin,
+        reason=body.reason or "",
+        apply_policy=body.apply_policy,
+    )
+    if not result.ok:
+        raise HTTPException(400, result.error or "Refund failed")
+    return {"ok": True, "refund_id": result.refund_id}
+
+
+@router.get("/admin/refunds")
+async def list_refunds(
+    restaurant_id: Optional[int] = Depends(require_restaurant_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Joriy restoran refund tarixi."""
+    from database.models import Refund
+    if not restaurant_id:
+        return []
+    res = await db.execute(
+        select(Refund).where(Refund.restaurant_id == restaurant_id).order_by(desc(Refund.requested_at)).limit(100)
+    )
+    refunds = res.scalars().all()
+    return [
+        {
+            "id": r.id,
+            "payment_id": r.payment_id,
+            "order_id": r.order_id,
+            "amount_uzs": tiyin_to_uzs(r.amount_tiyin),
+            "reason": r.reason,
+            "status": r.status,
+            "provider": r.provider,
+            "provider_refund_id": r.provider_refund_id,
+            "error_message": r.error_message,
+            "requested_at": r.requested_at.isoformat() if r.requested_at else None,
+            "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+        }
+        for r in refunds
     ]
 
 
@@ -151,12 +647,28 @@ async def create_invoice(
 
 # ── Click webhook ─────────────────────────────────────
 
+WEBHOOK_MAX_BODY_BYTES = 10 * 1024  # 10KB — webhook payloadlari kichik bo'lishi shart
+
+
+async def _enforce_webhook_body_size(request: Request) -> None:
+    """Webhook body hajmini cheklash (replay/DoS himoyasi)."""
+    cl = request.headers.get("content-length")
+    if cl:
+        try:
+            if int(cl) > WEBHOOK_MAX_BODY_BYTES:
+                raise HTTPException(413, "Webhook body too large")
+        except ValueError:
+            pass
+
+
 @router.post("/payments/click/webhook")
 async def click_webhook(request: Request, db: AsyncSession = Depends(get_db)):
-    """Click prepare/complete webhook handler.
+    """Click prepare/complete/reverse webhook handler.
 
     Click application/x-www-form-urlencoded yuboradi.
+    Rate-limit: SlowAPI default (300/min/IP). Body limit: 10KB.
     """
+    await _enforce_webhook_body_size(request)
     form = await request.form()
     payload = {k: v for k, v in form.items()}
     client_ip = request.client.host if request.client else None
@@ -195,10 +707,12 @@ def _payme_error(code: int, message: str, request_id: Optional[int] = None) -> d
 
 @router.post("/payments/payme/webhook")
 async def payme_webhook(
+    request: Request,
     body: PaymeRPCRequest,
     authorization: Optional[str] = Header(None, alias="Authorization"),
     db: AsyncSession = Depends(get_db),
 ):
+    await _enforce_webhook_body_size(request)
     """Payme JSON-RPC webhook.
 
     Methodlar:
@@ -239,7 +753,10 @@ async def payme_webhook(
         amount = params.get("amount")
         if amount != payment.amount_tiyin:
             return _payme_error(-31001, "Wrong amount", rid)
-        if payment.status not in ("pending", "success"):
+        # Allaqachon to'langan bo'lsa — yangi to'lovga ruxsat berma
+        if payment.status == "success":
+            return _payme_error(-31008, "Already paid", rid)
+        if payment.status not in ("pending",):
             return _payme_error(-31008, "Already processed", rid)
         return {"jsonrpc": "2.0", "id": rid, "result": {"allow": True}}
 
@@ -270,13 +787,42 @@ async def payme_webhook(
 
     if method == "CancelTransaction":
         reason = params.get("reason", "user_cancelled")
-        await mark_payment_failed(payment, f"Payme cancel: {reason}", db)
+        # Idempotent — agar allaqachon bekor qilingan bo'lsa, ayni javobni qaytaramiz
+        if payment.status in ("failed", "refunded"):
+            return {
+                "jsonrpc": "2.0", "id": rid,
+                "result": {
+                    "transaction": str(payment.id),
+                    "cancel_time": int(payment.created_at.timestamp() * 1000) if payment.created_at else 0,
+                    "state": -2 if payment.status == "refunded" else -1,
+                },
+            }
+        # success → refunded (Faza 3 to'liq refund flow)
+        was_success = payment.status == "success"
+        if was_success:
+            payment.status = "refunded"
+            await db.commit()
+            from api.logging_config import log_critical
+            log_critical(
+                "payment", "Payme CancelTransaction — payment refunded",
+                payment_id=payment.id, restaurant_id=payment.restaurant_id,
+                reason=reason,
+            )
+            try:
+                from api.services.notifier import notify_platform_admin
+                await notify_platform_admin(
+                    f"⚠️ Payme cancel — Payment #{payment.id} qaytarildi (sabab: {reason})"
+                )
+            except Exception:
+                pass
+        else:
+            await mark_payment_failed(payment, f"Payme cancel: {reason}", db)
         return {
             "jsonrpc": "2.0", "id": rid,
             "result": {
                 "transaction": str(payment.id),
                 "cancel_time": int(__import__("time").time() * 1000),
-                "state": -1,
+                "state": -2 if was_success else -1,  # -2 = paid then cancel, -1 = canceled before perform
             },
         }
 
@@ -287,7 +833,7 @@ async def payme_webhook(
         p = res.scalar_one_or_none()
         if not p:
             return _payme_error(-31003, "Transaction not found", rid)
-        state_map = {"pending": 1, "success": 2, "failed": -1}
+        state_map = {"pending": 1, "success": 2, "failed": -1, "refunded": -2}
         return {
             "jsonrpc": "2.0", "id": rid,
             "result": {
@@ -312,12 +858,20 @@ async def mock_complete_payment(
 ):
     """Test rejimida to'lovni qo'lda muvaffaqiyatli deb belgilash.
 
-    Faqat development / sandbox uchun. Prod'da bu endpointni o'chirib qo'yish kerak.
+    Faqat development / sandbox uchun. Production'da o'chirilgan
+    (ENABLE_MOCK_PAYMENTS=1 env bilan ochiladi).
     """
+    import os
+    if (os.getenv("ENABLE_MOCK_PAYMENTS", "").lower() not in ("1", "true", "yes")):
+        raise HTTPException(403, "Mock to'lov endpointi ishlab chiqarishda o'chirilgan")
+
     payment = await get_payment_by_merchant_trans(merchant_trans_id, db)
     if not payment:
         raise HTTPException(404, "Payment topilmadi")
     if payment.status == "success":
         return {"already": True, "payment_id": payment.id}
+    # SaaS izolatsiya: faqat o'z restoranining payment'ini mark qilsa bo'ladi
+    if restaurant_id and payment.restaurant_id != restaurant_id:
+        raise HTTPException(403, "Bu to'lov sizning restoraningizniki emas")
     await mark_payment_success(payment, external_id=f"mock-{payment.id}", db=db)
     return {"success": True, "payment_id": payment.id}

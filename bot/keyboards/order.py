@@ -34,8 +34,14 @@ def saved_addresses_kb(addresses: list) -> InlineKeyboardMarkup:
 
 
 def payment_kb() -> InlineKeyboardMarkup:
+    """Asosiy zakaz uchun to'lov — faqat karta (Click/Payme).
+
+    Naqd to'lov olib tashlandi (2026-05-01) — mijoz Telegram orqali oldindan
+    karta bilan to'laydi, naqd kuryer'ga emas.
+    """
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💵 Naqd to'lov", callback_data="pay:cash")],
+        [InlineKeyboardButton(text="💳 Click orqali to'lov", callback_data="pay:click")],
+        [InlineKeyboardButton(text="💳 Payme orqali to'lov", callback_data="pay:payme")],
     ])
 
 

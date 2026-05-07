@@ -5,7 +5,7 @@ import { LockOutlined, UserOutlined } from '@ant-design/icons'
 import { superLogin } from '../api'
 import { useAuthStore } from '../store/auth'
 
-const { Title } = Typography
+const { Title, Text } = Typography
 
 export default function Login() {
   const [loading, setLoading] = useState(false)
@@ -26,25 +26,89 @@ export default function Login() {
   }
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', background: '#f0f2f5' }}>
-      <Card style={{ width: 360 }}>
-        <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <Title level={3} style={{ color: '#722ed1', margin: 0 }}>Super Admin</Title>
-          <Typography.Text type="secondary">SaaS Platforma</Typography.Text>
+    <div style={{
+      minHeight: '100vh',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: 'linear-gradient(135deg, #722ed1 0%, #531dab 100%)',
+      position: 'relative',
+      overflow: 'hidden',
+    }}>
+      {/* Background decoration */}
+      <div style={{
+        position: 'absolute',
+        top: '-50%', right: '-20%',
+        width: '600px', height: '600px',
+        borderRadius: '50%',
+        background: 'rgba(255,255,255,0.05)',
+      }} />
+      <div style={{
+        position: 'absolute',
+        bottom: '-30%', left: '-10%',
+        width: '400px', height: '400px',
+        borderRadius: '50%',
+        background: 'rgba(255,255,255,0.05)',
+      }} />
+
+      <Card style={{
+        width: 400,
+        borderRadius: 16,
+        boxShadow: '0 12px 40px rgba(0,0,0,0.2)',
+        border: 'none',
+        position: 'relative',
+        zIndex: 1,
+      }}>
+        <div style={{ textAlign: 'center', marginBottom: 32 }}>
+          <img src="/logo.svg" alt="Mezbon" width="80" height="80"
+               style={{ marginBottom: 12, filter: 'drop-shadow(0 4px 8px rgba(114, 46, 209, 0.3))' }} />
+          <Title level={2} style={{
+            margin: 0,
+            background: 'linear-gradient(135deg, #722ed1, #531dab)',
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            letterSpacing: '-1px',
+            fontWeight: 800,
+          }}>
+            MEZBON
+          </Title>
+          <Text type="secondary" style={{ fontSize: 13 }}>
+            Super Admin · SaaS Platforma
+          </Text>
         </div>
-        <Form layout="vertical" onFinish={onFinish}>
-          <Form.Item name="username" rules={[{ required: true }]}>
-            <Input prefix={<UserOutlined />} placeholder="Username" size="large" />
+
+        <Form layout="vertical" onFinish={onFinish} size="large">
+          <Form.Item name="username" rules={[{ required: true, message: 'Login kiriting' }]}>
+            <Input prefix={<UserOutlined />} placeholder="Username" autoComplete="username" />
           </Form.Item>
-          <Form.Item name="password" rules={[{ required: true }]}>
-            <Input.Password prefix={<LockOutlined />} placeholder="Parol" size="large" />
+          <Form.Item name="password" rules={[{ required: true, message: 'Parol kiriting' }]}>
+            <Input.Password prefix={<LockOutlined />} placeholder="Parol" autoComplete="current-password" />
           </Form.Item>
-          <Button type="primary" htmlType="submit" block size="large" loading={loading}
-            style={{ background: '#722ed1', borderColor: '#722ed1' }}>
+          <Button type="primary" htmlType="submit" block loading={loading}
+            style={{
+              background: 'linear-gradient(135deg, #722ed1, #531dab)',
+              borderColor: '#722ed1',
+              height: 44,
+              fontSize: 15,
+              fontWeight: 600,
+              boxShadow: '0 4px 12px rgba(114, 46, 209, 0.3)',
+            }}>
             Kirish
           </Button>
         </Form>
+
+        <div style={{ textAlign: 'center', marginTop: 24, fontSize: 12, color: '#999' }}>
+          Platforma boshqaruv markazi
+        </div>
       </Card>
+
+      <div style={{
+        position: 'absolute', bottom: 24,
+        textAlign: 'center', width: '100%',
+        color: 'rgba(255,255,255,0.7)', fontSize: 12,
+      }}>
+        © 2026 Mezbon · SaaS for restaurants
+      </div>
     </div>
   )
 }

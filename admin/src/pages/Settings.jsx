@@ -86,7 +86,9 @@ export default function Settings() {
   const [mapLon, setMapLon] = useState(69.2401)
   const [activeTab, setActiveTab] = useState('restaurant')
   const [aiAllowed, setAiAllowed] = useState(false)  // Pro tarif bormi
-  const { setAuth, token, restaurantId } = useAuthStore()
+  const [botStatus, setBotStatus] = useState(null)
+  const [botChecking, setBotChecking] = useState(false)
+  const { setAuth, token, currentRestaurantId: restaurantId } = useAuthStore()
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
   const restParams = restaurantId ? { restaurant_id: restaurantId } : {}
 
@@ -162,14 +164,29 @@ export default function Settings() {
       const values = await profileForm.validateFields()
       const payload = {}
       if (values.username) payload.username = values.username
-      if (values.new_password) payload.new_password = values.new_password
+      if (values.new_password) {
+        if (!values.current_password) {
+          message.error('Parolni o\'zgartirish uchun eski parol kerak')
+          setSavingProfile(false)
+          return
+        }
+        if (values.new_password !== values.confirm_password) {
+          message.error('Yangi parol va tasdiq mos kelmaydi')
+          setSavingProfile(false)
+          return
+        }
+        payload.new_password = values.new_password
+        payload.current_password = values.current_password
+      }
       await updateProfile(payload, restParams)
-      profileForm.setFieldValue('new_password', '')
-      profileForm.setFieldValue('confirm_password', '')
+      profileForm.setFieldsValue({
+        new_password: '', confirm_password: '', current_password: '',
+      })
       if (values.username) setAuth(token, { name: values.username }, restaurantId)
       message.success('✅ Profil yangilandi')
     } catch (err) {
-      if (!err?.errorFields) message.error('Xato')
+      if (err?.response?.data?.detail) message.error(err.response.data.detail)
+      else if (!err?.errorFields) message.error('Xato')
     } finally {
       setSavingProfile(false)
     }
@@ -285,9 +302,112 @@ export default function Settings() {
     </>
   )
 
+  const apiBase = (() => {
+    const env = import.meta.env.VITE_API_URL
+    if (env) return env.startsWith('http') ? env : window.location.origin + env
+    return window.location.origin + '/api'
+  })()
+  const clickWebhookUrl = `${apiBase.replace(/\/$/, '')}/payments/click/webhook`
+  const paymeWebhookUrl = `${apiBase.replace(/\/$/, '')}/payments/payme/webhook`
+
+  const copyToClipboard = (text, label) => {
+    try {
+      navigator.clipboard.writeText(text)
+      message.success(`${label} nusxa olindi`)
+    } catch {
+      message.error('Nusxa olib bo\'lmadi')
+    }
+  }
+
   const paymentTab = (
     <>
       {!selectedBranchId && (<>
+        {/* QQS / VAT */}
+        <Card title={<><DollarOutlined /> Soliq (QQS / VAT)</>} size="small" style={{ marginBottom: 16 }}>
+          <Alert type="info" showIcon style={{ marginBottom: 16 }}
+            message="QQS to'lovchi flagi"
+            description="Agar restoran QQS to'lovchi bo'lsa, har to'langan summadan QQS qismi avtomatik hisoblanadi va fiskal chekda alohida ko'rsatiladi. O'zR uchun standart: 12%." />
+          <Row gutter={16}>
+            <Col xs={24} md={8}>
+              <Form.Item name="is_vat_payer" label="QQS to'lovchi" valuePropName="checked">
+                <Switch checkedChildren="Ha" unCheckedChildren="Yo'q" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8}>
+              <Form.Item noStyle shouldUpdate={(p, c) => p.is_vat_payer !== c.is_vat_payer}>
+                {({ getFieldValue }) => getFieldValue('is_vat_payer') && (
+                  <Form.Item name="vat_percent" label="QQS foizi (%)">
+                    <InputNumber min={0} max={100} step={0.5} style={{ width: '100%' }} />
+                  </Form.Item>
+                )}
+              </Form.Item>
+            </Col>
+          </Row>
+        </Card>
+
+        {/* Test/Live rejim */}
+        <Card title={<><DollarOutlined /> To'lov rejimi (Test / Live)</>} size="small" style={{ marginBottom: 16 }}>
+          <Alert type="warning" showIcon style={{ marginBottom: 16 }}
+            message="Test rejim — sandbox kartalar bilan sinov"
+            description="Test rejimda Click/Payme/Telegram TEST tokenlari ishlaydi, real pul yechilmaydi. Live rejimda real to'lovlar amalga oshiriladi." />
+          <Form.Item name="payment_test_mode" label="Test rejim" valuePropName="checked">
+            <Switch checkedChildren="🧪 TEST" unCheckedChildren="💰 LIVE" />
+          </Form.Item>
+        </Card>
+
+        {/* Telegram Native Payments tokenlari */}
+        <Card title={<><CreditCardOutlined /> Telegram to'lov tokenlari (BotFather)</>} size="small" style={{ marginBottom: 16 }}>
+          <Alert type="info" showIcon style={{ marginBottom: 16 }}
+            message="BotFather → Payments → Click/Payme"
+            description={<>
+              <div>1. Telegram'da <Text code>@BotFather</Text> ni oching → <Text code>/mybots</Text> → bot tanlang</div>
+              <div>2. <Text code>Payments</Text> tugmasini bosing → Click yoki Payme provayderini tanlang</div>
+              <div>3. Token formati: <Text code>123:TEST:abc...</Text> (sandbox) yoki <Text code>123:LIVE:xyz...</Text> (real)</div>
+              <div>4. Bu tokenni quyiga kiriting — Telegram orqali to'lovlar shu token bilan ishlaydi</div>
+            </>} />
+          <Row gutter={16}>
+            <Col xs={24} md={12}>
+              <Form.Item name="telegram_provider_token_click"
+                label="Click TEST/LIVE token"
+                tooltip="BotFather → Payments → Click">
+                <Input.Password autoComplete="off" placeholder="123:TEST:abc..." />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item name="telegram_provider_token_payme"
+                label="Payme TEST/LIVE token"
+                tooltip="BotFather → Payments → Payme">
+                <Input.Password autoComplete="off" placeholder="456:TEST:xyz..." />
+              </Form.Item>
+            </Col>
+          </Row>
+        </Card>
+
+        {/* Webhook URLs */}
+        <Card title={<><GlobalOutlined /> Webhook URL'lar (Click/Payme panellariga kiritish uchun)</>} size="small" style={{ marginBottom: 16 }}>
+          <Alert type="info" showIcon style={{ marginBottom: 16 }}
+            message="Bu URL'larni Click/Payme merchant kabineti'ga kiriting"
+            description="Click yoki Payme to'lov o'tkazganda biz tomonga callback (webhook) yuboradi. URL'larni nusxalab merchant panel'iga joylashtiring." />
+          <Row gutter={16}>
+            <Col xs={24} md={12}>
+              <Form.Item label="Click webhook URL">
+                <Input.Group compact>
+                  <Input value={clickWebhookUrl} readOnly style={{ width: 'calc(100% - 80px)' }} />
+                  <Button onClick={() => copyToClipboard(clickWebhookUrl, 'Click webhook')}>Nusxa</Button>
+                </Input.Group>
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="Payme webhook URL">
+                <Input.Group compact>
+                  <Input value={paymeWebhookUrl} readOnly style={{ width: 'calc(100% - 80px)' }} />
+                  <Button onClick={() => copyToClipboard(paymeWebhookUrl, 'Payme webhook')}>Nusxa</Button>
+                </Input.Group>
+              </Form.Item>
+            </Col>
+          </Row>
+        </Card>
+
         {/* Click */}
         <Card title={<><CreditCardOutlined /> Click Merchant</>} size="small" style={{ marginBottom: 16 }}>
           <Alert type="info" showIcon style={{ marginBottom: 16 }}
@@ -336,7 +456,7 @@ export default function Settings() {
         </Card>
 
         {/* Catering karta */}
-        <Card title={<><CreditCardOutlined /> Catering to'lov kartasi (manual)</>} size="small">
+        <Card title={<><CreditCardOutlined /> Catering to'lov kartasi (manual)</>} size="small" style={{ marginBottom: 16 }}>
           <Alert type="warning" showIcon style={{ marginBottom: 16 }}
             message="Click/Payme ulanmaguncha" description="Catering 'Hozir to'lov' tanlanganda mijozga shu karta ko'rsatiladi." />
           <Row gutter={16}>
@@ -347,6 +467,75 @@ export default function Settings() {
             </Col>
             <Col xs={24} md={10}>
               <Form.Item name="catering_payment_owner" label="Karta egasi"><Input placeholder="TURSUNBOYEV B." /></Form.Item>
+            </Col>
+          </Row>
+        </Card>
+
+        {/* Faza 4-5: To'lov mantiqi sozlamalari */}
+        <Card title={<><DollarOutlined /> To'lov mantiqi (Catering xizmat haqi va Prepayment)</>} size="small">
+          <Alert type="info" showIcon style={{ marginBottom: 16 }}
+            message="Avtomatik to'lov hisob-kitobi"
+            description="Bu sozlamalar Telegram Native Payments paytida hisoblanadi. Click/Payme ulangan bo'lishi shart." />
+          <Row gutter={16}>
+            <Col xs={24} md={12}>
+              <Form.Item name="catering_service_fee" label="Catering 'Borib xizmat ko'rsatish' haqi (so'm)"
+                extra="Mijoz onsite catering tanlasa, asosiy chekka qo'shiladi">
+                <InputNumber style={{ width: '100%' }} min={0} step={10000}
+                  formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                  parser={(v) => v.replace(/,/g, '')}
+                  placeholder="50000" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item name="prepayment_required_above" label="Oldindan to'lov chegarasi (so'm)"
+                extra="Buyurtma summasi shu chegaradan oshsa, mijozdan oldindan to'lov majburiy. 0 = yo'q">
+                <InputNumber style={{ width: '100%' }} min={0} step={50000}
+                  formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                  parser={(v) => v.replace(/,/g, '')}
+                  placeholder="200000" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Alert type="warning" showIcon style={{ marginBottom: 16 }}
+            message="Eslatma — oldindan to'lov foizi tarif darajasida"
+            description="Pro tarif → 30%, Basic → 30% (Tariflar bo'limida o'zgartirish mumkin)." />
+
+          <Alert type="success" showIcon style={{ marginBottom: 16 }}
+            message="🚗 Yetkazib berish bo'yicha majburiy oldindan to'lov"
+            description="Yoqilsa: dastavka, catering 'borib yopish' va catering dastavka uchun summa chegarasidan qat'i nazar oldindan to'lov majburiy. Saboy/pickup esa hech qachon prepayment talab qilmaydi." />
+          <Form.Item name="enforce_prepayment_for_delivery" label="Yetkazib berishlarga prepayment majburiy" valuePropName="checked">
+            <Switch checkedChildren="HA" unCheckedChildren="YO'Q" />
+          </Form.Item>
+        </Card>
+
+        {/* Catering Notifier */}
+        <Card title={<><GiftOutlined /> Catering bildirishnoma kanali</>} size="small" style={{ marginBottom: 16 }}>
+          <Alert type="info" showIcon style={{ marginBottom: 16 }}
+            message="Har kuni 20:00 da ertangi catering ro'yxati"
+            description={<>
+              <div>Bu yerga Telegram <b>kanal</b> yoki <b>guruh</b> chat ID kiriting.</div>
+              <div style={{ marginTop: 6 }}>Har kuni soat 20:00 (Toshkent vaqti) da ertangi sanaga belgilangan barcha catering buyurtmalar (vaqti, mijozi, manzili) shu yerga yuboriladi.</div>
+              <div style={{ marginTop: 6 }}>Chat ID olish: kanalga <Text code>@CateringNotifierBot</Text> botni admin qilib qo'shing → kanalga biron xabar yuboring → <Text code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</Text> orqali chat ID ni oling.</div>
+            </>} />
+          <Row gutter={16}>
+            <Col xs={24} md={16}>
+              <Form.Item name="catering_notifier_chat_id" label="Chat ID (kanal/guruh)"
+                extra="Misol: -1001234567890 yoki @my_channel">
+                <Input placeholder="@my_channel yoki -1001234567890" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={8} style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: 24 }}>
+              <Button onClick={async () => {
+                try {
+                  const r = await fetch('/api/admin/catering-notifier/test', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${useAuthStore.getState().token}` },
+                  })
+                  const d = await r.json()
+                  if (r.ok) message.success(`Yuborildi: ${d.orders_count} ta buyurtma`)
+                  else message.error(d.detail || 'Xato')
+                } catch (e) { message.error('Yuborib bo\'lmadi') }
+              }}>🚀 Hozir sinab ko'rish</Button>
             </Col>
           </Row>
         </Card>
@@ -486,6 +675,67 @@ export default function Settings() {
     </Card>
   )
 
+  const checkBots = async () => {
+    setBotChecking(true)
+    try {
+      const r = await fetch('/api/admin/bots/check?restaurant_id=' + restaurantId, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${useAuthStore.getState().token}` },
+      })
+      const d = await r.json()
+      setBotStatus(d)
+    } catch (e) {
+      message.error('Tekshirib bo\'lmadi')
+    } finally {
+      setBotChecking(false)
+    }
+  }
+
+  const renderBotStatus = (key, label) => {
+    const s = botStatus?.[key]
+    if (!s) return null
+    if (!s.configured) return <Alert type="warning" message={`${label}: token kiritilmagan`} showIcon style={{ marginTop: 8 }} />
+    if (s.online) return <Alert type="success" showIcon style={{ marginTop: 8 }}
+      message={`${label}: ✅ Online — @${s.username || '?'} (${s.first_name || '?'})`} />
+    return <Alert type="error" showIcon style={{ marginTop: 8 }}
+      message={`${label}: ❌ Offline — ${s.error || 'Telegram javob bermadi'}`} />
+  }
+
+  const botsTab = (
+    <>
+      <Card title={<><RobotOutlined /> Telegram botlar</>} size="small">
+        <Alert type="info" showIcon style={{ marginBottom: 16 }}
+          message="BotFather'dan token olish"
+          description={<>
+            <div>1. Telegram'da <Text code>@BotFather</Text> ni oching → <Text code>/newbot</Text></div>
+            <div>2. Bot nomi va username'ni bering</div>
+            <div>3. Olingan tokenni quyiga kiriting (<Text code>1234567:ABC...</Text> formatda)</div>
+            <div>4. Saqlagandan so'ng <b>"Tekshirish"</b> tugmasini bosing</div>
+            <div style={{ marginTop: 6 }}>⚠️ Token o'zgartirilgandan so'ng super-admin'dan <b>"Bots service restart"</b> so'rang</div>
+          </>} />
+        <Form.Item name="bot_token" label="Customer (Mijoz) bot tokeni"
+          extra="Mijozlar mahsulot va catering buyurtma berish uchun ishlatadi">
+          <Input.Password placeholder="1234567:ABC..." autoComplete="off" />
+        </Form.Item>
+        <Form.Item name="courier_bot_token" label="Courier (Kuryer) bot tokeni"
+          extra="Kuryerlar buyurtmalarni qabul qilish va status yangilash uchun">
+          <Input.Password placeholder="1234567:DEF..." autoComplete="off" />
+        </Form.Item>
+        <Space>
+          <Button onClick={checkBots} loading={botChecking} icon={<RobotOutlined />}>
+            🔍 Telegram'da tekshirish
+          </Button>
+        </Space>
+        {botStatus && (
+          <div style={{ marginTop: 12 }}>
+            {renderBotStatus('customer_bot', 'Customer bot')}
+            {renderBotStatus('courier_bot', 'Courier bot')}
+          </div>
+        )}
+      </Card>
+    </>
+  )
+
   const tabItems = [
     { key: 'restaurant', label: <><ShopOutlined /> Restoran</>, children: restaurantTab },
     { key: 'hours', label: <><ClockCircleOutlined /> Ish vaqti</>, children: workHoursTab },
@@ -494,6 +744,7 @@ export default function Settings() {
     { key: 'catering', label: <><GiftOutlined /> Catering</>, children: cateringTab },
     { key: 'ai', label: <><RobotOutlined /> AI Operator</>, children: aiAgentTab },
     { key: 'pos', label: <><PrinterOutlined /> Terminal/Printer</>, children: <POSSettings restaurantId={restaurantId} /> },
+    { key: 'bots', label: <><RobotOutlined /> Botlar</>, children: botsTab },
     { key: 'locale', label: <><GlobalOutlined /> Til</>, children: localeTab },
   ]
 
@@ -527,14 +778,24 @@ export default function Settings() {
               </Form.Item>
             </Col>
           </Row>
+          <Alert type="warning" showIcon style={{ marginBottom: 12 }}
+            message="Parolni o'zgartirish uchun ESKI parolni kiritish majburiy" />
+          <Row gutter={16}>
+            <Col xs={24}>
+              <Form.Item name="current_password" label="Eski parol"
+                extra="Faqat parolni o'zgartirsangiz kerak">
+                <Input.Password prefix={<LockOutlined />} placeholder="Eski parol" autoComplete="current-password" />
+              </Form.Item>
+            </Col>
+          </Row>
           <Row gutter={16}>
             <Col xs={24} md={12}>
-              <Form.Item name="new_password" label="Yangi parol" extra="O'zgartirmoqchi bo'lsangiz kiriting">
-                <Input.Password prefix={<LockOutlined />} />
+              <Form.Item name="new_password" label="Yangi parol" extra="Bo'sh qoldirsangiz parol o'zgarmaydi">
+                <Input.Password prefix={<LockOutlined />} autoComplete="new-password" />
               </Form.Item>
             </Col>
             <Col xs={24} md={12}>
-              <Form.Item name="confirm_password" label="Parolni tasdiqlang" dependencies={['new_password']}
+              <Form.Item name="confirm_password" label="Yangi parolni tasdiqlang" dependencies={['new_password']}
                 rules={[({ getFieldValue }) => ({
                   validator(_, v) {
                     if (!v && !getFieldValue('new_password')) return Promise.resolve()
@@ -542,7 +803,7 @@ export default function Settings() {
                     return Promise.reject('Parollar mos emas!')
                   },
                 })]}>
-                <Input.Password prefix={<LockOutlined />} />
+                <Input.Password prefix={<LockOutlined />} autoComplete="new-password" />
               </Form.Item>
             </Col>
           </Row>

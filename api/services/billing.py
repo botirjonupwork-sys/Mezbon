@@ -13,6 +13,7 @@ Webhook xavfsizligi:
 """
 from __future__ import annotations
 import hashlib
+import os
 import time
 import uuid
 from datetime import datetime
@@ -24,12 +25,24 @@ from sqlalchemy import select
 
 from database.models import Restaurant, Plan, Payment
 
+def _load_click_allowed_ips() -> set[str]:
+    """Env'dan CLICK_ALLOWED_IPS ni yuklash (vergul bilan ajratilgan)."""
+    raw = (os.getenv("CLICK_ALLOWED_IPS") or "").strip()
+    if not raw:
+        return set()
+    return {ip.strip() for ip in raw.split(",") if ip.strip()}
+
+
 # Click webhook IP allowlist (prod uchun). Bo'sh ro'yxat = tekshirilmaydi.
-CLICK_ALLOWED_IPS: set[str] = set()  # masalan: {"195.158.16.140"}
+CLICK_ALLOWED_IPS: set[str] = _load_click_allowed_ips()
 
 # Click action enum (ularning hujjatlariga ko'ra)
 CLICK_ACTION_PREPARE = 0
 CLICK_ACTION_COMPLETE = 1
+CLICK_ACTION_REVERSE = 2   # Click pul qaytarish webhook (refund/cancel)
+
+# Replay window — sign_time ±5 daqiqa ichida bo'lishi shart
+CLICK_TIMESTAMP_WINDOW_SECONDS = 300
 
 
 # ── Yordamchi ────────────────────────────────────────
@@ -84,8 +97,8 @@ def verify_click_signature(payload: dict, secret_key: str) -> bool:
     """
     try:
         action = int(payload.get("action", -1))
-        # Complete request'da merchant_prepare_id qo'shimcha
-        if action == CLICK_ACTION_COMPLETE:
+        # COMPLETE va REVERSE da merchant_prepare_id qo'shimcha
+        if action in (CLICK_ACTION_COMPLETE, CLICK_ACTION_REVERSE):
             calc = click_signature(
                 payload["click_trans_id"], payload["service_id"], secret_key,
                 payload["merchant_trans_id"], payload.get("merchant_prepare_id", ""),
@@ -97,7 +110,9 @@ def verify_click_signature(payload: dict, secret_key: str) -> bool:
                 payload["merchant_trans_id"],
                 payload["amount"], payload["action"], payload["sign_time"],
             )
-        return calc == payload.get("sign_string")
+        # Constant-time compare
+        import hmac as _hmac
+        return _hmac.compare_digest(calc, payload.get("sign_string", ""))
     except (KeyError, ValueError):
         return False
 
@@ -182,22 +197,79 @@ async def create_payment_record(
 
 
 async def mark_payment_success(payment: Payment, external_id: Optional[str], db: AsyncSession) -> None:
-    """Payment status='success' va restaurantning plan_id+plan_expires_at ni yangilash."""
+    """Payment status='success' va tarifni avtomatik faollashtirish (Faza 5).
+
+    Logika `payment.upgrade_type` ga bog'liq:
+        - 'initial' / 'renewal' / 'immediate' → tarif darhol qo'llanadi
+          (`upgrade_immediate` orqali — frozen kunlar saqlanadi)
+        - 'queued' → joriy tarif tugagandan keyin qo'llanadi
+          (`upgrade_queued` orqali — next_plan_id, next_plan_starts_at saqlanadi)
+
+    Idempotent: agar `payment.status == "success"` allaqachon bo'lsa, qaytadan
+    chaqirilsa hech narsa o'zgartirmaydi.
+    """
+    if payment.status == "success":
+        return  # Idempotency
+
     payment.status = "success"
     payment.external_id = external_id
     payment.paid_at = datetime.utcnow()
-
-    # Restaurant tarifini yangilash
-    rest_result = await db.execute(select(Restaurant).where(Restaurant.id == payment.restaurant_id))
-    rest = rest_result.scalar_one_or_none()
-    if rest:
-        # Mavjud expires_at kelajakda bo'lsa — uning ustiga 30 kun qo'shamiz, aks holda hozirdan +30 kun
-        from datetime import timedelta
-        base = rest.plan_expires_at if (rest.plan_expires_at and rest.plan_expires_at > datetime.utcnow()) else datetime.utcnow()
-        rest.plan_id = payment.plan_id
-        rest.plan_expires_at = base + timedelta(days=30)
-
     await db.commit()
+
+    # ── Tarifni avtomatik qo'llash ────────────────────
+    # billing service'dan subscription service'ga zanjir — circular import'ni
+    # oldini olish uchun shu yerda lazy import
+    rest = (await db.execute(
+        select(Restaurant).where(Restaurant.id == payment.restaurant_id)
+    )).scalar_one_or_none()
+    if not rest:
+        return
+
+    # Plan obyekt
+    plan = None
+    if payment.plan_id:
+        plan = (await db.execute(
+            select(Plan).where(Plan.id == payment.plan_id)
+        )).scalar_one_or_none()
+
+    if not plan:
+        # Plan yo'q — eski mantiqiy fallback (faqat plan_expires_at + 30 kun)
+        from datetime import timedelta
+        base = rest.plan_expires_at if (
+            rest.plan_expires_at and rest.plan_expires_at > datetime.utcnow()
+        ) else datetime.utcnow()
+        rest.plan_expires_at = base + timedelta(days=30)
+        rest.subscription_status = "active"
+        await db.commit()
+        return
+
+    # Yangi mantiq — upgrade_type ga ko'ra
+    from api.services.subscription import upgrade_immediate, upgrade_queued
+    upgrade_type = (payment.upgrade_type or "initial").lower()
+
+    if upgrade_type == "queued":
+        await upgrade_queued(db, restaurant=rest, new_plan=plan, payment_id=payment.id)
+    else:
+        # 'initial', 'renewal', 'immediate' — barchasi darhol qo'llanadi
+        await upgrade_immediate(db, restaurant=rest, new_plan=plan, payment_id=payment.id)
+
+    # ── Platforma adminga Telegram xabar (Faza 6: avtomatlashtirilgan monitoring) ──
+    try:
+        from api.services.notifier import notify_platform_admin, upgrade_success_text
+        await notify_platform_admin(
+            upgrade_success_text(
+                rest_name=rest.name,
+                plan_name=plan.name,
+                amount_uzs=tiyin_to_uzs(payment.amount_tiyin),
+                upgrade_type=upgrade_type,
+            )
+        )
+    except Exception:
+        pass  # Notification xatosi asosiy oqimni buzmasin
+
+
+# Plan ni import qilamiz (yuqorida lazy import bo'ladi, lekin shu yerda available bo'lishi kerak)
+from database.models import Plan
 
 
 async def mark_payment_failed(payment: Payment, reason: str, db: AsyncSession) -> None:
@@ -227,14 +299,49 @@ async def handle_click_webhook(payload: dict, client_ip: Optional[str], db: Asyn
       }
     """
     if not is_click_ip_allowed(client_ip):
+        # Audit + Telegram alert (Faza 6: webhook xavfsizlik)
+        try:
+            from api.services.notifier import notify_platform_admin, webhook_security_text
+            await notify_platform_admin(webhook_security_text(
+                "Click IP allowlist", "IP ruxsatsiz",
+                {"ip": client_ip, "merchant_trans_id": payload.get("merchant_trans_id")},
+            ))
+        except Exception:
+            pass
         raise HTTPException(403, "IP allowlist'da yo'q")
 
     try:
         merchant_trans_id = payload["merchant_trans_id"]
         action = int(payload["action"])
         amount_uzs = float(payload["amount"])
+        sign_time_raw = payload.get("sign_time", "")
     except (KeyError, ValueError):
         return {"error": -8, "error_note": "Invalid request"}
+
+    # Replay window — sign_time ±5 daqiqa
+    if sign_time_raw:
+        try:
+            sign_dt = datetime.strptime(sign_time_raw, "%Y-%m-%d %H:%M:%S")
+            delta = abs((datetime.utcnow() - sign_dt).total_seconds())
+            if delta > CLICK_TIMESTAMP_WINDOW_SECONDS:
+                from api.logging_config import log_critical
+                log_critical(
+                    "payment", "Click webhook stale sign_time (replay window)",
+                    sign_time=sign_time_raw, delta_seconds=int(delta),
+                    merchant_trans_id=merchant_trans_id, client_ip=client_ip,
+                )
+                try:
+                    from api.services.notifier import notify_platform_admin, webhook_security_text
+                    await notify_platform_admin(webhook_security_text(
+                        "Click sign_time", "Replay window tashqarisida",
+                        {"delta_seconds": int(delta), "ip": client_ip,
+                         "merchant_trans_id": merchant_trans_id},
+                    ))
+                except Exception:
+                    pass
+                return {"error": -1, "error_note": "Stale sign_time"}
+        except ValueError:
+            pass
 
     payment = await get_payment_by_merchant_trans(merchant_trans_id, db)
     if not payment:
@@ -253,6 +360,20 @@ async def handle_click_webhook(payload: dict, client_ip: Optional[str], db: Asyn
             payment_id=payment.id, restaurant_id=rest.id,
             merchant_trans_id=merchant_trans_id, client_ip=client_ip,
         )
+        # Telegram alert (Faza 6)
+        try:
+            from api.services.notifier import notify_platform_admin, webhook_security_text
+            await notify_platform_admin(webhook_security_text(
+                "Click signature", "MD5 imzo mos kelmaydi",
+                {
+                    "restaurant_id": rest.id,
+                    "rest_name": rest.name,
+                    "ip": client_ip,
+                    "merchant_trans_id": merchant_trans_id,
+                },
+            ))
+        except Exception:
+            pass
         return {"error": -1, "error_note": "Bad sign"}
 
     # Sumalar mos kelishi
@@ -292,6 +413,41 @@ async def handle_click_webhook(payload: dict, client_ip: Optional[str], db: Asyn
             "merchant_confirm_id": payment.id,
             "error": 0,
             "error_note": "Success",
+        }
+    if action == CLICK_ACTION_REVERSE:
+        # Refund/cancel: faqat success bo'lgan payment'ni qaytarib bo'ladi
+        if payment.status == "refunded":
+            return {
+                "click_trans_id": payload.get("click_trans_id"),
+                "merchant_trans_id": merchant_trans_id,
+                "merchant_confirm_id": payment.id,
+                "error": 0,
+                "error_note": "Already refunded",
+            }
+        # Refund: status='refunded' va plan extension bekor qilinadi (Faza 3 da to'liq logika)
+        payment.status = "refunded"
+        await db.commit()
+        from api.logging_config import log_critical
+        log_critical(
+            "payment", "Click REVERSE — payment refunded",
+            payment_id=payment.id, restaurant_id=rest.id,
+            merchant_trans_id=merchant_trans_id, click_trans_id=payload.get("click_trans_id"),
+        )
+        try:
+            from api.services.notifier import notify_platform_admin
+            await notify_platform_admin(
+                f"⚠️ Click REVERSE — Payment #{payment.id} qaytarildi\n"
+                f"Restoran: {rest.name}\n"
+                f"Summa: {tiyin_to_uzs(payment.amount_tiyin):,.0f} so'm"
+            )
+        except Exception:
+            pass
+        return {
+            "click_trans_id": payload.get("click_trans_id"),
+            "merchant_trans_id": merchant_trans_id,
+            "merchant_confirm_id": payment.id,
+            "error": 0,
+            "error_note": "Refunded",
         }
 
     return {"error": -3, "error_note": "Unknown action"}

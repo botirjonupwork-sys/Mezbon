@@ -113,11 +113,22 @@ STATUS_TEXT = {
 }
 
 
+async def _show_progress_and_ask(message: Message, state: FSMContext, ask_text: str, **kwargs):
+    """Hozirgi qadamda — yig'ilgan ma'lumotlar + keyingi savol."""
+    data = await state.get_data()
+    progress = _format_progress(data)
+    text = (f"📋 <b>Buyurtma ma'lumotlari</b>\n{progress}\n\n" if progress else "") + ask_text
+    await message.answer(text, parse_mode="HTML", **kwargs)
+
+
 async def _ask_comment(message: Message, state: FSMContext):
-    await message.answer(
-        "💬 Izoh qoldirmoqchimisiz? (ixtiyoriy)\n"
-        "Masalan: 'Qo'ng'iroq qilmang', '3-qavat'\n\n"
-        "Yo'q bo'lsa /skip yozing",
+    await _show_progress_and_ask(
+        message, state,
+        ask_text=(
+            "💬 Izoh qoldirmoqchimisiz? (ixtiyoriy)\n"
+            "Masalan: 'Qo'ng'iroq qilmang', '3-qavat'\n\n"
+            "Yo'q bo'lsa /skip yozing"
+        ),
         reply_markup=ReplyKeyboardRemove(),
     )
     await state.set_state(OrderFlow.entering_comment)
@@ -132,13 +143,21 @@ async def checkout_start(callback: CallbackQuery, state: FSMContext):
 
     data = await state.get_data()
     branch_id = data.get("branch_id")
+    no_branches = data.get("no_branches", False)
 
-    if not branch_id:
-        await callback.answer("📍 Avval filial tanlang!", show_alert=True)
-        return
+    # Agar branch_id va no_branches flag yo'q bo'lsa — DB'dan tekshirish
+    if not branch_id and not no_branches:
+        from bot.api_client import get_restaurant_branches
+        branches = await get_restaurant_branches()
+        if len(branches) == 0:
+            no_branches = True
+            await state.update_data(no_branches=True)
+        else:
+            await callback.answer("📍 Avval filial tanlang!", show_alert=True)
+            return
 
-    # Filial ochiqligini tekshirish
-    branch_info = await get_branch(branch_id)
+    # Filial ochiqligini tekshirish (faqat filial tanlangan bo'lsa)
+    branch_info = await get_branch(branch_id) if branch_id else None
     if branch_info and not branch_info.get("is_open"):
         await callback.answer(
             f"⏰ {branch_info.get('name', 'Filial')} hozir yopiq!\n"
@@ -299,20 +318,12 @@ async def enter_text_address(message: Message, state: FSMContext):
 @router.message(OrderFlow.entering_comment, F.text == "/skip")
 @router.message(OrderFlow.entering_comment)
 async def enter_comment(message: Message, state: FSMContext):
+    """Izoh kiritildi → darhol tasdiqlash xulosasi (to'lov turi tasdiqdan keyin)."""
     comment = "" if message.text == "/skip" else message.text.strip()
-    await state.update_data(comment=comment)
-    await message.answer(
-        "💳 To'lov usulini tanlang:",
-        reply_markup=payment_kb(),
-    )
-    await state.set_state(OrderFlow.choosing_payment)
-
-
-# ── To'lov ────────────────────────────────────────────
-@router.callback_query(OrderFlow.choosing_payment, F.data.startswith("pay:"))
-async def choose_payment(callback: CallbackQuery, state: FSMContext):
-    payment = callback.data.split(":")[1]
-    await state.update_data(payment=payment)
+    # Telegram message length cheklov + XSS himoya
+    if len(comment) > 500:
+        comment = comment[:500] + "…"
+    await state.update_data(comment=comment, payment="card")  # default karta
 
     data = await state.get_data()
     cart = data.get("cart", {})
@@ -323,27 +334,59 @@ async def choose_payment(callback: CallbackQuery, state: FSMContext):
 
     delivery_fee = 0
     delivery_text = ""
-
     if is_delivery:
         delivery_text = "\n🚗 Dastavka: kuryer bilan yetkazib berish narxi kelishiladi"
-
-    grand_total = items_total + delivery_fee
     await state.update_data(delivery_fee=delivery_fee)
 
     text = (
-        "📋 <b>Zakaz xulosasi</b>\n\n"
+        "📋 <b>Buyurtma ma'lumotlari</b>\n\n"
+        + _format_progress(data)
+        + "\n\n<b>Mahsulotlar:</b>\n"
         + "\n".join(lines)
-        + f"\n\n🚚 Tur: {'🚗 Dastavka' if is_delivery else '🏪 Saboy'}"
-        + (f"\n📍 Manzil: {data.get('address', '—')}" if is_delivery else "")
-        + (f"\n💬 Izoh: {data['comment']}" if data.get("comment") else "")
-        + "\n💳 To'lov: 💵 Naqd"
-        + f"\n\n💰 Mahsulotlar: <b>{items_total:,.0f} so'm</b>"
+        + f"\n\n💰 Jami: <b>{items_total:,.0f} so'm</b>"
         + delivery_text
+        + "\n\n💳 To'lov: tasdiqlagandan keyin Click/Payme tanlanadi"
+        + "\n\nTasdiqlaysizmi?"
     )
 
-    await callback.message.answer(text, reply_markup=confirm_kb(), parse_mode="HTML")
+    await message.answer(text, reply_markup=confirm_kb(), parse_mode="HTML")
     await state.set_state(OrderFlow.confirming)
-    await callback.answer()
+
+
+def _format_progress(data: dict, *, payment_done: bool = False, provider_label: str = "") -> str:
+    """Buyurtma ma'lumotlarini "checklist" shaklida ko'rsatish.
+
+    Foydalanuvchi har qadamda allaqachon kiritgan ma'lumotlarni ko'radi —
+    ishonch beradi va ortga qaytishda yo'qotmaydi.
+
+    XSS himoyasi: foydalanuvchi kiritgan barcha matnlar HTML escape qilinadi.
+    """
+    from html import escape as _esc
+    lines = []
+    user_name = _esc(str(data.get("user_name") or "—"))
+    user_phone = _esc(str(data.get("user_phone") or "—"))
+    lines.append(f"👤 {user_name}  📞 {user_phone}")
+
+    delivery_type = data.get("delivery_type")
+    if delivery_type == "delivery":
+        lines.append("✅ Turi: 🚗 Dastavka")
+    elif delivery_type == "pickup":
+        lines.append("✅ Turi: 🏪 Saboy olib ketish")
+
+    address = data.get("address")
+    if address and delivery_type == "delivery":
+        lines.append(f"✅ Manzil: {_esc(str(address))}")
+
+    comment = data.get("comment")
+    if comment:
+        lines.append(f"✅ Izoh: {_esc(str(comment))}")
+    elif comment == "":
+        lines.append("✅ Izoh: yo'q")
+
+    if payment_done and provider_label:
+        lines.append(f"✅ To'lov: 💳 {_esc(str(provider_label))}")
+
+    return "\n".join(lines)
 
 
 # ── Tasdiqlash ────────────────────────────────────────
@@ -403,13 +446,21 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
     except Exception:
         pass
 
+    # ── Tasdiqdan keyin to'lov turi tanlash + invoice ────
+    # Karta — "to'lov kutilmoqda" rejimi (final tasdiqlash to'lovdan keyin keladi)
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    pay_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Click orqali to'lash", callback_data=f"tgpay:{order['id']}:click")],
+        [InlineKeyboardButton(text="💳 Payme orqali to'lash", callback_data=f"tgpay:{order['id']}:payme")],
+        [InlineKeyboardButton(text="❌ Buyurtmani bekor qilish", callback_data=f"tgpay_cancel:{order['id']}")],
+    ])
     await callback.message.answer(
-        f"✅ <b>Zakaz qabul qilindi!</b>\n\n"
-        f"📦 Zakaz raqami: <b>#{order['id']}</b>\n"
-        f"⏳ Holat: {STATUS_TEXT.get(order['status'], order['status'])}\n\n"
-        f"Zakaz holati haqida xabar beramiz!",
+        f"💳 <b>To'lov turini tanlang — Buyurtma #{order['id']}</b>\n\n"
+        f"💰 To'lanadigan summa: <b>{order.get('total_price', 0):,.0f} so'm</b>\n\n"
+        f"⬇️ Quyidagi to'lov tizimlaridan birini tanlang.\n"
+        f"<i>To'lov muvaffaqiyatli bo'lganidan keyin buyurtma tasdiqlanadi.</i>",
         parse_mode="HTML",
-        reply_markup=main_menu_kb(),
+        reply_markup=pay_kb,
     )
     await callback.answer()
 

@@ -20,18 +20,29 @@ api.interceptors.response.use(
 export const superLogin = (data) => api.post('/auth/super/login', data)
 export const getStats = () => api.get('/super/stats')
 export const getRestaurants = () => api.get('/super/restaurants')
-export const getRestaurant = (id) => api.get(`/super/restaurants/${id}`)
-export const createRestaurant = (data) => api.post('/super/restaurants', data)
-export const updateRestaurant = (id, data) => api.put(`/super/restaurants/${id}`, data)
-export const deleteRestaurant = (id) => api.delete(`/super/restaurants/${id}`)
+export const getRestaurant = (id) => api.get(`/super-admin/restaurants/${id}`)
+export const createRestaurant = (data) => api.post('/super-admin/restaurants', data)
+export const updateRestaurant = (id, data) => api.put(`/super-admin/restaurants/${id}/info`, data)
+export const deleteRestaurant = (id) => api.delete(`/super-admin/restaurants/${id}`)
 
 // ── Yangi super-admin endpointlari (Faza 5+) ──────────
 export const getSuperAdminStats = (params) => api.get('/super-admin/stats', { params })
 export const getSuperAdminRestaurants = () => api.get('/super-admin/restaurants')
 export const patchSuperAdminRestaurant = (id, data) => api.patch(`/super-admin/restaurants/${id}`, data)
+export const setRestaurantCredentials = (id, data) => api.put(`/super-admin/restaurants/${id}/credentials`, data).then(r => r.data)
+export const updateRestaurantInfo = (id, data) => api.put(`/super-admin/restaurants/${id}/info`, data).then(r => r.data)
+export const createSuperRestaurant = (data) => api.post('/super-admin/restaurants', data).then(r => r.data)
+export const softDeleteRestaurant = (id) => api.delete(`/super-admin/restaurants/${id}`).then(r => r.data)
 export const getMaintenance = () => api.get('/super-admin/maintenance')
 export const setMaintenance = (data) => api.put('/super-admin/maintenance', data)
 export const getSuperActions = (params) => api.get('/super-admin/actions', { params })
+export const getFinanceSummary = (params) => api.get('/super-admin/finance/summary', { params }).then(r => r.data)
+export const getFinanceCsvUrl = (params) => {
+  const qs = new URLSearchParams(params || {}).toString()
+  return `/api/super-admin/finance/summary.csv${qs ? '?' + qs : ''}`
+}
+export const getPaymentAnalytics = (params) => api.get('/super-admin/analytics/payments', { params }).then(r => r.data)
+export const getWebhookMonitoring = (params) => api.get('/super-admin/monitoring/webhooks', { params }).then(r => r.data)
 export const getHealth = () => api.get('/health')
 
 // Profile

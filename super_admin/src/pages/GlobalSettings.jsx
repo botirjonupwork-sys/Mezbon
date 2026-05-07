@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { getMaintenance, setMaintenance, getSuperActions } from '../api'
+import { fmtTashkent } from '../utils/datetime'
 
 const { Title, Text, Paragraph } = Typography
 
@@ -84,7 +85,7 @@ export default function GlobalSettings() {
 
   const actionColumns = [
     { title: 'Vaqt', dataIndex: 'created_at', width: 160,
-      render: (v) => v ? dayjs(v).format('DD.MM.YYYY HH:mm:ss') : '—' },
+      render: (v) => fmtTashkent(v, 'DD.MM.YYYY HH:mm:ss') },
     { title: 'Foydalanuvchi', dataIndex: 'actor', width: 120 },
     { title: 'Amal', dataIndex: 'action', render: (v) => <ActionTag action={v} /> },
     { title: 'Maqsad', render: (_, r) => r.target_type

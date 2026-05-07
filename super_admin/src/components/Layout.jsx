@@ -1,6 +1,6 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { Layout, Menu, Button, Typography } from 'antd'
-import { DashboardOutlined, ShopOutlined, LogoutOutlined, SettingOutlined, RobotOutlined, CrownOutlined, ControlOutlined } from '@ant-design/icons'
+import { DashboardOutlined, ShopOutlined, LogoutOutlined, SettingOutlined, RobotOutlined, CrownOutlined, ControlOutlined, BankOutlined, LineChartOutlined } from '@ant-design/icons'
 import { useAuthStore } from '../store/auth'
 
 const { Header, Sider, Content } = Layout
@@ -11,6 +11,8 @@ const menuItems = [
   { key: '/restaurants', icon: <ShopOutlined />,      label: 'Restoranlar' },
   { key: '/bots',        icon: <RobotOutlined />,     label: 'Botlar' },
   { key: '/tariffs',     icon: <CrownOutlined />,      label: 'Tariflar' },
+  { key: '/finance',     icon: <BankOutlined />,       label: 'Moliya' },
+  { key: '/analytics',   icon: <LineChartOutlined />,  label: 'Analytics' },
   { key: '/global',      icon: <ControlOutlined />,   label: 'Global sozlamalar' },
   { key: '/settings',    icon: <SettingOutlined />,   label: 'Sozlamalar' },
 ]
@@ -28,7 +30,7 @@ export default function SuperLayout() {
     <Layout style={{ minHeight: '100vh' }}>
       <Sider theme="dark" width={220} style={{ overflow: 'hidden', height: '100vh', position: 'sticky', top: 0 }}>
         <div style={{ padding: '20px 16px', borderBottom: '1px solid #303030' }}>
-          <Text strong style={{ color: '#722ed1', fontSize: 15 }}>SaaS Super Admin</Text>
+          <Text strong style={{ color: '#722ed1', fontSize: 15 }}>Mezbon · Super Admin</Text>
         </div>
         <Menu
           theme="dark"

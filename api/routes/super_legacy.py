@@ -1,0 +1,384 @@
+"""Eski super_admin frontend bilan moslik uchun /super/* endpointlari.
+
+Yangi panel `/super-admin/*` ostida qurilgan, lekin mavjud `super_admin/`
+React loyihasi `/super/*` URL'larni chaqiradi. Bu router shu eski path'larga
+ega minimal qopqoqlarni taqdim qiladi:
+
+    GET/POST/PUT/DELETE /super/plans       — tariflar CRUD
+    GET/PUT             /super/profile     — super-admin login ma'lumoti
+    GET/PUT             /super/platform-settings — global sozlamalar
+    GET                 /super/bots/status  + start/stop/restart (stub)
+
+Auth: hammasi `require_superuser` (qisqa muddatli super token).
+"""
+from __future__ import annotations
+
+import json
+from typing import Any, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from api.config import settings
+from api.database import get_db
+from api.routes.super_admin import _client_ip, _log_action, require_superuser
+from api.services import platform
+from database.models import Plan
+
+
+router = APIRouter(prefix="/super", tags=["super-legacy"])
+
+
+# ── Plans CRUD ───────────────────────────────────────────────────────────
+
+class PlanIn(BaseModel):
+    name: str
+    slug: str
+    description: Optional[str] = None
+    monthly_price: float = 0.0
+    commission_percent: float = 0.0
+    # Funksional bayroqlar
+    has_catering: bool = False
+    has_ai_agent: bool = False
+    has_yandex: bool = False
+    has_multi_branch: bool = False
+    # Limitlar
+    max_branches_limit: int = 1     # 0 = cheksiz
+    order_limit: int = 0            # 0 = cheksiz
+    min_prepayment_percent: int = 30
+    features: Optional[list[str]] = None
+    is_active: bool = True
+
+
+def _plan_to_dict(p: Plan) -> dict[str, Any]:
+    """Plan obyektni eski frontend kutgan shakliga aylantirish."""
+    try:
+        features = json.loads(p.features) if p.features else []
+        if not isinstance(features, list):
+            features = []
+    except Exception:
+        features = []
+    return {
+        "id": p.id,
+        "name": p.name,
+        "slug": p.slug,
+        "description": p.description,
+        "monthly_price": float(p.monthly_price or 0),
+        "commission_percent": float(p.commission_percent or 0),
+        # Bayroqlar
+        "has_catering": bool(p.has_catering),
+        "has_ai_agent": bool(p.has_ai_agent),
+        "has_yandex": bool(p.has_yandex),
+        "has_multi_branch": bool(p.has_multi_branch),
+        # Limitlar
+        "max_branches_limit": int(p.max_branches_limit or 0),
+        "order_limit": int(p.order_limit or 0),
+        "min_prepayment_percent": int(p.min_prepayment_percent or 30),
+        "features": features,
+        "is_active": bool(p.is_active),
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+    }
+
+
+@router.get("/plans")
+async def list_plans(
+    actor: dict = Depends(require_superuser),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = (await db.execute(select(Plan).order_by(Plan.id))).scalars().all()
+    return [_plan_to_dict(p) for p in rows]
+
+
+@router.post("/plans")
+async def create_plan(
+    body: PlanIn,
+    request: Request,
+    actor: dict = Depends(require_superuser),
+    db: AsyncSession = Depends(get_db),
+):
+    # slug takrorlanmasligi
+    existing = await db.execute(select(Plan).where(Plan.slug == body.slug))
+    if existing.scalar_one_or_none():
+        raise HTTPException(400, f"slug='{body.slug}' allaqachon mavjud")
+    p = Plan(
+        name=body.name,
+        slug=body.slug,
+        description=body.description,
+        monthly_price=body.monthly_price,
+        commission_percent=body.commission_percent,
+        has_catering=body.has_catering,
+        has_ai_agent=body.has_ai_agent,
+        has_yandex=body.has_yandex,
+        has_multi_branch=body.has_multi_branch,
+        max_branches_limit=body.max_branches_limit,
+        order_limit=body.order_limit,
+        min_prepayment_percent=body.min_prepayment_percent,
+        features=json.dumps(body.features or [], ensure_ascii=False),
+        is_active=body.is_active,
+    )
+    db.add(p)
+    await db.commit()
+    await db.refresh(p)
+    await _log_action(
+        db, actor=actor.get("u", "super"), action="plan.create",
+        target_type="plan", target_id=p.id,
+        details={"name": p.name, "slug": p.slug}, ip=_client_ip(request),
+    )
+    return _plan_to_dict(p)
+
+
+@router.put("/plans/{plan_id}")
+async def update_plan(
+    plan_id: int,
+    body: PlanIn,
+    request: Request,
+    actor: dict = Depends(require_superuser),
+    db: AsyncSession = Depends(get_db),
+):
+    res = await db.execute(select(Plan).where(Plan.id == plan_id))
+    p = res.scalar_one_or_none()
+    if not p:
+        raise HTTPException(404, "Tarif topilmadi")
+    before = _plan_to_dict(p)
+    p.name = body.name
+    p.slug = body.slug
+    p.description = body.description
+    p.monthly_price = body.monthly_price
+    p.commission_percent = body.commission_percent
+    p.has_catering = body.has_catering
+    p.has_ai_agent = body.has_ai_agent
+    p.has_yandex = body.has_yandex
+    p.has_multi_branch = body.has_multi_branch
+    p.max_branches_limit = body.max_branches_limit
+    p.order_limit = body.order_limit
+    p.min_prepayment_percent = body.min_prepayment_percent
+    p.features = json.dumps(body.features or [], ensure_ascii=False)
+    p.is_active = body.is_active
+    await db.commit()
+    await db.refresh(p)
+    await _log_action(
+        db, actor=actor.get("u", "super"), action="plan.update",
+        target_type="plan", target_id=p.id,
+        details={"before": before, "after": _plan_to_dict(p)},
+        ip=_client_ip(request),
+    )
+    return _plan_to_dict(p)
+
+
+@router.delete("/plans/{plan_id}")
+async def delete_plan(
+    plan_id: int,
+    request: Request,
+    actor: dict = Depends(require_superuser),
+    db: AsyncSession = Depends(get_db),
+):
+    res = await db.execute(select(Plan).where(Plan.id == plan_id))
+    p = res.scalar_one_or_none()
+    if not p:
+        raise HTTPException(404, "Tarif topilmadi")
+    snapshot = _plan_to_dict(p)
+    await db.delete(p)
+    await db.commit()
+    await _log_action(
+        db, actor=actor.get("u", "super"), action="plan.delete",
+        target_type="plan", target_id=plan_id, details=snapshot,
+        ip=_client_ip(request),
+    )
+    return {"ok": True}
+
+
+# ── Profile (super-admin login ma'lumoti) ───────────────────────────────
+
+class ProfileUpdate(BaseModel):
+    new_username: Optional[str] = None
+    current_password: Optional[str] = None
+    new_password: Optional[str] = None
+
+
+@router.get("/profile")
+async def get_profile(actor: dict = Depends(require_superuser)):
+    """Joriy super-admin'ning login va meta ma'lumotlari.
+
+    Parol va boshqalar `.env`'da, biz faqat o'qib qaytaramiz.
+    """
+    return {
+        "username": actor.get("u") or settings.SUPER_ADMIN_USERNAME,
+        "name": "Super Admin",
+        "role": "super_admin",
+    }
+
+
+@router.put("/profile")
+async def update_profile(
+    body: ProfileUpdate,
+    request: Request,
+    actor: dict = Depends(require_superuser),
+    db: AsyncSession = Depends(get_db),
+):
+    """Super-admin'ning login/parol o'zgartirishi.
+
+    DIQQAT: hozirgi versiyada parol/login `.env` faylida saqlanadi va
+    static. Real production'da bularni Vault yoki alohida tablega
+    o'tkazish kerak. Bu endpoint hozircha 501 qaytaradi (manual edit).
+    """
+    raise HTTPException(
+        501,
+        "Profil o'zgartirish hozircha .env orqali bajariladi. "
+        "Server tomonida SUPER_ADMIN_USERNAME va SUPER_ADMIN_PASSWORD'ni o'zgartiring.",
+    )
+
+
+# ── Platform settings (maintenance + brending) ──────────────────────────
+
+class PlatformSettingsUpdate(BaseModel):
+    platform_name: Optional[str] = None
+    platform_url: Optional[str] = None
+    support_phone: Optional[str] = None
+    support_email: Optional[str] = None
+    default_plan: Optional[str] = None
+    default_min_order: Optional[float] = None
+    default_delivery_base_fee: Optional[float] = None
+    default_delivery_per_km: Optional[float] = None
+    default_work_from: Optional[str] = None
+    default_work_until: Optional[str] = None
+
+
+@router.get("/platform-settings")
+async def get_platform_settings(actor: dict = Depends(require_superuser)):
+    """Platform-level sozlamalar (brending + standart restoran qiymatlari)."""
+    data = platform.get_all()
+    return {
+        "platform_name": data.get("platform_name", "SaaS Buyurtma Platformasi"),
+        "platform_url": data.get("platform_url", ""),
+        "support_phone": data.get("support_phone", ""),
+        "support_email": data.get("support_email", ""),
+        "default_plan": data.get("default_plan", "free"),
+        "default_min_order": data.get("default_min_order", 30000),
+        "default_delivery_base_fee": data.get("default_delivery_base_fee", 10000),
+        "default_delivery_per_km": data.get("default_delivery_per_km", 3000),
+        "default_work_from": data.get("default_work_from", "09:00"),
+        "default_work_until": data.get("default_work_until", "22:00"),
+        # Maintenance ham shu yerda — eski sahifa o'qimasligi mumkin, lekin frontend yangilansa foydali
+        "maintenance_mode": data.get("maintenance_mode", False),
+        "maintenance_message": data.get("maintenance_message", ""),
+    }
+
+
+@router.put("/platform-settings")
+async def update_platform_settings(
+    body: PlatformSettingsUpdate,
+    request: Request,
+    actor: dict = Depends(require_superuser),
+    db: AsyncSession = Depends(get_db),
+):
+    updates = {k: v for k, v in body.model_dump(exclude_none=True).items()}
+    if not updates:
+        return platform.get_all()
+    before = platform.get_all()
+    after = platform.set_many(updates)
+    await _log_action(
+        db, actor=actor.get("u", "super"), action="platform.update",
+        target_type="platform", target_id=None,
+        details={"changed": updates},
+        ip=_client_ip(request),
+    )
+    return after
+
+
+# ── Bot boshqaruvi (stub — manual systemd) ──────────────────────────────
+
+@router.get("/bots/status")
+async def bots_status(
+    actor: dict = Depends(require_superuser),
+    db: AsyncSession = Depends(get_db),
+):
+    """Restoranlar bo'yicha bot tokenlari va Telegram'da real holati.
+
+    Bo'lib chiqadi:
+      - Restaurant.bot_token va courier_bot_token ko'rsatilgan ro'yxat
+      - Har token uchun `getMe()` chaqirib, bot real ishlayotganini tekshiradi
+    """
+    import httpx
+    from sqlalchemy import select
+    from database.models import Restaurant
+
+    rests = (await db.execute(select(Restaurant).order_by(Restaurant.id))).scalars().all()
+
+    async def _check_bot(token: Optional[str]) -> dict:
+        if not token:
+            return {"configured": False, "online": False}
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(f"https://api.telegram.org/bot{token}/getMe")
+            if r.status_code == 200:
+                data = r.json().get("result", {})
+                return {
+                    "configured": True, "online": True,
+                    "username": data.get("username"),
+                    "first_name": data.get("first_name"),
+                    "id": data.get("id"),
+                }
+            return {"configured": True, "online": False, "error": f"HTTP {r.status_code}"}
+        except Exception as e:
+            return {"configured": True, "online": False, "error": str(e)[:80]}
+
+    items = []
+    for rest in rests:
+        cust = await _check_bot(rest.bot_token)
+        cour = await _check_bot(rest.courier_bot_token)
+        items.append({
+            "restaurant_id": rest.id,
+            "restaurant_name": rest.name,
+            "status": rest.status,
+            "subscription_status": rest.subscription_status,
+            "customer_bot": cust,
+            "courier_bot": cour,
+        })
+
+    summary = {
+        "total_restaurants": len(items),
+        "customer_bots_online": sum(1 for i in items if i["customer_bot"].get("online")),
+        "courier_bots_online": sum(1 for i in items if i["courier_bot"].get("online")),
+        "customer_bots_configured": sum(1 for i in items if i["customer_bot"].get("configured")),
+        "courier_bots_configured": sum(1 for i in items if i["courier_bot"].get("configured")),
+    }
+
+    return {"ok": True, "summary": summary, "items": items}
+
+
+@router.post("/bots/start")
+async def bots_start(actor: dict = Depends(require_superuser)):
+    raise HTTPException(
+        501,
+        "Bot ishga tushirish: ssh root@server && systemctl start restaurant-bots",
+    )
+
+
+@router.post("/bots/stop")
+async def bots_stop(actor: dict = Depends(require_superuser)):
+    raise HTTPException(
+        501,
+        "Bot to'xtatish: ssh root@server && systemctl stop restaurant-bots",
+    )
+
+
+@router.post("/bots/restart")
+async def bots_restart(actor: dict = Depends(require_superuser)):
+    """Bot service'ni systemd orqali qayta ishga tushirish (yangi tokenlar uchun)."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["systemctl", "restart", "restaurant-bots"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            return {"ok": True, "message": "Bots service qayta ishga tushirildi"}
+        return {"ok": False, "error": result.stderr or result.stdout}
+    except FileNotFoundError:
+        raise HTTPException(501, "systemctl topilmadi (lokal dev?)")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "systemctl restart timeout")
+    except Exception as e:
+        raise HTTPException(500, f"Restart xato: {e}")
