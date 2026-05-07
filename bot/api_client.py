@@ -2,7 +2,9 @@ import httpx
 import os
 
 BASE_URL = os.getenv("API_URL", "http://localhost:8000")
-BOT_SECRET = os.getenv("SECRET_KEY", "")  # API bilan bir xil SECRET_KEY
+# Bot↔API ichki autentifikatsiya. Avval BOT_API_SECRET'ni ishlatamiz (alohida
+# secret), bo'lmasa SECRET_KEY'ga qaytamiz (eski deploy'lar uchun fallback).
+BOT_SECRET = os.getenv("BOT_API_SECRET", "") or os.getenv("SECRET_KEY", "")
 _BOT_HEADERS = {"X-Bot-Secret": BOT_SECRET} if BOT_SECRET else {}
 
 # ── Multi-restaurant auth state ──────────────────────
