@@ -14,7 +14,7 @@ from api.services import platform
 from api.routes import (
     users, menu, orders, reviews, admin, auth, couriers, superadmin, branches,
     catering, billing, ai, health, super_admin, super_legacy, pos,
-    telegram_payments, registration,
+    telegram_payments, registration, yandex_webhook,
 )
 
 # Logging — eng birinchi sozlanishi shart (boshqa modullar import paytida ham log yozishi mumkin)
@@ -95,6 +95,7 @@ _WEBHOOK_KEY_MAP = {
     "/payments/telegram/prepare": "telegram_prepare",
     "/payments/telegram/precheck": "telegram_precheck",
     "/payments/telegram/confirm": "telegram_confirm",
+    "/webhooks/yandex": "yandex_delivery",
 }
 
 
@@ -234,6 +235,7 @@ app.include_router(super_legacy.router)
 app.include_router(pos.router)
 app.include_router(telegram_payments.router)
 app.include_router(registration.router)
+app.include_router(yandex_webhook.router)
 from api.routes import legal  # noqa: E402
 app.include_router(legal.router)
 

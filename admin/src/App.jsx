@@ -7,13 +7,21 @@ import Orders from './pages/Orders'
 import Menu from './pages/Menu'
 import Users from './pages/Users'
 import Reviews from './pages/Reviews'
-import Settings from './pages/Settings'
 import Admins from './pages/Admins'
 import Couriers from './pages/Couriers'
 import Billing from './pages/Billing'
 import Settlement from './pages/Settlement'
 import Catering from './pages/Catering'
 import Branches from './pages/Branches'
+
+// Settings pages
+import SettingsIndex from './pages/settings/index'
+import SettingsRestaurant from './pages/settings/Restaurant'
+import SettingsPayments from './pages/settings/Payments'
+import SettingsDelivery from './pages/settings/Delivery'
+import SettingsBots from './pages/settings/Bots'
+import SettingsCatering from './pages/settings/Catering'
+import SettingsProfile from './pages/settings/Profile'
 
 function PrivateRoute({ children }) {
   const isAuth = useAuthStore((s) => s.isAuth)
@@ -40,7 +48,13 @@ export default function App() {
           <Route path="menu" element={<Menu />} />
           <Route path="users" element={<Users />} />
           <Route path="reviews" element={<Reviews />} />
-          <Route path="settings" element={<Settings />} />
+          <Route path="settings" element={<SettingsIndex />} />
+          <Route path="settings/restaurant" element={<SettingsRestaurant />} />
+          <Route path="settings/payments" element={<SettingsPayments />} />
+          <Route path="settings/delivery" element={<SettingsDelivery />} />
+          <Route path="settings/bots" element={<SettingsBots />} />
+          <Route path="settings/catering" element={<SettingsCatering />} />
+          <Route path="settings/profile" element={<SettingsProfile />} />
           <Route path="couriers" element={<Couriers />} />
           <Route path="admins" element={<Admins />} />
           <Route path="billing" element={<Billing />} />

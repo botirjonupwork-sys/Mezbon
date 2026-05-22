@@ -21,6 +21,7 @@ Provider tokenlari:
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -598,16 +599,73 @@ async def confirm_payment(
                             order_id=oid, error=str(e),
                         )
 
-                    # 5b. Kuryerlarga xabar (faqat dastavka)
+                    # 5b. Kuryer dispatch — provider tanlash (Yandex yoki o'z)
                     if fresh.delivery_type and fresh.delivery_type.value == "delivery":
+                        yandex_done = False
                         try:
-                            from api.routes.orders import _notify_couriers_new_order
-                            await _notify_couriers_new_order(bg_db, fresh)
+                            from api.services.delivery import dispatch_order_to_provider
+                            dispatch_result = await dispatch_order_to_provider(fresh, bg_db)
+                            if (
+                                dispatch_result
+                                and dispatch_result.get("provider") == "yandex"
+                                and not dispatch_result.get("error")
+                                and dispatch_result.get("claim_id")
+                            ):
+                                yandex_done = True
+                                # Mijozga Yandex tracking URL bilan xabar
+                                try:
+                                    from sqlalchemy import select as _sel
+                                    from database.models import User as _User
+                                    user_q = await bg_db.execute(
+                                        _sel(_User).where(_User.id == fresh.user_id)
+                                    )
+                                    user_obj = user_q.scalar_one_or_none()
+                                    if user_obj and user_obj.telegram_id:
+                                        rest_q2 = await bg_db.execute(
+                                            select(Restaurant).where(Restaurant.id == fresh.restaurant_id)
+                                        )
+                                        rest_obj2 = rest_q2.scalar_one_or_none()
+                                        bg_token = (rest_obj2.bot_token if rest_obj2 else "") or os.getenv("BOT_TOKEN", "")
+                                        if bg_token:
+                                            import httpx
+                                            track_url = dispatch_result.get("tracking_url") or fresh.yandex_tracking_url
+                                            track_text = (
+                                                f"🚗 <b>Buyurtma #{fresh.id} — Yandex Delivery</b>\n\n"
+                                                f"⏳ Kuryer izlanmoqda...\n"
+                                            )
+                                            if track_url:
+                                                track_text += f"\n📍 <a href='{track_url}'>Buyurtmani kuzatish</a>"
+                                            async with httpx.AsyncClient(timeout=5.0) as cli:
+                                                await cli.post(
+                                                    f"https://api.telegram.org/bot{bg_token}/sendMessage",
+                                                    json={
+                                                        "chat_id": user_obj.telegram_id,
+                                                        "text": track_text,
+                                                        "parse_mode": "HTML",
+                                                        "disable_web_page_preview": True,
+                                                    },
+                                                )
+                                except Exception as e:
+                                    log_critical(
+                                        "yandex", "Tracking URL notify failed",
+                                        order_id=oid, error=str(e),
+                                    )
                         except Exception as e:
                             log_critical(
-                                "courier", "Notify couriers failed (post-payment)",
+                                "yandex", "Yandex dispatch failed (post-payment)",
                                 order_id=oid, error=str(e),
                             )
+
+                        # Yandex ulanmasa yoki xato bo'lsa — o'z kuryerlarga xabar
+                        if not yandex_done:
+                            try:
+                                from api.routes.orders import _notify_couriers_new_order
+                                await _notify_couriers_new_order(bg_db, fresh)
+                            except Exception as e:
+                                log_critical(
+                                    "courier", "Notify couriers failed (post-payment)",
+                                    order_id=oid, error=str(e),
+                                )
 
                     # 5c. Restoran adminga Telegram xabar (yangi paid order)
                     try:

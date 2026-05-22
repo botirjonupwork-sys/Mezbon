@@ -85,6 +85,8 @@ class OrderCreate(BaseModel):
     delivery_fee: Optional[float] = None
     branch_id: Optional[int] = None
     items: List[OrderItemCreate]
+    # Faza 10: Dastavka vaqti — "now" yoki "HH:MM" (masalan "15:30")
+    delivery_time_slot: Optional[str] = None
 
 
 class OrderItemOut(BaseModel):

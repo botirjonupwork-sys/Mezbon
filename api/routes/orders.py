@@ -150,6 +150,27 @@ async def create_order(
     awaiting_payment = pay_method in ("card", "telegram", "click", "payme")
     initial_payment_status = "unpaid" if awaiting_payment else None
 
+    # Dastavka vaqti — "now" yoki "HH:MM" formatda
+    time_slot = (getattr(data, "delivery_time_slot", None) or "").strip()
+    scheduled_for_dt = None
+    if time_slot and time_slot != "now":
+        # "HH:MM" formatdan bugungi to'liq sanaga aylantirish
+        try:
+            from datetime import datetime as _dt, timedelta as _td
+            from zoneinfo import ZoneInfo as _ZI
+            uz_tz = _ZI("Asia/Tashkent")
+            now_uz = _dt.now(uz_tz)
+            hh, mm = time_slot.split(":")
+            scheduled_for_dt = now_uz.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+            # Agar tanlangan vaqt allaqachon o'tib ketgan bo'lsa — ertangi kun
+            if scheduled_for_dt < now_uz:
+                scheduled_for_dt += _td(days=1)
+            # UTC ga aylantirib saqlaymiz
+            scheduled_for_dt = scheduled_for_dt.astimezone(_ZI("UTC")).replace(tzinfo=None)
+        except (ValueError, IndexError):
+            scheduled_for_dt = None
+            time_slot = ""  # noto'g'ri format — bo'sh qoldiramiz
+
     # Zakaz yaratish
     order = Order(
         user_id=user.id,
@@ -165,6 +186,8 @@ async def create_order(
         status=OrderStatus.pending,
         payment_method=pay_method,
         payment_status=initial_payment_status,
+        delivery_time_slot=(time_slot or None),
+        scheduled_for=scheduled_for_dt,
     )
     db.add(order)
     await db.flush()
@@ -313,6 +336,46 @@ async def update_order_status(
     user = user_res.scalar_one_or_none()
     if user:
         await _notify_user_status(user.telegram_id, order_id, status.value, order.restaurant_id, db)
+
+    # Yandex Delivery — buyurtma bekor qilinsa, Yandex claim ham bekor qilinadi
+    # (aks holda kuryer kelaveradi va pul ketadi).
+    if (
+        status == OrderStatus.cancelled
+        and prev_status != OrderStatus.cancelled
+        and order.yandex_claim_id
+        and (order.yandex_status or "") not in ("cancelled", "delivered", "returned", "failed")
+    ):
+        async def _cancel_yandex_bg(oid: int, claim_id: str, rid: int):
+            from api.database import AsyncSessionLocal
+            from api.services.yandex_delivery import YandexDeliveryClient, YandexDeliveryError
+            async with AsyncSessionLocal() as bg_db:
+                rest = (await bg_db.execute(
+                    select(Restaurant).where(Restaurant.id == rid)
+                )).scalar_one_or_none()
+                if not rest:
+                    return
+                try:
+                    client = YandexDeliveryClient(
+                        api_token=rest.yandex_api_token or "",
+                        test_mode=bool(rest.yandex_test_mode),
+                    )
+                    await client.cancel_claim(claim_id)
+                    # DB'ga ham yangilash
+                    fresh = (await bg_db.execute(
+                        select(Order).where(Order.id == oid)
+                    )).scalar_one_or_none()
+                    if fresh:
+                        fresh.yandex_status = "cancelled"
+                        await bg_db.commit()
+                    print(f"[Yandex] Claim cancelled: order #{oid} claim={claim_id}")
+                except YandexDeliveryError as e:
+                    print(f"[Yandex] Cancel claim failed: {e}")
+                except Exception as e:
+                    print(f"[Yandex] Cancel claim unexpected error: {e}")
+        try:
+            asyncio.create_task(_cancel_yandex_bg(order.id, order.yandex_claim_id, order.restaurant_id))
+        except Exception:
+            pass
 
     # Zakaz tayyor bo'lganda ham kuryerlarga qayta xabar (faqat dastavka)
     if status == OrderStatus.ready and order.delivery_type.value == "delivery":

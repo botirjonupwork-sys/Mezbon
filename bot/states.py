@@ -8,6 +8,7 @@ class Registration(StatesGroup):
 
 class OrderFlow(StatesGroup):
     choosing_delivery = State()
+    choosing_time = State()        # Faza 10: dastavka vaqti — Hozir / Keyinroq slot
     entering_address = State()
     entering_comment = State()
     choosing_payment = State()

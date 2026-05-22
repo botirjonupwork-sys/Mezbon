@@ -15,7 +15,8 @@ from bot.handlers.cart import get_cart, save_cart
 from bot.handlers.notifications import notify_admin
 from bot.keyboards.order import (
     delivery_type_kb, payment_kb, confirm_kb,
-    location_request_kb, saved_addresses_kb
+    location_request_kb, saved_addresses_kb,
+    time_slots_kb, comment_skip_kb,
 )
 from bot.keyboards.main import main_menu_kb
 
@@ -121,16 +122,8 @@ async def _show_progress_and_ask(message: Message, state: FSMContext, ask_text: 
     await message.answer(text, parse_mode="HTML", **kwargs)
 
 
-async def _ask_comment(message: Message, state: FSMContext):
-    await _show_progress_and_ask(
-        message, state,
-        ask_text=(
-            "💬 Izoh qoldirmoqchimisiz? (ixtiyoriy)\n"
-            "Masalan: 'Qo'ng'iroq qilmang', '3-qavat'\n\n"
-            "Yo'q bo'lsa /skip yozing"
-        ),
-        reply_markup=ReplyKeyboardRemove(),
-    )
+# Eski _ask_comment olib tashlangan — yangi versiya pastda (Faza 10)
+# qisqartirilgan xabar va comment_skip_kb klaviaturasi bilan
     await state.set_state(OrderFlow.entering_comment)
 
 
@@ -215,40 +208,95 @@ async def choose_delivery(callback: CallbackQuery, state: FSMContext):
     await state.update_data(delivery_type=delivery_type)
 
     if delivery_type == "pickup":
-        await state.update_data(address="Saboy olib ketish")
-        await callback.message.answer(
-            "🏪 Bizning manzil:\n<b>Toshkent sh.</b>\n\n"
-            "💬 Izoh qoldirmoqchimisiz? (ixtiyoriy)\n"
-            "Yo'q bo'lsa /skip yozing",
-            parse_mode="HTML",
-        )
-        await state.set_state(OrderFlow.entering_comment)
+        # Saboy uchun vaqt va manzil bosqichlari o'tkazib yuboriladi
+        await state.update_data(address="Saboy olib ketish", delivery_time_slot="now")
+        await _ask_comment(callback.message, state, pickup=True)
     else:
-        # Dastavka — manzil MAJBURIY
-        try:
-            addresses = await get_addresses(str(callback.from_user.id))
-        except Exception:
-            addresses = []
+        # Dastavka — avval vaqt tanlash, keyin manzil
+        data = await state.get_data()
+        branch_id = data.get("branch_id")
+        branch_info = await get_branch(branch_id) if branch_id else None
+        work_from = (branch_info or {}).get("work_hours_from") or _load_settings().get("work_hours_from", "09:00")
+        work_until = (branch_info or {}).get("work_hours_until") or _load_settings().get("work_hours_until", "22:00")
 
-        if addresses:
-            await callback.message.answer(
-                "📍 <b>Saqlangan manzillardan birini tanlang:</b>",
-                reply_markup=saved_addresses_kb(addresses),
-                parse_mode="HTML",
-            )
-
-        await state.set_state(OrderFlow.entering_address)
+        await state.set_state(OrderFlow.choosing_time)
         await callback.message.answer(
-            "📍 <b>Yetkazib berish manzili</b>\n\n"
-            "Joylashuvni yuborish uchun:\n"
-            "▪️ <b>📍 Tugmani bosing</b> — joriy joylashuvingiz yuboriladi\n"
-            "▪️ Yoki <b>📎 (skrepka) → Joylashuv</b> → xaritadan istalgan nuqtani tanlang\n\n"
-            "<i>Manzilni matn ko'rinishida ham yozishingiz mumkin</i>",
-            reply_markup=location_request_kb(),
+            "⏰ <b>Buyurtmangiz qachon yetkazib berilsin?</b>",
+            reply_markup=time_slots_kb(work_from=work_from, work_until=work_until),
             parse_mode="HTML",
         )
 
     await callback.answer()
+
+
+# ── Vaqt tanlash (Faza 10) ──────────────────────────────
+@router.callback_query(OrderFlow.choosing_time, F.data.startswith("time:"))
+async def choose_delivery_time(callback: CallbackQuery, state: FSMContext):
+    """Dastavka vaqti — Hozir / Keyinroq slot."""
+    parts = (callback.data or "").split(":", 1)
+    if len(parts) != 2:
+        await callback.answer("Vaqt tanlash xato", show_alert=True)
+        return
+    choice = parts[1]
+
+    if choice == "back":
+        # Dastavka turini qayta tanlash
+        await state.set_state(OrderFlow.choosing_delivery)
+        await callback.message.answer(
+            "🚚 Yetkazib berish turini tanlang:",
+            reply_markup=delivery_type_kb(),
+        )
+        await callback.answer()
+        return
+
+    # "now" yoki "HH:MM"
+    if choice != "now":
+        # Format tekshirish
+        try:
+            hh, mm = choice.split(":")
+            int(hh); int(mm)
+        except (ValueError, IndexError):
+            await callback.answer("Vaqt format xato", show_alert=True)
+            return
+
+    await state.update_data(delivery_time_slot=choice)
+
+    # Manzil bosqichiga o'tish
+    try:
+        addresses = await get_addresses(str(callback.from_user.id))
+    except Exception:
+        addresses = []
+
+    if addresses:
+        await callback.message.answer(
+            "📍 <b>Saqlangan manzillardan birini tanlang:</b>",
+            reply_markup=saved_addresses_kb(addresses),
+            parse_mode="HTML",
+        )
+
+    await state.set_state(OrderFlow.entering_address)
+    await callback.message.answer(
+        "📍 <b>Yetkazib berish manzili</b>\n\n"
+        "📍 Tugmani bosing — joriy joylashuv yuboriladi\n"
+        "📎 Yoki skrepka → Joylashuv → xaritadan tanlash\n\n"
+        "<i>Manzilni matn ko'rinishida ham yozishingiz mumkin</i>",
+        reply_markup=location_request_kb(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+async def _ask_comment(message: Message, state: FSMContext, *, pickup: bool = False):
+    """Izoh so'rash — qisqartirilgan xabar (Faza 10)."""
+    prefix = ""
+    if pickup:
+        prefix = "🏪 Bizning manzil: <b>Toshkent sh.</b>\n\n"
+    await message.answer(
+        f"{prefix}💬 Izoh qoldiring yoki <b>/skip</b> bosing",
+        reply_markup=comment_skip_kb(),
+        parse_mode="HTML",
+    )
+    await state.set_state(OrderFlow.entering_comment)
 
 
 # ── Saqlangan manzilni tanlash ────────────────────────
@@ -315,11 +363,24 @@ async def enter_text_address(message: Message, state: FSMContext):
 
 
 # ── Izoh ─────────────────────────────────────────────
+@router.callback_query(OrderFlow.entering_comment, F.data == "skip_comment")
+async def skip_comment_callback(callback: CallbackQuery, state: FSMContext):
+    """Izoh skip tugmasi orqali — bo'sh saqlash va davom etish."""
+    await _process_comment(callback.message, state, comment_text="")
+    await callback.answer()
+
+
 @router.message(OrderFlow.entering_comment, F.text == "/skip")
 @router.message(OrderFlow.entering_comment)
 async def enter_comment(message: Message, state: FSMContext):
     """Izoh kiritildi → darhol tasdiqlash xulosasi (to'lov turi tasdiqdan keyin)."""
-    comment = "" if message.text == "/skip" else message.text.strip()
+    comment = "" if (message.text or "") == "/skip" else (message.text or "").strip()
+    await _process_comment(message, state, comment_text=comment)
+
+
+async def _process_comment(message: Message, state: FSMContext, *, comment_text: str):
+    """Izohni qabul qilib, tasdiqlash xulosasini ko'rsatish."""
+    comment = comment_text or ""
     # Telegram message length cheklov + XSS himoya
     if len(comment) > 500:
         comment = comment[:500] + "…"
@@ -373,6 +434,14 @@ def _format_progress(data: dict, *, payment_done: bool = False, provider_label: 
     elif delivery_type == "pickup":
         lines.append("✅ Turi: 🏪 Saboy olib ketish")
 
+    # Faza 10: Dastavka vaqti
+    time_slot = data.get("delivery_time_slot")
+    if delivery_type == "delivery":
+        if time_slot == "now":
+            lines.append("✅ Vaqt: ⚡ Hozir (30-60 daq ichida)")
+        elif time_slot:
+            lines.append(f"✅ Vaqt: 🕐 {_esc(str(time_slot))}")
+
     address = data.get("address")
     if address and delivery_type == "delivery":
         lines.append(f"✅ Manzil: {_esc(str(address))}")
@@ -413,6 +482,8 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
                 "delivery_fee": data.get("delivery_fee", 0),
                 "branch_id": data.get("branch_id"),
                 "items": items,
+                # Faza 10: dastavka vaqti
+                "delivery_time_slot": data.get("delivery_time_slot"),
             },
         )
     except Exception:

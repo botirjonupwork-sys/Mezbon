@@ -370,6 +370,15 @@ class Order(Base):
     # USD'dagi narx (catering uchun)
     total_price_usd = Column(Float)
 
+    # ── Faza 10: Dastavka vaqti — "Hozir" yoki kelajakdagi slot ─────────
+    # delivery_time_slot:
+    #   "now"   — darhol (30-60 daq ichida)
+    #   "HH:MM" — bugungi belgilangan vaqt (masalan "15:30")
+    delivery_time_slot = Column(String)
+    # scheduled_for — to'liq sana+vaqt (delivery_time_slot dan hisoblanadi)
+    # Bo'sh bo'lsa = darhol yetkazib berish
+    scheduled_for = Column(DateTime, nullable=True, index=True)
+
     branch = relationship("Branch", back_populates="orders")
     user = relationship("User", back_populates="orders")
     courier = relationship("Courier", backref="orders")
