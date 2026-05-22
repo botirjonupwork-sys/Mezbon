@@ -50,7 +50,7 @@ async def run_bot(bot_token: str):
     dp.include_router(menu.router)
     dp.include_router(cart.router)
     dp.include_router(profile.router)
-    dp.include_router(payments.router)   # Telegram Native Payments — pre_checkout va successful_payment
+    dp.include_router(payments.router)   # Direct app link to'lov — cancel handler
 
     print(f"[Bot] Ishga tushdi: {rname} (restaurant_id={rid})")
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())

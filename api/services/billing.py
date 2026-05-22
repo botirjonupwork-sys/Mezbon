@@ -343,6 +343,27 @@ async def handle_click_webhook(payload: dict, client_ip: Optional[str], db: Asyn
         except ValueError:
             pass
 
+    # ── Dispatch: order vs subscription ──
+    # merchant_trans_id prefiksi `o-` bo'lsa — bu mijoz buyurtma to'lovi.
+    # Order'ni topib, restoranni aniqlab, signature'ni tekshirib, order handler'ga uzatamiz.
+    from api.services.order_payments import is_order_trans_id, parse_order_id
+    from api.services.order_webhook import handle_click_order_webhook
+    from database.models import Order
+
+    if is_order_trans_id(merchant_trans_id):
+        order_id = parse_order_id(merchant_trans_id)
+        order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none() if order_id else None
+        if not order:
+            return {"error": -5, "error_note": "Order not found"}
+        rest_res = await db.execute(select(Restaurant).where(Restaurant.id == order.restaurant_id))
+        rest = rest_res.scalar_one_or_none()
+        if not rest or not rest.click_secret_key:
+            return {"error": -9, "error_note": "Merchant not configured"}
+        if not verify_click_signature(payload, rest.click_secret_key):
+            return {"error": -1, "error_note": "Bad sign"}
+        return await handle_click_order_webhook(payload, db)
+
+    # ── Subscription oqimi (mavjud kod) ──
     payment = await get_payment_by_merchant_trans(merchant_trans_id, db)
     if not payment:
         return {"error": -5, "error_note": "Order not found"}

@@ -322,7 +322,7 @@ async def refund_order(
 
     # Commission compensation — manfiy revenue (super-admin hisobi)
     if rest and (rest.commission_percent or 0) > 0:
-        from api.services.telegram_payments import tiyin_to_uzs
+        from api.services.billing import tiyin_to_uzs
         refund_uzs = tiyin_to_uzs(refund_amount)
         comp = CommissionPayment(
             restaurant_id=rest.id,

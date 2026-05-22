@@ -38,6 +38,7 @@ export default function PaymentsSettings() {
   })()
   const clickWebhookUrl = `${apiBase.replace(/\/$/, '')}/payments/click/webhook`
   const paymeWebhookUrl = `${apiBase.replace(/\/$/, '')}/payments/payme/webhook`
+  const uzumWebhookUrl = `${apiBase.replace(/\/$/, '')}/payments/uzum/webhook`
 
   useEffect(() => {
     if (!restaurantId) {
@@ -195,7 +196,7 @@ export default function PaymentsSettings() {
             </Input.Group>
           </div>
 
-          <div>
+          <div style={{ marginBottom: 12 }}>
             <Text strong style={{ display: 'block', marginBottom: 4 }}>Payme webhook:</Text>
             <Input.Group compact>
               <Input
@@ -207,6 +208,23 @@ export default function PaymentsSettings() {
                 <Button
                   icon={copiedField === 'payme' ? <CheckOutlined /> : <CopyOutlined />}
                   onClick={() => copyToClipboard(paymeWebhookUrl, 'payme')}
+                />
+              </Tooltip>
+            </Input.Group>
+          </div>
+
+          <div>
+            <Text strong style={{ display: 'block', marginBottom: 4 }}>Uzum webhook:</Text>
+            <Input.Group compact>
+              <Input
+                value={uzumWebhookUrl}
+                readOnly
+                style={{ width: 'calc(100% - 40px)', background: '#fafafa' }}
+              />
+              <Tooltip title={copiedField === 'uzum' ? 'Nusxa olindi!' : 'Nusxa olish'}>
+                <Button
+                  icon={copiedField === 'uzum' ? <CheckOutlined /> : <CopyOutlined />}
+                  onClick={() => copyToClipboard(uzumWebhookUrl, 'uzum')}
                 />
               </Tooltip>
             </Input.Group>
@@ -278,33 +296,43 @@ export default function PaymentsSettings() {
           </Form.Item>
         </Card>
 
-        {/* Telegram Payments */}
+        {/* Uzum */}
         <Card style={cardStyle} styles={{ body: cardBody }}>
-          <span style={sectionLabel}>Telegram to'lovlari</span>
-          <Text type="secondary" style={{ display: 'block', marginBottom: 16, marginTop: -8, fontSize: 13 }}>
-            BotFather → Payments → Click/Payme orqali olingan tokenlar
-          </Text>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: '#111827' }}>Uzum Bank</div>
+              <Text type="secondary" style={{ fontSize: 12 }}>Uzum kartalari · 0% · boshqalar · 0.4%</Text>
+            </div>
+            <Form.Item name="uzum_enabled" valuePropName="checked" style={{ marginBottom: 0 }}>
+              <Switch />
+            </Form.Item>
+          </div>
 
-          <Row gutter={16}>
-            <Col xs={24} md={12}>
-              <Form.Item
-                name="telegram_provider_token_click"
-                label="Click token"
-                extra="123:TEST:abc... formatda"
-              >
-                <Input.Password autoComplete="off" placeholder="123:TEST:abc..." />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={12}>
-              <Form.Item
-                name="telegram_provider_token_payme"
-                label="Payme token"
-                extra="456:TEST:xyz... formatda"
-              >
-                <Input.Password autoComplete="off" placeholder="456:TEST:xyz..." />
-              </Form.Item>
-            </Col>
-          </Row>
+          <Form.Item noStyle shouldUpdate={(p, c) => p.uzum_enabled !== c.uzum_enabled}>
+            {({ getFieldValue }) => getFieldValue('uzum_enabled') && (
+              <>
+                <Form.Item
+                  name="uzum_service_id"
+                  label="Service ID"
+                  extra="merchants.uzumbank.uz dan olinadi"
+                >
+                  <Input placeholder="123422111" />
+                </Form.Item>
+                <Row gutter={16}>
+                  <Col xs={24} md={12}>
+                    <Form.Item name="uzum_webhook_user" label="Webhook Basic Auth — login">
+                      <Input autoComplete="off" placeholder="uzum_user" />
+                    </Form.Item>
+                  </Col>
+                  <Col xs={24} md={12}>
+                    <Form.Item name="uzum_webhook_pass" label="Webhook Basic Auth — parol">
+                      <Input.Password autoComplete="off" />
+                    </Form.Item>
+                  </Col>
+                </Row>
+              </>
+            )}
+          </Form.Item>
         </Card>
 
         {/* Prepayment Settings */}

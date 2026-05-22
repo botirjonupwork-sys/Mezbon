@@ -14,7 +14,7 @@ from api.services import platform
 from api.routes import (
     users, menu, orders, reviews, admin, auth, couriers, superadmin, branches,
     catering, billing, ai, health, super_admin, super_legacy, pos,
-    telegram_payments, registration, yandex_webhook,
+    registration, yandex_webhook, uzum_webhook,
 )
 
 # Logging — eng birinchi sozlanishi shart (boshqa modullar import paytida ham log yozishi mumkin)
@@ -233,9 +233,9 @@ app.include_router(health.router)
 app.include_router(super_admin.router)
 app.include_router(super_legacy.router)
 app.include_router(pos.router)
-app.include_router(telegram_payments.router)
 app.include_router(registration.router)
 app.include_router(yandex_webhook.router)
+app.include_router(uzum_webhook.router)
 from api.routes import legal  # noqa: E402
 app.include_router(legal.router)
 

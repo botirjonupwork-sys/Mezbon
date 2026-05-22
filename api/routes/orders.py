@@ -202,9 +202,9 @@ async def create_order(
 
     await db.commit()
 
-    # Karta orqali to'lov — POS/kuryer/Yandex dispatch qilmaymiz.
-    # Bu narsalar `confirm_payment()` ichida (telegram_payments.py)
-    # to'lov tasdiqlangach ishga tushadi.
+    # Karta orqali to'lov — POS/kuryer/Yandex dispatch'ni hozir qilmaymiz.
+    # Bu narsalar webhook'da to'lov tasdiqlangach (api/services/order_webhook.py
+    # _mark_order_paid → dispatch_order_to_provider) ishga tushadi.
     if not awaiting_payment:
         # Alice POS ga yuborish (faqat naqd)
         try:
@@ -307,6 +307,71 @@ async def get_payment_status(order_id: int, db: AsyncSession = Depends(get_db)):
         "fiscal_qr": o.fiscal_qr,
         "fiscal_receipt_id": o.fiscal_receipt_id,
         "terms_accepted_at": o.terms_accepted_at.isoformat() if o.terms_accepted_at else None,
+    }
+
+
+@router.post("/{order_id}/cancel-unpaid")
+async def cancel_unpaid_order(order_id: int, db: AsyncSession = Depends(get_db)):
+    """To'lanmagan buyurtmani bekor qilish.
+
+    Faqat `payment_status != 'paid'` bo'lgan zakazlarni bekor qilish mumkin.
+    """
+    order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+    if not order:
+        raise HTTPException(404, "Zakaz topilmadi")
+    if order.payment_status == "paid":
+        raise HTTPException(400, "To'langan buyurtmani bekor qilib bo'lmaydi (refund kerak)")
+    order.status = OrderStatus.cancelled
+    order.payment_status = "cancelled"
+    await db.commit()
+    return {"ok": True, "order_id": order.id, "status": order.status.value}
+
+
+@router.get("/{order_id}/pay-options")
+async def get_pay_options(order_id: int, db: AsyncSession = Depends(get_db)):
+    """Mijoz uchun mavjud to'lov usullari va URL'lari.
+
+    Bot foydalanadi: foydalanuvchiga 3 ta direct app link (Click/Payme/Uzum)
+    inline button sifatida ko'rsatish uchun.
+
+    Faqat shu restoranda yoqilgan va sozlangan provayderlar qaytariladi.
+    """
+    from api.services.order_payments import generate_payment_url, get_enabled_providers
+    from database.models import Restaurant
+
+    order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+    if not order:
+        raise HTTPException(404, "Zakaz topilmadi")
+    if order.payment_status == "paid":
+        return {"order_id": order.id, "already_paid": True, "options": []}
+
+    rest = (await db.execute(
+        select(Restaurant).where(Restaurant.id == order.restaurant_id)
+    )).scalar_one_or_none()
+    if not rest:
+        raise HTTPException(404, "Restoran topilmadi")
+
+    providers = get_enabled_providers(rest)
+    options = []
+    for p in providers:
+        try:
+            url, mtid = generate_payment_url(rest, order, p, return_url=None)
+            options.append({"provider": p, "url": url, "merchant_trans_id": mtid})
+        except Exception as e:
+            # Provider sozlamasida xato — ko'rsatmaymiz
+            continue
+
+    # Birinchi muvaffaqiyatli URL'ni order'ga saqlash (asosiy)
+    if options and not order.merchant_trans_id:
+        order.merchant_trans_id = options[0]["merchant_trans_id"]
+        order.payment_url = options[0]["url"]
+        order.payment_provider = options[0]["provider"]
+        await db.commit()
+
+    return {
+        "order_id": order.id,
+        "total_price": float(order.total_price or 0),
+        "options": options,
     }
 
 

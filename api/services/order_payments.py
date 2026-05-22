@@ -1,0 +1,182 @@
+"""Mijoz buyurtma to'lovi — Click / Payme / Uzum direct app link generatori.
+
+Bu modul foydalanuvchi qurilmasidagi haqiqiy to'lov app'iga yo'naltirish uchun
+URL yaratadi. URL telefonda ochilganda:
+  - app o'rnatilgan bo'lsa universal/app link orqali avtomatik ochiladi
+  - app yo'q bo'lsa brauzerda web checkout ko'rsatiladi
+
+Subscription (tarif) to'lovlaridan farqli o'laroq, bu yerda:
+  * merchant_trans_id prefiksi `o-<order_id>-<rand>` (subscription'da `r-...`)
+  * Webhook to'g'ridan-to'g'ri Order'ni yangilaydi (Payment yozuvi emas)
+"""
+from __future__ import annotations
+
+import base64
+import uuid
+import urllib.parse
+from decimal import Decimal
+from typing import Optional
+
+from database.models import Restaurant, Order
+
+
+# ── Idempotency kalit ──────────────────────────────────────────────
+
+def make_order_trans_id(order_id: int) -> str:
+    """Buyurtma uchun unique merchant_trans_id."""
+    rand = uuid.uuid4().hex[:8]
+    return f"o-{order_id}-{rand}"
+
+
+def is_order_trans_id(merchant_trans_id: str) -> bool:
+    """Webhook'da prefiks bo'yicha order yoki subscription'ni ajratish."""
+    return (merchant_trans_id or "").startswith("o-")
+
+
+def parse_order_id(merchant_trans_id: str) -> Optional[int]:
+    """`o-42-abc123` → 42"""
+    if not is_order_trans_id(merchant_trans_id):
+        return None
+    parts = merchant_trans_id.split("-")
+    if len(parts) < 2:
+        return None
+    try:
+        return int(parts[1])
+    except ValueError:
+        return None
+
+
+# ── Click ───────────────────────────────────────────────────────────
+
+def build_click_url(
+    *,
+    merchant_id: str,
+    service_id: str,
+    amount_uzs: float,
+    merchant_trans_id: str,
+    return_url: Optional[str] = None,
+) -> str:
+    """Click hosted checkout URL — telefonda Click app o'rnatilgan bo'lsa avtomatik ochiladi.
+
+    Click amount'ni decimal so'm sifatida kutadi (tiyin emas).
+    """
+    params = {
+        "service_id": service_id,
+        "merchant_id": merchant_id,
+        "amount": f"{Decimal(str(amount_uzs)):.2f}",
+        "transaction_param": merchant_trans_id,
+    }
+    if return_url:
+        params["return_url"] = return_url
+    query = urllib.parse.urlencode(params)
+    return f"https://my.click.uz/services/pay?{query}"
+
+
+# ── Payme ───────────────────────────────────────────────────────────
+
+def build_payme_url(
+    *,
+    merchant_id: str,
+    order_id: int,
+    amount_tiyin: int,
+    return_url: Optional[str] = None,
+    lang: str = "uz",
+) -> str:
+    """Payme checkout URL — yangi format (base64 encoded).
+
+    Format: https://checkout.paycom.uz/<base64(m=X;ac.order_id=Y;a=Z;c=URL;ct=15000;l=uz)>
+
+    Amount tiyin'da (1 UZS = 100 tiyin).
+    """
+    parts = [
+        f"m={merchant_id}",
+        f"ac.order_id={order_id}",
+        f"a={amount_tiyin}",
+    ]
+    if return_url:
+        parts.append(f"c={return_url}")
+        parts.append("ct=15000")
+    parts.append(f"l={lang}")
+    blob = ";".join(parts).encode()
+    # URL-safe base64, padding olib tashlanadi
+    encoded = base64.b64encode(blob).decode().rstrip("=")
+    return f"https://checkout.paycom.uz/{encoded}"
+
+
+# ── Uzum ────────────────────────────────────────────────────────────
+
+def build_uzum_url(
+    *,
+    service_id: str,
+    amount_tiyin: int,
+    order_id: int,
+) -> str:
+    """Uzum Bank Merchant — open-service URL.
+
+    Format: https://www.uzumbank.uz/open-service?serviceId=X&amount=Y&order_id=Z
+    Telefonda Uzum app o'rnatilgan bo'lsa universal link orqali avtomatik ochiladi.
+
+    Amount tiyin'da.
+    """
+    params = {
+        "serviceId": service_id,
+        "amount": str(amount_tiyin),
+        "order_id": str(order_id),
+    }
+    query = urllib.parse.urlencode(params)
+    return f"https://www.uzumbank.uz/open-service?{query}"
+
+
+# ── Provayder konfiguratsiyasi ─────────────────────────────────────
+
+def get_enabled_providers(rest: Restaurant) -> list[str]:
+    """Restoranda yoqilgan va sozlangan to'lov provayderlari."""
+    providers = []
+    if rest.click_enabled and rest.click_merchant_id and rest.click_service_id:
+        providers.append("click")
+    if rest.payme_enabled and rest.payme_merchant_id:
+        providers.append("payme")
+    if rest.uzum_enabled and rest.uzum_service_id:
+        providers.append("uzum")
+    return providers
+
+
+def generate_payment_url(
+    rest: Restaurant,
+    order: Order,
+    provider: str,
+    return_url: Optional[str] = None,
+) -> tuple[str, str]:
+    """Buyurtma uchun to'lov URL'i va merchant_trans_id qaytaradi.
+
+    return_url: bot'ga qaytarish uchun (https://t.me/<bot>?start=...).
+    """
+    merchant_trans_id = make_order_trans_id(order.id)
+    amount_uzs = float(order.total_price or 0)
+    amount_tiyin = int(round(amount_uzs * 100))
+
+    if provider == "click":
+        url = build_click_url(
+            merchant_id=rest.click_merchant_id,
+            service_id=rest.click_service_id,
+            amount_uzs=amount_uzs,
+            merchant_trans_id=merchant_trans_id,
+            return_url=return_url,
+        )
+    elif provider == "payme":
+        url = build_payme_url(
+            merchant_id=rest.payme_merchant_id,
+            order_id=order.id,
+            amount_tiyin=amount_tiyin,
+            return_url=return_url,
+        )
+    elif provider == "uzum":
+        url = build_uzum_url(
+            service_id=rest.uzum_service_id,
+            amount_tiyin=amount_tiyin,
+            order_id=order.id,
+        )
+    else:
+        raise ValueError(f"Noma'lum provider: {provider}")
+
+    return url, merchant_trans_id

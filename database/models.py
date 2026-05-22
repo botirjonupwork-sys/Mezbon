@@ -127,7 +127,15 @@ class Restaurant(Base):
     payme_secret_key = Column(String)
     payme_enabled = Column(Boolean, default=False)
 
-    # ── Telegram Native Payments (BotFather provider tokenlari) ──
+    # Uzum Bank Merchant API (developer.uzumbank.uz)
+    uzum_service_id = Column(String)        # serviceId kabinetdan
+    uzum_webhook_user = Column(String)      # Basic auth login
+    uzum_webhook_pass = Column(String)      # Basic auth parol
+    uzum_enabled = Column(Boolean, default=False)
+
+    # ── [DEPRECATED] Telegram Native Payments ──
+    # Bu maydonlar tarixiy buyurtmalar uchun saqlanadi (DB'da o'chirilmasin)
+    # Yangi buyurtmalar 3 ta direct app link orqali ishlaydi (Click/Payme/Uzum)
     # Faza 1.3-1.4: har restoran o'z bot'i uchun BotFather'dan provider token oladi
     # Format: "<id>:TEST:<key>" (sandbox) yoki "<id>:LIVE:<key>" (real)
     telegram_provider_token_click = Column(String)
@@ -351,13 +359,20 @@ class Order(Base):
     # delivery_subtype'dan farqli o'laroq, payment-flow'da xizmat haqi qo'shilishini boshqaradi
     service_type = Column(String, default="delivery")
     # To'lov maydonlari
-    payment_method = Column(String, default="cash")   # 'cash' | 'card' | 'telegram'
+    payment_method = Column(String, default="cash")   # 'cash' | 'card' | 'click' | 'payme' | 'uzum'
     payment_timing = Column(String, default="later")  # 'now' | 'later'
-    payment_status = Column(String, default="pending")  # 'pending' | 'paid' | 'partial'
-    # Faza 4: Telegram Native Payments
-    payment_provider = Column(String)            # 'click' | 'payme'
-    payment_charge_id = Column(String, index=True)  # Telegram payment_charge_id
+    payment_status = Column(String, default="pending")  # 'pending' | 'paid' | 'failed' | 'partial'
+    # Direct app link to'lovlari (Click/Payme/Uzum)
+    payment_provider = Column(String)            # 'click' | 'payme' | 'uzum'
+    payment_charge_id = Column(String, index=True)  # [legacy Telegram payment_charge_id, retained]
     paid_amount_tiyin = Column(Integer, default=0)  # Real to'langan summa (prepayment ham bo'lishi mumkin)
+    # ── To'lov tracking (faza 11: 3 ta direct app link) ────────
+    merchant_trans_id = Column(String, unique=True, index=True)  # bizning idempotency kalit (o-<order_id>-<rand>)
+    payment_url = Column(String)                  # generatsiya qilingan deep-link URL
+    payment_error = Column(Text)                  # xato bo'lsa sabab
+    payment_paid_at = Column(DateTime)            # webhook orqali tasdiqlangan vaqt
+    provider_tx_id = Column(String, index=True)   # provayder tomonidan tranzaksiya ID
+    click_prepare_id = Column(Integer)            # faqat Click — prepare bosqichida qaytariladi
     is_prepayment = Column(Boolean, default=False)
     prepayment_percent = Column(Integer)         # to'lov paytidagi snapshot (audit uchun)
     # Faza 6: Soliq va huquqiy

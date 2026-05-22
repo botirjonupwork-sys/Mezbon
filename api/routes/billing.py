@@ -727,8 +727,32 @@ async def payme_webhook(
     params = body.params or {}
     rid = body.id
 
-    # Account ichidan merchant_trans_id ni topish
     account = params.get("account") or {}
+
+    # ── Dispatch: order vs subscription ──
+    # Bizning URL builderlarda:
+    #   Subscription: ac.merchant_trans_id=r-...
+    #   Order:        ac.order_id=<id>
+    # Webhook'da account ichida qaysi field bo'lsa, shu yo'lga ketamiz.
+    if account.get("order_id") is not None:
+        from database.models import Order
+        from api.services.order_webhook import handle_payme_order_method
+        try:
+            order_id = int(account.get("order_id"))
+        except (TypeError, ValueError):
+            return _payme_error(-31050, "order_id invalid", rid)
+        order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+        if not order:
+            return _payme_error(-31050, "Order not found", rid)
+        rest_res = await db.execute(select(Restaurant).where(Restaurant.id == order.restaurant_id))
+        rest = rest_res.scalar_one_or_none()
+        if not rest or not rest.payme_secret_key:
+            return _payme_error(-32504, "Merchant not configured", rid)
+        if not _check_payme_basic_auth(authorization, rest.payme_secret_key):
+            return _payme_error(-32504, "Auth failed", rid)
+        return await handle_payme_order_method(method, params, rid, db)
+
+    # ── Subscription oqimi (mavjud) ──
     merchant_trans_id = account.get("merchant_trans_id")
     if method != "CheckTransaction" and not merchant_trans_id:
         return _payme_error(-31050, "merchant_trans_id required", rid)

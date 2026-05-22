@@ -1,9 +1,12 @@
 import json
 import os
 import math
+import logging
 import httpx
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
+log = logging.getLogger(__name__)
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
 from aiogram import Router, F
@@ -11,6 +14,7 @@ from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from bot.states import OrderFlow
 from bot.api_client import get_user, create_order, get_addresses, get_branch
+from bot import api_client
 from bot.handlers.cart import get_cart, save_cart
 from bot.handlers.notifications import notify_admin
 from bot.keyboards.order import (
@@ -517,22 +521,49 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
     except Exception:
         pass
 
-    # ── Tasdiqdan keyin to'lov turi tanlash + invoice ────
-    # Karta — "to'lov kutilmoqda" rejimi (final tasdiqlash to'lovdan keyin keladi)
+    # ── Direct app link to'lov: Click / Payme / Uzum ──
+    # Foydalanuvchi tugmaga bossa, telefondagi app avtomatik ochiladi va to'lov o'sha yerda bo'ladi.
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    pay_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Click orqali to'lash", callback_data=f"tgpay:{order['id']}:click")],
-        [InlineKeyboardButton(text="💳 Payme orqali to'lash", callback_data=f"tgpay:{order['id']}:payme")],
-        [InlineKeyboardButton(text="❌ Buyurtmani bekor qilish", callback_data=f"tgpay_cancel:{order['id']}")],
-    ])
-    await callback.message.answer(
-        f"💳 <b>To'lov turini tanlang — Buyurtma #{order['id']}</b>\n\n"
-        f"💰 To'lanadigan summa: <b>{order.get('total_price', 0):,.0f} so'm</b>\n\n"
-        f"⬇️ Quyidagi to'lov tizimlaridan birini tanlang.\n"
-        f"<i>To'lov muvaffaqiyatli bo'lganidan keyin buyurtma tasdiqlanadi.</i>",
-        parse_mode="HTML",
-        reply_markup=pay_kb,
-    )
+
+    provider_label = {
+        "click": "💳 Click bilan to'lash",
+        "payme": "💳 Payme bilan to'lash",
+        "uzum":  "💳 Uzum bilan to'lash",
+    }
+
+    try:
+        pay_data = await api_client.get_pay_options(order['id'])
+        options = pay_data.get('options') or []
+    except Exception as e:
+        log.exception("get_pay_options failed")
+        options = []
+
+    rows = []
+    for opt in options:
+        prov = opt.get('provider')
+        url = opt.get('url')
+        if prov and url:
+            rows.append([InlineKeyboardButton(text=provider_label.get(prov, prov), url=url)])
+
+    rows.append([InlineKeyboardButton(text="❌ Buyurtmani bekor qilish", callback_data=f"tgpay_cancel:{order['id']}")])
+    pay_kb = InlineKeyboardMarkup(inline_keyboard=rows)
+
+    if options:
+        body = (
+            f"💳 <b>To'lov usulini tanlang — Buyurtma #{order['id']}</b>\n\n"
+            f"💰 To'lanadigan summa: <b>{order.get('total_price', 0):,.0f} so'm</b>\n\n"
+            f"⬇️ Tugma bosilganda telefoningizdagi mos app ochiladi va to'lovni o'sha yerda yakunlaysiz.\n"
+            f"<i>To'lov tasdiqlanganda bu chat'ga avtomatik xabar yuboriladi.</i>"
+        )
+    else:
+        body = (
+            f"⚠️ <b>To'lov usuli sozlanmagan</b>\n\n"
+            f"Buyurtma #{order['id']}\n"
+            f"Restoran administratori Click/Payme/Uzum sozlamalarini hali yoqmagan.\n\n"
+            f"Iltimos, naqd to'lovni tanlang yoki restoran bilan bog'laning."
+        )
+
+    await callback.message.answer(body, parse_mode="HTML", reply_markup=pay_kb)
     await callback.answer()
 
     # Adminga xabar yuborish
