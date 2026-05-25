@@ -3,7 +3,7 @@ import { Card, Row, Col, Typography, Tag, Badge } from 'antd'
 import {
   ShopOutlined, CreditCardOutlined, CarOutlined,
   RobotOutlined, GiftOutlined, UserOutlined,
-  RightOutlined, LockOutlined,
+  RightOutlined, LockOutlined, PhoneOutlined,
 } from '@ant-design/icons'
 import { useAuthStore } from '../../store/auth'
 import { useBranchStore } from '../../store/branch'
@@ -53,6 +53,15 @@ const settingsCards = [
     description: "Miqdorlar, narxlar, bildirishnoma",
     color: '#eb2f96',
     feature: 'catering',
+  },
+  {
+    key: 'ai-agent',
+    path: '/settings/ai-agent',
+    icon: <PhoneOutlined style={{ fontSize: 28 }} />,
+    title: 'AI Operator',
+    description: "Telefonga AI javob beradi, buyurtmani qabul qiladi",
+    color: '#9333ea',
+    feature: 'ai_agent',
   },
   {
     key: 'profile',

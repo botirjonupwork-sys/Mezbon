@@ -318,6 +318,21 @@ export default function AdminLayout() {
             style={{ borderRadius: 0 }}
           />
         )}
+        {features?.ai_agent && profileInfo && profileInfo.ai_agent_enabled === false && (
+          <Alert
+            banner type="warning" showIcon
+            message="🤖 Tarifingizda AI Telefon Operator bor — lekin u hali sozlanmagan"
+            description={
+              <span>
+                Sozlash uchun:{' '}
+                <a onClick={() => navigate('/settings/ai-agent')} style={{ fontWeight: 600 }}>
+                  Sozlamalar → AI Operator
+                </a>
+              </span>
+            }
+            style={{ borderRadius: 0 }}
+          />
+        )}
 
         <Content style={{ margin: isMobile ? 8 : 24, minHeight: 280 }}>
           <Outlet />

@@ -125,6 +125,11 @@ class SettingsUpdate(BaseModel):
     payme_merchant_id: Optional[str] = None
     payme_secret_key: Optional[str] = None
     payme_enabled: Optional[bool] = None
+    # Uzum Bank
+    uzum_service_id: Optional[str] = None
+    uzum_webhook_user: Optional[str] = None
+    uzum_webhook_pass: Optional[str] = None
+    uzum_enabled: Optional[bool] = None
     # Faza 1.4: Telegram Native Payments tokenlari + test/live rejim
     telegram_provider_token_click: Optional[str] = None
     telegram_provider_token_payme: Optional[str] = None
@@ -1016,6 +1021,8 @@ async def get_profile(
             "plan_id": rest.plan_id,
             "plan_expires_at": rest.plan_expires_at.isoformat() if rest.plan_expires_at else None,
             "commission_percent": float(rest.commission_percent or 0),
+            # Qo'shimcha funksiyalar holati (banner uchun)
+            "ai_agent_enabled": bool(rest.ai_agent_enabled),
             # Balans / moliyaviy hisob
             "balance": {
                 "orders_revenue_uzs": float(revenue),

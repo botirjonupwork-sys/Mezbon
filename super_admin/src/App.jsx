@@ -12,6 +12,7 @@ import Tariffs from './pages/Tariffs'
 import Finance from './pages/Finance'
 import Analytics from './pages/Analytics'
 import GlobalSettings from './pages/GlobalSettings'
+import AiAgent from './pages/AiAgent'
 
 function PrivateRoute({ children }) {
   const isAuth = useAuthStore((s) => s.isAuth)
@@ -42,6 +43,7 @@ export default function App() {
             <Route path="global" element={<GlobalSettings />} />
             <Route path="finance" element={<Finance />} />
             <Route path="analytics" element={<Analytics />} />
+            <Route path="ai-agent" element={<AiAgent />} />
           </Route>
         </Routes>
       </BrowserRouter>

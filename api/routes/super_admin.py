@@ -286,6 +286,10 @@ async def list_restaurants(
             "is_verified": bool(r.is_verified),
             "catering_payment_card": r.catering_payment_card,
             "catering_payment_owner": r.catering_payment_owner,
+            # AI Operator (super-admin dashboard uchun)
+            "ai_agent_enabled": bool(r.ai_agent_enabled),
+            "ai_agent_provider": r.ai_agent_provider or None,
+            "ai_agent_model": r.ai_agent_model or None,
         })
     return output
 

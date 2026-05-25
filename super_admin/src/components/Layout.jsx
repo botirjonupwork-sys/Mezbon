@@ -1,6 +1,6 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { Layout, Menu, Button, Typography } from 'antd'
-import { DashboardOutlined, ShopOutlined, LogoutOutlined, SettingOutlined, RobotOutlined, CrownOutlined, ControlOutlined, BankOutlined, LineChartOutlined } from '@ant-design/icons'
+import { DashboardOutlined, ShopOutlined, LogoutOutlined, SettingOutlined, RobotOutlined, CrownOutlined, ControlOutlined, BankOutlined, LineChartOutlined, PhoneOutlined } from '@ant-design/icons'
 import { useAuthStore } from '../store/auth'
 
 const { Header, Sider, Content } = Layout
@@ -13,6 +13,7 @@ const menuItems = [
   { key: '/tariffs',     icon: <CrownOutlined />,      label: 'Tariflar' },
   { key: '/finance',     icon: <BankOutlined />,       label: 'Moliya' },
   { key: '/analytics',   icon: <LineChartOutlined />,  label: 'Analytics' },
+  { key: '/ai-agent',    icon: <PhoneOutlined />,      label: 'AI Operator' },
   { key: '/global',      icon: <ControlOutlined />,   label: 'Global sozlamalar' },
   { key: '/settings',    icon: <SettingOutlined />,   label: 'Sozlamalar' },
 ]
