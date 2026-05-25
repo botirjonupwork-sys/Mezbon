@@ -1,11 +1,20 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from api.database import get_db
 from api.schemas import UserCreate, UserOut, AddressCreate, AddressOut
 from database.models import User, Address, Branch, Restaurant
+from api.services.security import is_valid_bot_secret
+
+
+async def _require_bot_secret(x_bot_secret: Optional[str] = Header(None, alias="X-Bot-Secret")):
+    """Bot'dan kelgan so'rovlarni tekshirish (telegram_id spoofing'dan himoya)."""
+    if not is_valid_bot_secret(x_bot_secret or ""):
+        raise HTTPException(403, "Ruxsat berilmadi")
+    return True
+
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -39,7 +48,11 @@ async def restaurant_public_info(restaurant_id: int, db: AsyncSession = Depends(
 
 
 @router.post("/", response_model=UserOut)
-async def create_or_get_user(data: UserCreate, db: AsyncSession = Depends(get_db)):
+async def create_or_get_user(
+    data: UserCreate,
+    db: AsyncSession = Depends(get_db),
+    _bot: bool = Depends(_require_bot_secret),
+):
     result = await db.execute(select(User).where(User.telegram_id == data.telegram_id))
     user = result.scalar_one_or_none()
 
@@ -92,7 +105,11 @@ async def get_or_create_phone_user(
 
 
 @router.get("/{telegram_id}", response_model=UserOut)
-async def get_user(telegram_id: str, db: AsyncSession = Depends(get_db)):
+async def get_user(
+    telegram_id: str,
+    db: AsyncSession = Depends(get_db),
+    _bot: bool = Depends(_require_bot_secret),
+):
     result = await db.execute(select(User).where(User.telegram_id == telegram_id))
     user = result.scalar_one_or_none()
     if not user:
@@ -105,6 +122,7 @@ async def set_user_branch(
     telegram_id: str,
     data: SelectBranchRequest,
     db: AsyncSession = Depends(get_db),
+    _bot: bool = Depends(_require_bot_secret),
 ):
     """Foydalanuvchi tanlagan filialni saqlash."""
     result = await db.execute(select(User).where(User.telegram_id == telegram_id))
@@ -124,7 +142,11 @@ async def set_user_branch(
 
 
 @router.get("/{telegram_id}/addresses", response_model=list[AddressOut])
-async def get_addresses(telegram_id: str, db: AsyncSession = Depends(get_db)):
+async def get_addresses(
+    telegram_id: str,
+    db: AsyncSession = Depends(get_db),
+    _bot: bool = Depends(_require_bot_secret),
+):
     result = await db.execute(select(User).where(User.telegram_id == telegram_id))
     user = result.scalar_one_or_none()
     if not user:
@@ -138,7 +160,8 @@ async def get_addresses(telegram_id: str, db: AsyncSession = Depends(get_db)):
 async def add_address(
     telegram_id: str,
     data: AddressCreate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _bot: bool = Depends(_require_bot_secret),
 ):
     result = await db.execute(select(User).where(User.telegram_id == telegram_id))
     user = result.scalar_one_or_none()

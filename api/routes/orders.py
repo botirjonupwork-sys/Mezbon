@@ -3,7 +3,7 @@ import os
 import httpx
 from dotenv import load_dotenv
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 
 load_dotenv()
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -68,7 +68,12 @@ async def create_order(
     data: OrderCreate,
     restaurant_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
+    x_bot_secret: Optional[str] = Header(None, alias="X-Bot-Secret"),
 ):
+    # Bot-secret tekshiruvi — telegram_id spoofing'dan himoya
+    from api.services.security import is_valid_bot_secret
+    if not is_valid_bot_secret(x_bot_secret or ""):
+        raise HTTPException(403, "Ruxsat berilmadi (bot-secret)")
     # Foydalanuvchini topish
     result = await db.execute(select(User).where(User.telegram_id == telegram_id))
     user = result.scalar_one_or_none()

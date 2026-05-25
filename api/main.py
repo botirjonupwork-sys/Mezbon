@@ -50,14 +50,22 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS — faqat ruxsat etilgan origin'lar
+# Production: faqat haqiqiy domenlar. Dev rejim CORS_DEV=1 env bilan localhost qo'shadi.
 ALLOWED_ORIGINS = [
     "https://restaurant.tursunboyev.com",
     "https://super.tursunboyev.com",
-    "http://localhost:5173",  # Admin panel dev
-    "http://localhost:5174",  # Super admin dev (eski)
-    "http://localhost:3001",  # Super admin dev (vite)
-    "http://localhost:3000",
+    "https://test-restaurant.tursunboyev.com",
+    "https://test-super.tursunboyev.com",
 ]
+# Dev rejimda localhost'larni qo'shamiz (faqat CORS_DEV=1 bo'lsa)
+if os.getenv("CORS_DEV") == "1":
+    ALLOWED_ORIGINS.extend([
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:3000",
+        "http://localhost:3001",
+    ])
+
 # Kerak bo'lsa .env orqali qo'shimcha origin qo'shish
 _extra = os.getenv("CORS_EXTRA_ORIGINS", "")
 if _extra:
@@ -68,8 +76,29 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Bot-Secret", "X-Restaurant-Context", "X-Branch-Context"],
 )
+
+
+# ── Xavfsizlik header'lari (XSS, clickjacking, MIME sniffing) ────────────
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """Har bir API javobiga xavfsizlik header'larini qo'shadi."""
+    response = await call_next(request)
+    # CSP: API javoblari uchun qattiq — script-src yo'q (faqat JSON qaytariladi)
+    # Bu API endpoint'lari; admin/super_admin SPA o'z CSP'siga ega (nginx orqali)
+    response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+    # Clickjacking himoyasi (eski browser'lar uchun)
+    response.headers["X-Frame-Options"] = "DENY"
+    # MIME sniffing himoyasi
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    # Referrer'ni minimal qilish
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # Permissions-Policy: kameralarini, mikrofonni boshqa saytlar ishlatmasin
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    # HSTS — faqat HTTPS orqali ulanish (1 yil)
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 # ── Maintenance mode middleware ──────────────────────────────────────────

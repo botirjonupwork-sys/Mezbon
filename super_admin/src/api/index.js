@@ -1,7 +1,9 @@
 import axios from 'axios'
 import { useAuthStore } from '../store/auth'
 
-const api = axios.create({ baseURL: '/api' })
+// withCredentials=true: HttpOnly cookie auth (XSS himoyasi).
+// Backward compat: localStorage'dagi eski token Bearer'da yuboriladi.
+const api = axios.create({ baseURL: '/api', withCredentials: true })
 
 api.interceptors.request.use((config) => {
   const token = useAuthStore.getState().token
@@ -18,6 +20,8 @@ api.interceptors.response.use(
 )
 
 export const superLogin = (data) => api.post('/auth/super/login', data)
+export const checkAuth = () => api.get('/auth/me')
+export const logoutServer = () => api.post('/auth/logout')
 export const getStats = () => api.get('/super/stats')
 export const getRestaurants = () => api.get('/super/restaurants')
 export const getRestaurant = (id) => api.get(`/super-admin/restaurants/${id}`)

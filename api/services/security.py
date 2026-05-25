@@ -88,3 +88,30 @@ def _const_time_eq(a: str, b: str) -> bool:
     for x, y in zip(a.encode(), b.encode()):
         res |= x ^ y
     return res == 0
+
+
+def get_bot_secret_candidates() -> list[str]:
+    """Bot-server autentifikatsiya uchun ruxsat etilgan secret'lar ro'yxati.
+
+    Production'da BOT_API_SECRET o'rnatilishi tavsiya etiladi (SECRET_KEY'dan ajratish).
+    Backward-compat uchun SECRET_KEY ham qabul qilinadi.
+    """
+    import os
+    from api.config import settings
+    out = []
+    bot_api = (os.getenv("BOT_API_SECRET") or "").strip()
+    if bot_api:
+        out.append(bot_api)
+    if settings.SECRET_KEY:
+        out.append(settings.SECRET_KEY)
+    return [s for s in out if s]
+
+
+def is_valid_bot_secret(token: str) -> bool:
+    """Header'dagi X-Bot-Secret yaroqlimi?"""
+    if not token:
+        return False
+    for candidate in get_bot_secret_candidates():
+        if _const_time_eq(token, candidate):
+            return True
+    return False

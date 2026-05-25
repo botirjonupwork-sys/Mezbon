@@ -2,9 +2,12 @@ import axios from 'axios'
 import { useAuthStore } from '../store/auth'
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api'
-const api = axios.create({ baseURL: API_BASE })
+// withCredentials=true: brauzer HttpOnly cookie'ni avtomatik yuboradi.
+// Auth endi cookie orqali ishlaydi (XSS himoyasi). Backward compat uchun
+// localStorage'dagi eski tokenni ham Bearer'da yuboramiz (asta-sekin chiqib ketadi).
+const api = axios.create({ baseURL: API_BASE, withCredentials: true })
 
-// Token ni har so'rovga qo'shish
+// Token ni har so'rovga qo'shish (eski sessiyalar uchun)
 api.interceptors.request.use((config) => {
   const token = useAuthStore.getState().token
   if (token) config.headers.Authorization = `Bearer ${token}`
@@ -22,6 +25,8 @@ api.interceptors.response.use(
 
 // ── Auth ──────────────────────────────────────────────
 export const login = (data) => api.post('/auth/login', data)
+export const logoutServer = () => api.post('/auth/logout')
+export const checkAuth = () => api.get('/auth/me')
 
 // ── Dashboard / Stats ─────────────────────────────────
 export const getStats = (params) => api.get('/admin/stats', { params })

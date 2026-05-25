@@ -95,12 +95,30 @@ _STATUS_USER_MESSAGE = {
 
 
 def _check_webhook_auth(request: Request) -> None:
-    """Webhook autentifikatsiyasi — callback_url dagi ?token=... bilan."""
+    """Webhook autentifikatsiyasi: token + ixtiyoriy IP allowlist.
+
+    Token tekshiruvi (callback_url dagi ?token=...) majburiy.
+    IP allowlist (YANDEX_WEBHOOK_ALLOWED_IPS env) ixtiyoriy — qo'yilgan bo'lsa
+    faqat o'sha IP'lardan keladigan webhook'lar qabul qilinadi.
+    """
     expected = os.getenv("YANDEX_WEBHOOK_SECRET", "").strip()
     if not expected:
         log.warning("YANDEX_WEBHOOK_SECRET env yo'q — webhook autentifikatsiyasi o'chiq")
         return
 
+    # 1) IP allowlist (agar sozlangan bo'lsa)
+    allowed_ips_raw = os.getenv("YANDEX_WEBHOOK_ALLOWED_IPS", "").strip()
+    if allowed_ips_raw:
+        allowed = {ip.strip() for ip in allowed_ips_raw.split(",") if ip.strip()}
+        client_ip = request.client.host if request.client else None
+        # X-Forwarded-For ham tekshiramiz (nginx proxy ortida)
+        xff = request.headers.get("x-forwarded-for", "")
+        real_ip = (xff.split(",")[0].strip() if xff else client_ip) or client_ip
+        if real_ip not in allowed:
+            log.warning("Yandex webhook IP rad etildi: %s (allowlist: %s)", real_ip, allowed)
+            raise HTTPException(403, "IP allowlist'da emas")
+
+    # 2) Token tekshiruvi
     token = request.query_params.get("token", "").strip()
     if token == expected:
         return

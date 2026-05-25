@@ -343,6 +343,22 @@ async def handle_click_webhook(payload: dict, client_ip: Optional[str], db: Asyn
         except ValueError:
             pass
 
+    # ── Replay protection: nonce (click_trans_id, action, sign_time) takrorlanmasin ──
+    from api.services.nonce_cache import click_nonce_cache
+    click_trans_id = payload.get("click_trans_id")
+    if click_trans_id:
+        nonce = (str(click_trans_id), action, sign_time_raw)
+        if not click_nonce_cache.check_and_record(nonce):
+            try:
+                from api.services.notifier import notify_platform_admin, webhook_security_text
+                await notify_platform_admin(webhook_security_text(
+                    "Click webhook replay", "Bir xil webhook qayta kelmoqda",
+                    {"click_trans_id": click_trans_id, "ip": client_ip},
+                ))
+            except Exception:
+                pass
+            return {"error": -1, "error_note": "Replay detected"}
+
     # ── Dispatch: order vs subscription ──
     # merchant_trans_id prefiksi `o-` bo'lsa — bu mijoz buyurtma to'lovi.
     # Order'ni topib, restoranni aniqlab, signature'ni tekshirib, order handler'ga uzatamiz.

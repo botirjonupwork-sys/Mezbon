@@ -85,28 +85,47 @@ def _parse_token(raw: str) -> Optional[AuthContext]:
     return None
 
 
-async def require_auth(authorization: str = Header(..., alias="Authorization")) -> AuthContext:
+def _get_token_from_request(authorization: Optional[str], request: Request) -> str:
+    """Token'ni Authorization header'dan yoki HttpOnly cookie'dan oladi.
+
+    Tartib: Authorization header (Bearer) → admin_token cookie.
+    Cookie'ga ko'chish XSS himoyasi uchun — JWT localStorage'da bo'lmasin.
+    """
+    if authorization:
+        return authorization
+    token = request.cookies.get("admin_token") or ""
+    if token:
+        return f"Bearer {token}"
+    return ""
+
+
+async def require_auth(
+    request: Request,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+) -> AuthContext:
     """Har qanday autentifikatsiya qilingan foydalanuvchini tekshiradi.
 
-    Rotate qilgan keyin: invalidate all old tokens. Hozir bu static.
+    Token Authorization header'dan yoki admin_token cookie'dan olinadi.
     """
-    ctx = _parse_token(authorization)
+    ctx = _parse_token(_get_token_from_request(authorization, request))
     if not ctx:
         raise HTTPException(401, "Ruxsat berilmadi — noto'g'ri yoki yo'q token")
     return ctx
 
 
 async def require_restaurant_admin(
-    authorization: str = Header(..., alias="Authorization"),
+    request: Request,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     restaurant_id: Optional[int] = Query(None),
 ) -> int:
     """Restaurant admin (yoki super admin) tokenni tekshiradi va restaurant_id qaytaradi.
 
+    Token Authorization header yoki admin_token cookie'dan o'qiladi.
     Muhim: restaurant_id query param bergan bo'lsa ham, token'dagi restaurant_id asosiy.
     Super admin bo'lsa — query param hurmat qilinadi (ixtiyoriy restaurantlarga kira oladi).
     Restaurant admin bo'lsa — faqat OZ restaurant_id'siga ruxsat.
     """
-    ctx = _parse_token(authorization)
+    ctx = _parse_token(_get_token_from_request(authorization, request))
     if not ctx:
         raise HTTPException(401, "Ruxsat berilmadi")
 
@@ -124,10 +143,11 @@ async def require_restaurant_admin(
 
 
 async def require_super_admin(
-    authorization: str = Header(..., alias="Authorization"),
+    request: Request,
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ) -> AuthContext:
     """Faqat super admin tokenini tekshiradi."""
-    ctx = _parse_token(authorization)
+    ctx = _parse_token(_get_token_from_request(authorization, request))
     if not ctx or not ctx.is_super:
         raise HTTPException(403, "Faqat super admin uchun")
     return ctx
@@ -137,7 +157,7 @@ async def require_super_admin(
 
 async def get_restaurant_context(
     request: Request,
-    authorization: str = Header(..., alias="Authorization"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     restaurant_id: Optional[int] = Query(None),
     x_restaurant_context: Optional[int] = Header(None, alias="X-Restaurant-Context"),
     db: AsyncSession = Depends(get_db),
@@ -155,7 +175,7 @@ async def get_restaurant_context(
 
     Qaytaradi: aniqlangan `restaurant_id` (int).
     """
-    ctx = _parse_token(authorization)
+    ctx = _parse_token(_get_token_from_request(authorization, request))
     if not ctx:
         raise HTTPException(401, "Ruxsat berilmadi")
 
@@ -222,7 +242,7 @@ def _client_ip(request: Request) -> Optional[str]:
 
 async def get_branch_context(
     request: Request,
-    authorization: str = Header(..., alias="Authorization"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
     branch_id: Optional[int] = Query(None),
     x_branch_context: Optional[int] = Header(None, alias="X-Branch-Context"),
     restaurant_id: int = Depends(get_restaurant_context),

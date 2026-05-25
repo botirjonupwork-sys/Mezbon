@@ -37,7 +37,7 @@ async def bot_login(bot_token: str) -> dict:
 
 async def get_user(telegram_id: str):
     async with httpx.AsyncClient() as client:
-        r = await client.get(f"{BASE_URL}/users/{telegram_id}")
+        r = await client.get(f"{BASE_URL}/users/{telegram_id}", headers=_BOT_HEADERS)
         if r.status_code == 200:
             return r.json()
         return None
@@ -49,7 +49,7 @@ async def create_user(telegram_id: str, full_name: str, phone: str):
             "telegram_id": telegram_id,
             "full_name": full_name,
             "phone": phone,
-        })
+        }, headers=_BOT_HEADERS)
         return r.json()
 
 
@@ -61,6 +61,7 @@ async def set_user_branch(telegram_id: str, branch_id):
             r = await client.post(
                 f"{BASE_URL}/users/{telegram_id}/branch",
                 json={"branch_id": branch_id},
+                headers=_BOT_HEADERS,
             )
             return r.status_code == 200
     except Exception:
@@ -99,6 +100,7 @@ async def create_order(telegram_id: str, order_data: dict):
             f"{BASE_URL}/orders/",
             params={"telegram_id": telegram_id, "restaurant_id": _restaurant_id},
             json=order_data,
+            headers=_BOT_HEADERS,
         )
         if r.status_code in (200, 201):
             return r.json()
@@ -118,7 +120,7 @@ async def get_user_orders(telegram_id: str):
 
 async def get_addresses(telegram_id: str):
     async with httpx.AsyncClient() as client:
-        r = await client.get(f"{BASE_URL}/users/{telegram_id}/addresses")
+        r = await client.get(f"{BASE_URL}/users/{telegram_id}/addresses", headers=_BOT_HEADERS)
         if r.status_code == 200:
             return r.json()
         return []
@@ -129,6 +131,7 @@ async def add_address(telegram_id: str, title: str, address: str):
         r = await client.post(
             f"{BASE_URL}/users/{telegram_id}/addresses",
             json={"title": title, "address": address},
+            headers=_BOT_HEADERS,
         )
         return r.json()
 
