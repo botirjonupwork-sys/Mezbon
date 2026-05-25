@@ -20,7 +20,7 @@ from aiogram.fsm.context import FSMContext
 from bot.states import CateringFlow
 from bot.api_client import (
     get_catering_groups, calculate_catering_price_multi, create_catering_order,
-    get_catering_booked,
+    get_catering_booked, get_settings,
 )
 from bot.keyboards.catering import (
     groups_kb, items_selector_kb, ask_qty_menu_kb, delivery_subtype_kb, date_kb, time_kb,
@@ -510,11 +510,23 @@ async def address_text(message: Message, state: FSMContext):
 # ── 9. To'lov usuli ──────────────────────────────────
 
 async def _ask_payment_method(message: Message, state: FSMContext):
+    """Restoran sozlamalariga qarab faqat ruxsat etilgan to'lov usullarini ko'rsatamiz."""
+    data = await state.get_data()
+    settings = await get_settings()
+    delivery_subtype = data.get("delivery_subtype")
+
+    # Yetkazib berishda oldindan to'lov majburiy bo'lsa, naqd taqiqlanadi
+    force_card = False
+    reason = None
+    if settings.get("enforce_prepayment_for_delivery") and delivery_subtype == "delivery":
+        force_card = True
+        reason = "Yetkazib berishlarda oldindan to'lov majburiy."
+
     await state.set_state(CateringFlow.choosing_payment_method)
-    await message.answer(
-        "💳 To'lov usulini tanlang:",
-        reply_markup=payment_method_kb(),
-    )
+    body = "💳 To'lov usulini tanlang:"
+    if force_card and reason:
+        body = f"💳 To'lov usulini tanlang:\n<i>ℹ️ {reason}</i>"
+    await message.answer(body, reply_markup=payment_method_kb(force_card=force_card), parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("cat_pay_m:"))
@@ -593,6 +605,21 @@ async def _show_confirmation(message: Message, state: FSMContext, edit: bool = F
     )
     if price.get("delivery_fee_uzs"):
         text += f"   🚗 Dastavka: {price['delivery_fee_uzs']:,.0f} so'm\n"
+    # Xizmat haqi — onsite catering uchun
+    settings = await get_settings()
+    service_fee = float(settings.get("catering_service_fee") or 0)
+    if delivery_subtype == "onsite" and service_fee > 0:
+        text += f"   🤵 Xizmat haqi: {service_fee:,.0f} so'm\n"
+
+    # Naqd to'lov + manual karta → mijozga ko'rsatamiz
+    if data.get("payment_method") == "cash":
+        card = (settings.get("catering_payment_card") or "").strip()
+        owner = (settings.get("catering_payment_owner") or "").strip()
+        if card:
+            text += f"\n💳 <b>To'lov uchun karta:</b>\n   <code>{card}</code>"
+            if owner:
+                text += f"\n   👤 {owner}"
+            text += "\n   <i>To'lab, chek rasmini operatorga yuboring.</i>\n"
     text += "\nTasdiqlaysizmi?"
 
     await state.update_data(calculated_price=price)

@@ -111,7 +111,7 @@ export default function ProfileSettings() {
         </Text>
       </div>
 
-      <Form form={form} layout="vertical" requiredMark="optional">
+      <Form form={form} layout="vertical" requiredMark={false}>
         {/* Username */}
         <Card style={cardStyle} styles={{ body: cardBody }}>
           <span style={sectionLabel}>Login ma'lumotlari</span>

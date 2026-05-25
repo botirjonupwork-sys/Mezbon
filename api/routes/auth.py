@@ -124,6 +124,13 @@ async def login(request: Request, data: LoginRequest, db: AsyncSession = Depends
     if not verify_password(data.password, restaurant.admin_password_hash):
         raise HTTPException(401, "Login yoki parol noto'g'ri")
 
+    # Restoran holatini tekshirish (Faza 11: bloklan rentaurant login qila olmaydi)
+    rest_status = (restaurant.status or "active").lower()
+    if rest_status == "blocked":
+        raise HTTPException(403, "Restoraningiz bloklangan. Platforma administratoriga murojaat qiling.")
+    if rest_status == "suspended":
+        raise HTTPException(402, "Tarifingiz to'lov muddati tugagan. Administratorga murojaat qiling.")
+
     # Backward compat: SHA-256 hash'ni bcrypt'ga upgrade
     if needs_rehash(restaurant.admin_password_hash):
         try:

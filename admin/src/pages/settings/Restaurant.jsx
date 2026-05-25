@@ -188,7 +188,7 @@ export default function RestaurantSettings() {
         </Text>
       </div>
 
-      <Form form={form} layout="vertical" requiredMark="optional">
+      <Form form={form} layout="vertical" requiredMark={false}>
         {/* Basic Info */}
         <Card style={cardStyle} styles={{ body: cardBody }}>
           <span style={sectionLabel}>Asosiy</span>

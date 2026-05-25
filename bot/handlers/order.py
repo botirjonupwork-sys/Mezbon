@@ -403,14 +403,29 @@ async def _process_comment(message: Message, state: FSMContext, *, comment_text:
         delivery_text = "\n🚗 Dastavka: kuryer bilan yetkazib berish narxi kelishiladi"
     await state.update_data(delivery_fee=delivery_fee)
 
+    # QQS — restaurant.is_vat_payer bo'lsa ko'rsatamiz
+    vat_text = ""
+    try:
+        from bot.api_client import get_settings as _gs
+        settings = await _gs()
+        if settings.get("is_vat_payer"):
+            vat_percent = float(settings.get("vat_percent") or 0)
+            if vat_percent > 0:
+                # ichkarida (inclusive) VAT — total ichidan ushlab olinadi
+                vat_amount = items_total * vat_percent / (100 + vat_percent)
+                vat_text = f"\n📊 QQS ({vat_percent:.0f}%, ichkarida): <b>{vat_amount:,.0f} so'm</b>"
+    except Exception:
+        pass
+
     text = (
         "📋 <b>Buyurtma ma'lumotlari</b>\n\n"
         + _format_progress(data)
         + "\n\n<b>Mahsulotlar:</b>\n"
         + "\n".join(lines)
         + f"\n\n💰 Jami: <b>{items_total:,.0f} so'm</b>"
+        + vat_text
         + delivery_text
-        + "\n\n💳 To'lov: tasdiqlagandan keyin Click/Payme tanlanadi"
+        + "\n\n💳 To'lov: tasdiqlagandan keyin Click/Payme/Uzum tanlanadi"
         + "\n\nTasdiqlaysizmi?"
     )
 

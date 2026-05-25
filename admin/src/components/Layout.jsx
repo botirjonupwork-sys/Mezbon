@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
-import { Layout, Menu, Button, Avatar, Typography, Space, Drawer, Select, Tag, Tooltip } from 'antd'
+import { Layout, Menu, Button, Avatar, Typography, Space, Drawer, Select, Tag, Tooltip, Alert } from 'antd'
 import {
   DashboardOutlined, ShoppingCartOutlined, AppstoreOutlined,
   UserOutlined, StarOutlined, LogoutOutlined, SettingOutlined, TeamOutlined,
@@ -9,7 +9,7 @@ import {
 } from '@ant-design/icons'
 import { useAuthStore } from '../store/auth'
 import { useBranchStore } from '../store/branch'
-import { getAdminBranches, getMyPlan, getSuperRestaurants } from '../api'
+import { getAdminBranches, getMyPlan, getSuperRestaurants, getProfile } from '../api'
 
 const { Header, Sider, Content } = Layout
 const { Text } = Typography
@@ -56,6 +56,41 @@ export default function AdminLayout() {
   const [plan, setPlan] = useState(null)
   const [features, setFeatures] = useState({})
   const [allRestaurants, setAllRestaurants] = useState([])
+  const [maintenance, setMaintenance] = useState({ on: false, message: '' })
+  const [profileInfo, setProfileInfo] = useState(null)
+
+  // Restoran holatini olish (status, is_verified, commission_percent)
+  useEffect(() => {
+    if (!effectiveRid || isSuper) {
+      setProfileInfo(null)
+      return
+    }
+    getProfile({ restaurant_id: effectiveRid })
+      .then((r) => setProfileInfo(r.data || null))
+      .catch(() => setProfileInfo(null))
+  }, [effectiveRid, isSuper])
+
+  // Maintenance mode polling — har 30 sekundda /health'ga so'rov
+  useEffect(() => {
+    let cancelled = false
+    const apiBase = (() => {
+      const env = import.meta.env.VITE_API_URL
+      if (env) return env.startsWith('http') ? env : window.location.origin + env
+      return window.location.origin + '/api'
+    })()
+    const check = async () => {
+      try {
+        const r = await fetch(`${apiBase.replace(/\/$/, '')}/health`, { cache: 'no-store' })
+        const d = await r.json()
+        if (!cancelled) {
+          setMaintenance({ on: !!d.maintenance, message: d.maintenance_message || '' })
+        }
+      } catch { /* offline — ignore */ }
+    }
+    check()
+    const id = setInterval(check, 30000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
 
   useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 768)
@@ -247,6 +282,42 @@ export default function AdminLayout() {
             </Button>
           </Space>
         </Header>
+
+        {maintenance.on && (
+          <Alert
+            banner
+            type="warning"
+            showIcon
+            message={`⚙️ Texnik tanaffus: ${maintenance.message || 'Tez orada qaytamiz.'}`}
+            style={{ borderRadius: 0 }}
+          />
+        )}
+
+        {profileInfo && (profileInfo.status || '').toLowerCase() === 'blocked' && (
+          <Alert
+            banner type="error" showIcon
+            message="🚫 Hisobingiz bloklangan. Platforma administratoriga murojaat qiling."
+            style={{ borderRadius: 0 }}
+          />
+        )}
+        {profileInfo && (profileInfo.subscription_status === 'suspended' || profileInfo.subscription_status === 'grace_period') && (
+          <Alert
+            banner
+            type={profileInfo.subscription_status === 'suspended' ? 'error' : 'warning'}
+            showIcon
+            message={profileInfo.subscription_status === 'suspended'
+              ? '⏰ Tarif muddati tugagan. Iltimos, yangi tarifni faollashtiring.'
+              : '⏳ Tarif muddati yaqinda tugaydi (grace period). Yangilang.'}
+            style={{ borderRadius: 0 }}
+          />
+        )}
+        {profileInfo && profileInfo.is_verified === false && !isSuper && (
+          <Alert
+            banner type="info" showIcon
+            message="ℹ️ INN tasdiqlanmagan — tarif yangilash uchun super-administratorga murojaat qiling."
+            style={{ borderRadius: 0 }}
+          />
+        )}
 
         <Content style={{ margin: isMobile ? 8 : 24, minHeight: 280 }}>
           <Outlet />

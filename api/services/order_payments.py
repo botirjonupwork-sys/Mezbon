@@ -149,9 +149,11 @@ def generate_payment_url(
 ) -> tuple[str, str]:
     """Buyurtma uchun to'lov URL'i va merchant_trans_id qaytaradi.
 
+    Agar order.merchant_trans_id allaqachon o'rnatilgan bo'lsa, uni ishlatamiz
+    (3 ta provayder URL'i bir xil ID ga ishora qiladi).
     return_url: bot'ga qaytarish uchun (https://t.me/<bot>?start=...).
     """
-    merchant_trans_id = make_order_trans_id(order.id)
+    merchant_trans_id = order.merchant_trans_id or make_order_trans_id(order.id)
     amount_uzs = float(order.total_price or 0)
     amount_tiyin = int(round(amount_uzs * 100))
 

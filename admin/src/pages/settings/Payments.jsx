@@ -124,7 +124,7 @@ export default function PaymentsSettings() {
         </Text>
       </div>
 
-      <Form form={form} layout="vertical" requiredMark="optional">
+      <Form form={form} layout="vertical" requiredMark={false}>
         {/* Test/Live Mode */}
         <Card style={cardStyle} styles={{ body: cardBody }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -247,17 +247,17 @@ export default function PaymentsSettings() {
             {({ getFieldValue }) => getFieldValue('click_enabled') && (
               <Row gutter={16}>
                 <Col xs={24} md={8}>
-                  <Form.Item name="click_merchant_id" label="Merchant ID">
+                  <Form.Item name="click_merchant_id" label="Merchant ID" rules={[{ required: true, message: "To'ldiring" }]}>
                     <Input placeholder="12345" />
                   </Form.Item>
                 </Col>
                 <Col xs={24} md={8}>
-                  <Form.Item name="click_service_id" label="Service ID">
+                  <Form.Item name="click_service_id" label="Service ID" rules={[{ required: true, message: "To'ldiring" }]}>
                     <Input placeholder="54321" />
                   </Form.Item>
                 </Col>
                 <Col xs={24} md={8}>
-                  <Form.Item name="click_secret_key" label="Secret Key">
+                  <Form.Item name="click_secret_key" label="Secret Key" rules={[{ required: true, message: "To'ldiring" }]}>
                     <Input.Password autoComplete="off" />
                   </Form.Item>
                 </Col>
@@ -282,12 +282,12 @@ export default function PaymentsSettings() {
             {({ getFieldValue }) => getFieldValue('payme_enabled') && (
               <Row gutter={16}>
                 <Col xs={24} md={12}>
-                  <Form.Item name="payme_merchant_id" label="Cashbox ID">
+                  <Form.Item name="payme_merchant_id" label="Cashbox ID" rules={[{ required: true, message: "To'ldiring" }]}>
                     <Input placeholder="5e7c1e..." />
                   </Form.Item>
                 </Col>
                 <Col xs={24} md={12}>
-                  <Form.Item name="payme_secret_key" label="Merchant Key">
+                  <Form.Item name="payme_secret_key" label="Merchant Key" rules={[{ required: true, message: "To'ldiring" }]}>
                     <Input.Password autoComplete="off" />
                   </Form.Item>
                 </Col>
@@ -315,17 +315,18 @@ export default function PaymentsSettings() {
                   name="uzum_service_id"
                   label="Service ID"
                   extra="merchants.uzumbank.uz dan olinadi"
+                  rules={[{ required: true, message: "To'ldiring" }]}
                 >
                   <Input placeholder="123422111" />
                 </Form.Item>
                 <Row gutter={16}>
                   <Col xs={24} md={12}>
-                    <Form.Item name="uzum_webhook_user" label="Webhook Basic Auth — login">
+                    <Form.Item name="uzum_webhook_user" label="Webhook Basic Auth — login" rules={[{ required: true, message: "To'ldiring" }]}>
                       <Input autoComplete="off" placeholder="uzum_user" />
                     </Form.Item>
                   </Col>
                   <Col xs={24} md={12}>
-                    <Form.Item name="uzum_webhook_pass" label="Webhook Basic Auth — parol">
+                    <Form.Item name="uzum_webhook_pass" label="Webhook Basic Auth — parol" rules={[{ required: true, message: "To'ldiring" }]}>
                       <Input.Password autoComplete="off" />
                     </Form.Item>
                   </Col>

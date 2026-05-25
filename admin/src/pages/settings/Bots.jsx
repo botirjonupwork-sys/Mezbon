@@ -24,6 +24,7 @@ export default function BotsSettings() {
   const [saving, setSaving] = useState(false)
   const [checking, setChecking] = useState(false)
   const [botStatus, setBotStatus] = useState(null)
+  const [polling, setPolling] = useState(false)
 
   const { currentRestaurantId: restaurantId, token } = useAuthStore()
   const restParams = restaurantId ? { restaurant_id: restaurantId } : {}
@@ -47,8 +48,16 @@ export default function BotsSettings() {
     setSaving(true)
     try {
       const values = await form.validateFields()
+      const oldValues = form.getFieldsValue(true)
+      const tokenChanged = values.bot_token !== oldValues.bot_token ||
+                           values.courier_bot_token !== oldValues.courier_bot_token
       await updateSettings(values, restParams)
       message.success('Sozlamalar saqlandi')
+      // Token o'zgargan bo'lsa super-admin restart kerak — polling bilan kuzatamiz
+      if (tokenChanged) {
+        message.info("Token o'zgardi — bot qayta tushishi kuzatilmoqda (maks. 60s)")
+        startPolling()
+      }
     } catch (err) {
       if (!err?.errorFields) message.error('Saqlashda xato')
     } finally {
@@ -56,8 +65,8 @@ export default function BotsSettings() {
     }
   }
 
-  const checkBots = async () => {
-    setChecking(true)
+  const checkBots = async (silent = false) => {
+    if (!silent) setChecking(true)
     try {
       const r = await fetch(`/api/admin/bots/check?restaurant_id=${restaurantId}`, {
         method: 'POST',
@@ -65,11 +74,39 @@ export default function BotsSettings() {
       })
       const d = await r.json()
       setBotStatus(d)
+      return d
     } catch (e) {
-      message.error("Tekshirib bo'lmadi")
+      if (!silent) message.error("Tekshirib bo'lmadi")
+      return null
     } finally {
-      setChecking(false)
+      if (!silent) setChecking(false)
     }
+  }
+
+  // Token o'zgartirilganda yoki manual restart kerak bo'lganda — har 5 sek
+  // tekshiramiz, bot online bo'lguncha (maksimum 60 sekund).
+  const startPolling = async () => {
+    setPolling(true)
+    let attempts = 0
+    const maxAttempts = 12  // 12 × 5s = 60s
+    const tick = async () => {
+      attempts += 1
+      const d = await checkBots(true)
+      const allOnline = d && (!d.customer_bot?.configured || d.customer_bot?.online) &&
+                              (!d.courier_bot?.configured || d.courier_bot?.online)
+      if (allOnline) {
+        setPolling(false)
+        message.success("Botlar online")
+        return
+      }
+      if (attempts >= maxAttempts) {
+        setPolling(false)
+        message.warning("60 sekund ichida bot online bo'lmadi — qo'lda super-admindan restart so'rang")
+        return
+      }
+      setTimeout(tick, 5000)
+    }
+    tick()
   }
 
   const renderBotStatus = (key, label) => {
@@ -140,7 +177,7 @@ export default function BotsSettings() {
         </Text>
       </div>
 
-      <Form form={form} layout="vertical" requiredMark="optional">
+      <Form form={form} layout="vertical" requiredMark={false}>
         {/* Instructions */}
         <Card style={{ ...cardStyle, background: '#f8fafc' }} styles={{ body: { padding: 20 } }}>
           <span style={{ ...sectionLabel, marginBottom: 12 }}>Token olish tartibi</span>
@@ -197,6 +234,15 @@ export default function BotsSettings() {
               Tekshirish
             </Button>
           </div>
+
+          {polling && (
+            <Alert
+              type="info"
+              icon={<LoadingOutlined />}
+              message="Bot qayta tushishi kuzatilmoqda (5 sek interval)..."
+              style={{ marginTop: 8, borderRadius: 8 }}
+            />
+          )}
 
           {botStatus && (
             <div>

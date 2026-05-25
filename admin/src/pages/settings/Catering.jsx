@@ -129,7 +129,7 @@ export default function CateringSettings() {
         </Text>
       </div>
 
-      <Form form={form} layout="vertical" requiredMark="optional">
+      <Form form={form} layout="vertical" requiredMark={false}>
         {/* Currency Settings */}
         <Card style={cardStyle} styles={{ body: cardBody }}>
           <span style={sectionLabel}>Valyuta kursi (USD → UZS)</span>

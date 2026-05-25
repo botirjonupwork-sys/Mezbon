@@ -108,7 +108,7 @@ export default function DeliverySettings() {
         </Text>
       </div>
 
-      <Form form={form} layout="vertical" requiredMark="optional">
+      <Form form={form} layout="vertical" requiredMark={false}>
         {/* Provider Selection */}
         <Card style={cardStyle} styles={{ body: cardBody }}>
           <span style={sectionLabel}>Yetkazish turi</span>

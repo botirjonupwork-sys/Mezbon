@@ -134,8 +134,22 @@ async def health(response: Response) -> dict[str, Any]:
     if db_res.get("status") != "ok":
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
+    # Maintenance mode holati (admin UI banner uchun)
+    try:
+        from api.services import platform
+        maintenance = bool(platform.is_maintenance())
+        maintenance_message = platform.get(
+            "maintenance_message",
+            "Texnik tanaffus. Tez orada qaytamiz.",
+        ) if maintenance else None
+    except Exception:
+        maintenance = False
+        maintenance_message = None
+
     return {
         "status": overall,
+        "maintenance": maintenance,
+        "maintenance_message": maintenance_message,
         "components": {
             "database": db_res,
             "openai": openai_res,

@@ -192,6 +192,13 @@ async def create_order(
     db.add(order)
     await db.flush()
 
+    # Idempotency: merchant_trans_id ni darhol yaratamiz va saqlaymiz.
+    # Webhook'lar order'ni shu prefiks orqali topadi (`o-<id>-<rand>`).
+    if order.payment_method in ("click", "payme", "uzum", "card"):
+        from api.services.order_payments import make_order_trans_id
+        order.merchant_trans_id = make_order_trans_id(order.id)
+        await db.flush()
+
     for product, quantity, price in order_items:
         db.add(OrderItem(
             order_id=order.id,
@@ -351,22 +358,22 @@ async def get_pay_options(order_id: int, db: AsyncSession = Depends(get_db)):
     if not rest:
         raise HTTPException(404, "Restoran topilmadi")
 
+    # merchant_trans_id order yaratilganda allaqachon o'rnatilgan bo'lishi kerak.
+    # Eski buyurtmalar uchun fallback: hozir yaratamiz.
+    if not order.merchant_trans_id:
+        from api.services.order_payments import make_order_trans_id
+        order.merchant_trans_id = make_order_trans_id(order.id)
+        await db.commit()
+
     providers = get_enabled_providers(rest)
     options = []
     for p in providers:
         try:
-            url, mtid = generate_payment_url(rest, order, p, return_url=None)
-            options.append({"provider": p, "url": url, "merchant_trans_id": mtid})
-        except Exception as e:
-            # Provider sozlamasida xato — ko'rsatmaymiz
+            # Bir xil merchant_trans_id ni 3 ta URL uchun ishlatamiz (idempotency)
+            url, _mtid = generate_payment_url(rest, order, p, return_url=None)
+            options.append({"provider": p, "url": url, "merchant_trans_id": order.merchant_trans_id})
+        except Exception:
             continue
-
-    # Birinchi muvaffaqiyatli URL'ni order'ga saqlash (asosiy)
-    if options and not order.merchant_trans_id:
-        order.merchant_trans_id = options[0]["merchant_trans_id"]
-        order.payment_url = options[0]["url"]
-        order.payment_provider = options[0]["provider"]
-        await db.commit()
 
     return {
         "order_id": order.id,

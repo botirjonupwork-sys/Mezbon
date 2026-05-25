@@ -194,6 +194,16 @@ export default function Billing() {
               ? `⚠️ Tarifingiz ${daysLeft} kundan so'ng tugaydi (${expiresAt.format('DD.MM.YYYY')})`
               : `Tarifingiz ${expiresAt.format('DD.MM.YYYY')} gacha amal qiladi (${daysLeft} kun qoldi)`
           }
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
+      {/* Sizning komissiyangiz (per-restaurant override yoki plan default) */}
+      {profile && Number(profile.commission_percent) > 0 && (
+        <Alert
+          type="info"
+          showIcon
+          message={`Sizning komissiyangiz: ${profile.commission_percent}% har buyurtmadan platformaga`}
           style={{ marginBottom: 24 }}
         />
       )}

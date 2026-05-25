@@ -201,11 +201,16 @@ def location_kb() -> ReplyKeyboardMarkup:
 
 # ── To'lov ──────────────────────────────────────────
 
-def payment_method_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💵 Naqd", callback_data="cat_pay_m:cash")],
-        [InlineKeyboardButton(text="💳 Karta orqali", callback_data="cat_pay_m:card")],
-    ])
+def payment_method_kb(force_card: bool = False) -> InlineKeyboardMarkup:
+    """Catering uchun to'lov usuli klaviaturasi.
+
+    force_card=True bo'lsa naqd variant ko'rsatilmaydi (prepayment majburiy bo'lganda).
+    """
+    rows = []
+    if not force_card:
+        rows.append([InlineKeyboardButton(text="💵 Naqd", callback_data="cat_pay_m:cash")])
+    rows.append([InlineKeyboardButton(text="💳 Karta orqali", callback_data="cat_pay_m:card")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def payment_timing_kb() -> InlineKeyboardMarkup:
