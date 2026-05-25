@@ -147,13 +147,15 @@ class SettingsUpdate(BaseModel):
     # Faza 4-5: catering xizmat haqi va prepayment limiti
     catering_service_fee: Optional[float] = None
     prepayment_required_above: Optional[float] = None
-    # AI Operator
+    # AI Operator (restoran-spesifik — provider/model/api_key super-admin'da)
     ai_agent_enabled: Optional[bool] = None
     ai_agent_prompt: Optional[str] = None
     ai_agent_voice: Optional[str] = None
-    ai_agent_provider: Optional[str] = None
-    ai_agent_model: Optional[str] = None
-    ai_agent_api_key: Optional[str] = None
+    ai_agent_greeting: Optional[str] = None
+    ai_agent_work_hours_only: Optional[bool] = None
+    ai_agent_max_call_minutes: Optional[int] = None
+    ai_agent_fallback_phone: Optional[str] = None
+    ai_agent_language: Optional[str] = None
 
 
 class AdminCreate(BaseModel):
@@ -882,13 +884,15 @@ async def get_settings(
         # Faza 4-5: to'lov sozlamalari
         "catering_service_fee": float(rest.catering_service_fee or 0),
         "prepayment_required_above": float(rest.prepayment_required_above or 0),
-        # AI Operator
+        # AI Operator (restoran-spesifik; provider/model/api_key super-admin'da)
         "ai_agent_enabled": bool(rest.ai_agent_enabled),
         "ai_agent_prompt": rest.ai_agent_prompt or "",
         "ai_agent_voice": rest.ai_agent_voice or "female",
-        "ai_agent_provider": rest.ai_agent_provider or "openai",
-        "ai_agent_model": rest.ai_agent_model or "gpt-4o-mini",
-        "ai_agent_api_key": rest.ai_agent_api_key or "",
+        "ai_agent_greeting": rest.ai_agent_greeting or "",
+        "ai_agent_work_hours_only": bool(rest.ai_agent_work_hours_only),
+        "ai_agent_max_call_minutes": int(rest.ai_agent_max_call_minutes or 10),
+        "ai_agent_fallback_phone": rest.ai_agent_fallback_phone or "",
+        "ai_agent_language": rest.ai_agent_language or "uz",
     }
 
 
@@ -952,9 +956,11 @@ async def update_settings(
         "ai_agent_enabled": "ai_agent_enabled",
         "ai_agent_prompt": "ai_agent_prompt",
         "ai_agent_voice": "ai_agent_voice",
-        "ai_agent_provider": "ai_agent_provider",
-        "ai_agent_model": "ai_agent_model",
-        "ai_agent_api_key": "ai_agent_api_key",
+        "ai_agent_greeting": "ai_agent_greeting",
+        "ai_agent_work_hours_only": "ai_agent_work_hours_only",
+        "ai_agent_max_call_minutes": "ai_agent_max_call_minutes",
+        "ai_agent_fallback_phone": "ai_agent_fallback_phone",
+        "ai_agent_language": "ai_agent_language",
     }
     for form_key, db_key in update_map.items():
         val = getattr(data, form_key, None)

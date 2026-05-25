@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import {
   Tabs, Form, Input, InputNumber, Button, Card, Typography,
-  message, Divider, Row, Col, Select, Spin, Alert
+  message, Divider, Row, Col, Select, Spin, Alert, Tag
 } from 'antd'
 import {
   UserOutlined, LockOutlined, GlobalOutlined, PhoneOutlined,
-  MailOutlined, SaveOutlined
+  MailOutlined, SaveOutlined, RobotOutlined, KeyOutlined,
 } from '@ant-design/icons'
 import { useAuthStore } from '../store/auth'
 import {
@@ -18,17 +18,38 @@ const { Title, Text } = Typography
 export default function Settings() {
   const [profileForm] = Form.useForm()
   const [platformForm] = Form.useForm()
+  const [aiForm] = Form.useForm()
   const [profileLoading, setProfileLoading] = useState(false)
   const [platformLoading, setPlatformLoading] = useState(false)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiStatus, setAiStatus] = useState({ llm_set: false, llm_masked: '', tts_set: false, tts_masked: '' })
   const [fetching, setFetching] = useState(true)
   const setAuth = useAuthStore((s) => s.setAuth)
   const logout = useAuthStore((s) => s.logout)
+
+  const applyPlatformData = (d) => {
+    platformForm.setFieldsValue(d)
+    aiForm.setFieldsValue({
+      ai_llm_provider: d.ai_llm_provider || 'openai',
+      ai_llm_model: d.ai_llm_model || 'gpt-4o-mini',
+      ai_llm_api_key: '',  // hech qachon plaintext kelmaydi
+      ai_tts_provider: d.ai_tts_provider || 'openai',
+      ai_tts_api_key: '',
+      ai_voice_gateway: d.ai_voice_gateway || 'telegram',
+    })
+    setAiStatus({
+      llm_set: !!d.ai_llm_api_key_set,
+      llm_masked: d.ai_llm_api_key_masked || '',
+      tts_set: !!d.ai_tts_api_key_set,
+      tts_masked: d.ai_tts_api_key_masked || '',
+    })
+  }
 
   useEffect(() => {
     Promise.all([getSuperProfile(), getPlatformSettings()])
       .then(([profRes, platRes]) => {
         profileForm.setFieldsValue({ username: profRes.data.username })
-        platformForm.setFieldsValue(platRes.data)
+        applyPlatformData(platRes.data)
       })
       .catch(() => message.error('Yuklab bo\'lmadi'))
       .finally(() => setFetching(false))
@@ -63,12 +84,38 @@ export default function Settings() {
     setPlatformLoading(true)
     try {
       const res = await updatePlatformSettings(values)
-      platformForm.setFieldsValue(res.data)
+      applyPlatformData(res.data)
       message.success('Platforma sozlamalari saqlandi')
     } catch (e) {
       message.error(e.response?.data?.detail || 'Xato yuz berdi')
     } finally {
       setPlatformLoading(false)
+    }
+  }
+
+  const onAiSave = async (values) => {
+    // API kalitlar bo'sh bo'lsa — yubormaymiz (eski qiymat saqlanib qoladi)
+    const payload = {
+      ai_llm_provider: values.ai_llm_provider,
+      ai_llm_model: values.ai_llm_model,
+      ai_tts_provider: values.ai_tts_provider,
+      ai_voice_gateway: values.ai_voice_gateway,
+    }
+    if (values.ai_llm_api_key && values.ai_llm_api_key.trim()) {
+      payload.ai_llm_api_key = values.ai_llm_api_key.trim()
+    }
+    if (values.ai_tts_api_key && values.ai_tts_api_key.trim()) {
+      payload.ai_tts_api_key = values.ai_tts_api_key.trim()
+    }
+    setAiLoading(true)
+    try {
+      const res = await updatePlatformSettings(payload)
+      applyPlatformData(res.data)
+      message.success('AI sozlamalari saqlandi')
+    } catch (e) {
+      message.error(e.response?.data?.detail || 'Xato yuz berdi')
+    } finally {
+      setAiLoading(false)
     }
   }
 
@@ -220,6 +267,108 @@ export default function Settings() {
             </Row>
 
             <Button type="primary" htmlType="submit" loading={platformLoading}
+              icon={<SaveOutlined />}
+              style={{ background: '#722ed1', borderColor: '#722ed1' }}>
+              Saqlash
+            </Button>
+          </Form>
+        </Card>
+      ),
+    },
+    {
+      key: 'ai',
+      label: <span><RobotOutlined /> AI Operator</span>,
+      children: (
+        <Card style={{ maxWidth: 720 }}>
+          <Title level={5} style={{ marginBottom: 4 }}>AI Call Operator — global konfiguratsiya</Title>
+          <Text type="secondary" style={{ display: 'block', marginBottom: 20 }}>
+            Bu sozlamalar barcha restoranlar uchun amal qiladi. Restoran adminlari bu yerga kirmaydi —
+            ular faqat ovoz turi va maxsus ko'rsatmani sozlaydi.
+          </Text>
+
+          <Form form={aiForm} layout="vertical" onFinish={onAiSave}>
+            <Divider orientation="left">LLM (matn modeli)</Divider>
+            <Row gutter={16}>
+              <Col xs={24} sm={12}>
+                <Form.Item name="ai_llm_provider" label="Provayder">
+                  <Select options={[
+                    { value: 'openai', label: 'OpenAI' },
+                  ]} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12}>
+                <Form.Item name="ai_llm_model" label="Model">
+                  <Select options={[
+                    { value: 'gpt-4o-mini', label: 'gpt-4o-mini (tez, arzon ~$0.15/1M)' },
+                    { value: 'gpt-4o', label: 'gpt-4o (aniqroq ~$2.50/1M)' },
+                  ]} />
+                </Form.Item>
+              </Col>
+            </Row>
+            <Form.Item
+              name="ai_llm_api_key"
+              label={
+                <span>
+                  OpenAI API kalit{' '}
+                  {aiStatus.llm_set
+                    ? <Tag color="green" icon={<KeyOutlined />}>O'rnatilgan: {aiStatus.llm_masked}</Tag>
+                    : <Tag color="red">Hali kiritilmagan</Tag>}
+                </span>
+              }
+              extra={aiStatus.llm_set
+                ? "Yangi qiymat kiritilsagina almashtiriladi. Bo'sh qoldirilsa eski kalit saqlanadi."
+                : "sk-... bilan boshlanadigan OpenAI kalitni kiriting. https://platform.openai.com/api-keys"}
+            >
+              <Input.Password autoComplete="new-password" placeholder={aiStatus.llm_set ? '••••••••••••' : 'sk-...'} />
+            </Form.Item>
+
+            <Divider orientation="left">TTS (ovozli javob) — keyingi bosqich</Divider>
+            <Alert
+              type="info" showIcon style={{ marginBottom: 16 }}
+              message="TTS hali ulanmagan"
+              description="Hozir AI faqat matn javob qaytaradi. TTS (Text-to-Speech) keyingi bosqichda ulanadi — OpenAI TTS yoki ElevenLabs."
+            />
+            <Row gutter={16}>
+              <Col xs={24} sm={12}>
+                <Form.Item name="ai_tts_provider" label="TTS provayder">
+                  <Select options={[
+                    { value: 'openai', label: 'OpenAI TTS' },
+                    { value: 'elevenlabs', label: 'ElevenLabs (yuqori sifat)' },
+                  ]} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12}>
+                <Form.Item
+                  name="ai_tts_api_key"
+                  label={
+                    <span>
+                      TTS API kalit{' '}
+                      {aiStatus.tts_set
+                        ? <Tag color="green">…{aiStatus.tts_masked}</Tag>
+                        : <Tag>Yo'q</Tag>}
+                    </span>
+                  }
+                  extra="Bo'sh bo'lsa OpenAI kalit (yuqorida) ishlatiladi"
+                >
+                  <Input.Password autoComplete="new-password" placeholder={aiStatus.tts_set ? '••••••••' : "TTS uchun alohida kalit (ixtiyoriy)"} />
+                </Form.Item>
+              </Col>
+            </Row>
+
+            <Divider orientation="left">Ovoz gateway (telefon ulanish)</Divider>
+            <Form.Item
+              name="ai_voice_gateway"
+              label="Qaysi kanal orqali mijoz AI bilan gaplashadi"
+              extra="Telegram MVP — Telegram bot orqali ovoz xabar; Vapi/Twilio — real telefon raqami (keyingi bosqich)"
+            >
+              <Select options={[
+                { value: 'telegram', label: '📱 Telegram voice xabarlar (MVP)' },
+                { value: 'vapi', label: '☎️ Vapi (real telefon, hali ulanmagan)' },
+                { value: 'twilio', label: '☎️ Twilio (real telefon, hali ulanmagan)' },
+              ]} />
+            </Form.Item>
+
+            <Button type="primary" htmlType="submit" loading={aiLoading}
               icon={<SaveOutlined />}
               style={{ background: '#722ed1', borderColor: '#722ed1' }}>
               Saqlash

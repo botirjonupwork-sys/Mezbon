@@ -1127,3 +1127,72 @@ async def list_actions(
         }
         for a in rows
     ]
+
+
+# ── AI Call Operator umumiy statistika ───────────────────────────────────
+
+@router.get("/ai-stats")
+async def ai_stats(
+    days: int = 30,
+    actor: dict = Depends(require_superuser),
+    db: AsyncSession = Depends(get_db),
+):
+    """Barcha restoranlar bo'yicha AI suhbatlar agregati.
+
+    Qaytaradi:
+      - global: jami suhbatlar, xarajat, tokenlar, buyurtmalar
+      - by_restaurant: har restoran bo'yicha (top 50 by xarajat)
+    """
+    from database.models import AICallLog
+
+    since = datetime.utcnow() - timedelta(days=max(1, min(int(days), 365)))
+
+    # Global
+    g = (await db.execute(
+        select(
+            func.count(AICallLog.id).label("total"),
+            func.coalesce(func.sum(AICallLog.cost_usd), 0).label("cost"),
+            func.coalesce(func.sum(AICallLog.tokens_in), 0).label("tin"),
+            func.coalesce(func.sum(AICallLog.tokens_out), 0).label("tout"),
+            func.coalesce(func.sum(AICallLog.duration_seconds), 0).label("dur"),
+            func.count(AICallLog.order_id).label("orders"),
+        ).where(AICallLog.started_at >= since)
+    )).first()
+
+    # Per-restaurant
+    rows = (await db.execute(
+        select(
+            AICallLog.restaurant_id,
+            Restaurant.name,
+            func.count(AICallLog.id).label("calls"),
+            func.coalesce(func.sum(AICallLog.cost_usd), 0).label("cost"),
+            func.count(AICallLog.order_id).label("orders"),
+        )
+        .join(Restaurant, Restaurant.id == AICallLog.restaurant_id)
+        .where(AICallLog.started_at >= since)
+        .group_by(AICallLog.restaurant_id, Restaurant.name)
+        .order_by(desc("cost"))
+        .limit(50)
+    )).all()
+
+    return {
+        "period_days": days,
+        "global": {
+            "total_calls": int(g.total or 0),
+            "total_cost_usd": round(float(g.cost or 0), 4),
+            "tokens_in": int(g.tin or 0),
+            "tokens_out": int(g.tout or 0),
+            "total_duration_seconds": float(g.dur or 0),
+            "orders_created": int(g.orders or 0),
+        },
+        "by_restaurant": [
+            {
+                "restaurant_id": r.restaurant_id,
+                "name": r.name,
+                "calls": int(r.calls or 0),
+                "cost_usd": round(float(r.cost or 0), 4),
+                "orders": int(r.orders or 0),
+            }
+            for r in rows
+        ],
+    }

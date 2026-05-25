@@ -22,6 +22,7 @@ import SettingsDelivery from './pages/settings/Delivery'
 import SettingsBots from './pages/settings/Bots'
 import SettingsCatering from './pages/settings/Catering'
 import SettingsAiAgent from './pages/settings/AiAgent'
+import SettingsAiLogs from './pages/settings/AiLogs'
 import SettingsProfile from './pages/settings/Profile'
 
 function PrivateRoute({ children }) {
@@ -56,6 +57,7 @@ export default function App() {
           <Route path="settings/bots" element={<SettingsBots />} />
           <Route path="settings/catering" element={<SettingsCatering />} />
           <Route path="settings/ai-agent" element={<SettingsAiAgent />} />
+          <Route path="settings/ai-logs" element={<SettingsAiLogs />} />
           <Route path="settings/profile" element={<SettingsProfile />} />
           <Route path="couriers" element={<Couriers />} />
           <Route path="admins" element={<Admins />} />

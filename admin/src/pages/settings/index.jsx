@@ -4,6 +4,7 @@ import {
   ShopOutlined, CreditCardOutlined, CarOutlined,
   RobotOutlined, GiftOutlined, UserOutlined,
   RightOutlined, LockOutlined, PhoneOutlined,
+  HistoryOutlined,
 } from '@ant-design/icons'
 import { useAuthStore } from '../../store/auth'
 import { useBranchStore } from '../../store/branch'
@@ -61,6 +62,15 @@ const settingsCards = [
     title: 'AI Operator',
     description: "Telefonga AI javob beradi, buyurtmani qabul qiladi",
     color: '#9333ea',
+    feature: 'ai_agent',
+  },
+  {
+    key: 'ai-logs',
+    path: '/settings/ai-logs',
+    icon: <HistoryOutlined style={{ fontSize: 28 }} />,
+    title: 'AI Suhbatlar tarixi',
+    description: "Suhbat transkripti, xarajat, buyurtmalar",
+    color: '#a855f7',
     feature: 'ai_agent',
   },
   {

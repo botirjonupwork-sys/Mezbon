@@ -243,12 +243,21 @@ class PlatformSettingsUpdate(BaseModel):
     default_delivery_per_km: Optional[float] = None
     default_work_from: Optional[str] = None
     default_work_until: Optional[str] = None
+    # AI Call Operator (mezbon platforma boshqaradi)
+    ai_llm_provider: Optional[str] = None
+    ai_llm_model: Optional[str] = None
+    ai_llm_api_key: Optional[str] = None
+    ai_tts_provider: Optional[str] = None
+    ai_tts_api_key: Optional[str] = None
+    ai_voice_gateway: Optional[str] = None
 
 
 @router.get("/platform-settings")
 async def get_platform_settings(actor: dict = Depends(require_superuser)):
     """Platform-level sozlamalar (brending + standart restoran qiymatlari)."""
     data = platform.get_all()
+    api_key = data.get("ai_llm_api_key", "") or ""
+    tts_key = data.get("ai_tts_api_key", "") or ""
     return {
         "platform_name": data.get("platform_name", "SaaS Buyurtma Platformasi"),
         "platform_url": data.get("platform_url", ""),
@@ -263,6 +272,16 @@ async def get_platform_settings(actor: dict = Depends(require_superuser)):
         # Maintenance ham shu yerda — eski sahifa o'qimasligi mumkin, lekin frontend yangilansa foydali
         "maintenance_mode": data.get("maintenance_mode", False),
         "maintenance_message": data.get("maintenance_message", ""),
+        # AI Call Operator config
+        "ai_llm_provider": data.get("ai_llm_provider", "openai"),
+        "ai_llm_model": data.get("ai_llm_model", "gpt-4o-mini"),
+        # API kalitlarni hech qachon plaintext qaytarmaymiz — faqat oxirgi 4 belgi
+        "ai_llm_api_key_masked": (f"…{api_key[-4:]}" if len(api_key) >= 4 else ""),
+        "ai_llm_api_key_set": bool(api_key.strip()),
+        "ai_tts_provider": data.get("ai_tts_provider", "openai"),
+        "ai_tts_api_key_masked": (f"…{tts_key[-4:]}" if len(tts_key) >= 4 else ""),
+        "ai_tts_api_key_set": bool(tts_key.strip()),
+        "ai_voice_gateway": data.get("ai_voice_gateway", "telegram"),
     }
 
 
@@ -278,13 +297,20 @@ async def update_platform_settings(
         return platform.get_all()
     before = platform.get_all()
     after = platform.set_many(updates)
+    # API kalitlarni audit logga plaintext yozmaymiz
+    log_updates = dict(updates)
+    for secret_key in ("ai_llm_api_key", "ai_tts_api_key"):
+        if secret_key in log_updates:
+            v = log_updates[secret_key] or ""
+            log_updates[secret_key] = (f"…{v[-4:]}" if len(v) >= 4 else "(set)") if v else "(cleared)"
     await _log_action(
         db, actor=actor.get("u", "super"), action="platform.update",
         target_type="platform", target_id=None,
-        details={"changed": updates},
+        details={"changed": log_updates},
         ip=_client_ip(request),
     )
-    return after
+    # Response'da ham plaintext kalitni qaytarmaymiz — GET endpoint formatida qaytaramiz
+    return await get_platform_settings(actor=actor)
 
 
 # ── Bot boshqaruvi (stub — manual systemd) ──────────────────────────────

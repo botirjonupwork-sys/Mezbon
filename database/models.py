@@ -160,9 +160,16 @@ class Restaurant(Base):
     ai_agent_enabled = Column(Boolean, default=False)
     ai_agent_prompt = Column(Text)              # Restoran uchun maxsus system-prompt prefiksi
     ai_agent_voice = Column(String, default="female")   # 'male' | 'female'
-    ai_agent_provider = Column(String, default="openai")  # 'openai' | 'vapi' | 'retell'
+    # provider/model/api_key — eski maydonlar (DEPRECATED); barchasi platform_settings'dan olinadi
+    ai_agent_provider = Column(String, default="openai")
     ai_agent_model = Column(String, default="gpt-4o-mini")
-    ai_agent_api_key = Column(String)           # Restoran o'z kalitini kiritsa shu, aks holda env
+    ai_agent_api_key = Column(String)
+    # Yangi restoran-spesifik sozlamalar (phase12)
+    ai_agent_greeting = Column(Text)            # Kirish tabrigi
+    ai_agent_work_hours_only = Column(Boolean, default=False)  # True bo'lsa faqat ish vaqtida
+    ai_agent_max_call_minutes = Column(Integer, default=10)    # Max suhbat davomiyligi
+    ai_agent_fallback_phone = Column(String)    # AI tushunmasa shu raqamga uzatadi
+    ai_agent_language = Column(String, default="uz")  # 'uz' | 'ru' | 'auto'
 
     # POS / Printer integratsiyasi (Hybrid Connect)
     # 'NONE' | 'NEONALISA' | 'GENERIC_ANDROID' | 'BLUETOOTH_PRINTER'
@@ -678,3 +685,32 @@ class Refund(Base):
     requested_by_admin_id = Column(Integer, ForeignKey("admins.id"), nullable=True)
     requested_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     completed_at = Column(DateTime)
+
+
+class AICallLog(Base):
+    """AI Operator suhbati uchun yozuv — har bir call yakunlanganda yoziladi.
+
+    Xarajat hisobi:
+      cost_usd = (tokens_in * llm_in_rate + tokens_out * llm_out_rate)
+               + stt_seconds * (0.006/60) + tts_chars * (15/1_000_000)
+
+    transcript JSON list: [{"role": "user|assistant|tool", "content": "...", "ts": 1234567}]
+    """
+    __tablename__ = "ai_call_logs"
+
+    id = Column(Integer, primary_key=True)
+    call_id = Column(String, nullable=False, index=True)
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False, index=True)
+    user_phone = Column(String)
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    ended_at = Column(DateTime)
+    duration_seconds = Column(Float, default=0)
+    message_count = Column(Integer, default=0)
+    tokens_in = Column(Integer, default=0)
+    tokens_out = Column(Integer, default=0)
+    stt_seconds = Column(Float, default=0)
+    tts_chars = Column(Integer, default=0)
+    cost_usd = Column(Float, default=0)
+    transcript = Column(Text)                       # JSON serialized
+    order_id = Column(Integer, ForeignKey("orders.id"), nullable=True)
+    ended_reason = Column(String)                   # confirmed | transferred | time_limit | outside_hours | user_hangup | error

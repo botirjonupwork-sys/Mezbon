@@ -48,6 +48,7 @@ export const getFinanceCsvUrl = (params) => {
 export const getPaymentAnalytics = (params) => api.get('/super-admin/analytics/payments', { params }).then(r => r.data)
 export const getWebhookMonitoring = (params) => api.get('/super-admin/monitoring/webhooks', { params }).then(r => r.data)
 export const getHealth = () => api.get('/health')
+export const getAiAggregateStats = (params) => api.get('/super-admin/ai-stats', { params })
 
 // Profile
 export const getSuperProfile = () => api.get('/super/profile')

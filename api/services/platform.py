@@ -15,6 +15,13 @@ _FILE = os.path.abspath(os.path.join(os.getcwd(), "platform_settings.json"))
 _DEFAULT = {
     "maintenance_mode": False,
     "maintenance_message": "Texnik tanaffus. Tez orada qaytamiz.",
+    # AI Call Operator — mezbon platforma boshqaradi (barcha restoranlar uchun yagona)
+    "ai_llm_provider": "openai",          # 'openai' | (kelajakda: 'anthropic', 'deepseek')
+    "ai_llm_model": "gpt-4o-mini",        # 'gpt-4o-mini' | 'gpt-4o'
+    "ai_llm_api_key": "",                 # master OpenAI kalit (sk-...)
+    "ai_tts_provider": "openai",          # 'openai' | (kelajakda: 'elevenlabs')
+    "ai_tts_api_key": "",                 # bo'sh bo'lsa ai_llm_api_key ishlatiladi
+    "ai_voice_gateway": "telegram",       # 'telegram' | 'vapi' | 'twilio'
 }
 
 _cache: dict[str, Any] | None = None

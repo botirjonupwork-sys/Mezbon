@@ -24,6 +24,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.services import platform
 from database.models import Product, Restaurant
 
 
@@ -52,7 +53,22 @@ class AIConversation:
     cart: list[CartItem] = field(default_factory=list)
     address: Optional[str] = None
     confirmed: bool = False
+    started_at: float = field(default_factory=time.time)
     last_active: float = field(default_factory=time.time)
+    # Xarajat hisobi
+    tokens_in: int = 0
+    tokens_out: int = 0
+    stt_seconds: float = 0.0
+    tts_chars: int = 0
+    user_turn_count: int = 0
+    # Tartibli transcript (DB'ga yozish uchun)
+    transcript_log: list[dict] = field(default_factory=list)
+
+    def elapsed_minutes(self) -> float:
+        return (time.time() - self.started_at) / 60.0
+
+    def add_transcript(self, role: str, content: str) -> None:
+        self.transcript_log.append({"role": role, "content": content, "ts": int(time.time())})
 
     def cart_total(self) -> float:
         return sum(i.price * i.quantity for i in self.cart)
@@ -90,6 +106,78 @@ def end_session(call_id: str) -> None:
     _SESSIONS.pop(call_id, None)
 
 
+# ── Xarajat hisobi va DB log yozish ──────────────────────────────────────
+
+# LLM tarif (per 1M tokens). Manba: OpenAI pricing 2026-05.
+_LLM_RATES = {
+    "gpt-4o-mini": (0.15, 0.60),     # input, output ($/1M)
+    "gpt-4o":      (2.50, 10.00),
+}
+
+
+def _llm_cost(model: str, tokens_in: int, tokens_out: int) -> float:
+    rate_in, rate_out = _LLM_RATES.get(model, _LLM_RATES["gpt-4o-mini"])
+    return (tokens_in * rate_in + tokens_out * rate_out) / 1_000_000.0
+
+
+def estimate_session_cost(sess: AIConversation) -> float:
+    """Sessiya jami xarajati ($).
+
+    LLM + Whisper STT (per second) + OpenAI TTS (per char).
+    Tariflar moslashtirilishi mumkin (2026-05 dagi rate'lar).
+    """
+    model = _platform_model()
+    cost = _llm_cost(model, sess.tokens_in, sess.tokens_out)
+    cost += (sess.stt_seconds / 60.0) * 0.006     # Whisper
+    cost += (sess.tts_chars / 1_000_000.0) * 15.0  # TTS-1
+    return round(cost, 6)
+
+
+async def finalize_session(
+    db,
+    call_id: str,
+    ended_reason: str,
+    order_id: Optional[int] = None,
+) -> None:
+    """Sessiyani yopib, DB'ga `AICallLog` yozib qo'yadi.
+
+    `end_session` o'rniga shu funksiyani chaqiring, agar call yakunlangan bo'lsa.
+    Xato bo'lsa logda yozadi — har holda asosiy oqimni to'xtatmaydi.
+    """
+    sess = _SESSIONS.pop(call_id, None)
+    if sess is None:
+        return
+    try:
+        from database.models import AICallLog
+        from datetime import datetime
+        log = AICallLog(
+            call_id=sess.call_id,
+            restaurant_id=sess.restaurant_id,
+            user_phone=sess.user_phone,
+            started_at=datetime.utcfromtimestamp(sess.started_at),
+            ended_at=datetime.utcnow(),
+            duration_seconds=time.time() - sess.started_at,
+            message_count=sess.user_turn_count,
+            tokens_in=sess.tokens_in,
+            tokens_out=sess.tokens_out,
+            stt_seconds=sess.stt_seconds,
+            tts_chars=sess.tts_chars,
+            cost_usd=estimate_session_cost(sess),
+            transcript=json.dumps(sess.transcript_log, ensure_ascii=False),
+            order_id=order_id,
+            ended_reason=ended_reason,
+        )
+        db.add(log)
+        await db.commit()
+    except Exception as e:
+        from api.logging_config import log_critical
+        log_critical("ai_agent", "AICallLog save failed", error=str(e), call_id=call_id)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+
+
 # ── Menyu yuklash ────────────────────────────────────────────────────────
 
 async def load_menu(db: AsyncSession, restaurant_id: int) -> list[Product]:
@@ -117,32 +205,67 @@ def menu_to_text(products: list[Product]) -> str:
 
 # ── System prompt va tool schemas ────────────────────────────────────────
 
-DEFAULT_SYSTEM = (
-    "Sen O'zbekistondagi 'Muhsina Dollar Somsa' restoranining ovozli AI operatorisan. "
-    "Mijoz bilan o'zbek tilida (jonli, qisqa va xushmuomala) gaplashasan. "
-    "Vazifang: telefon orqali kelgan mijozdan buyurtma qabul qilish.\n\n"
-    "Qoidalar:\n"
-    "1) Faqat menyuda mavjud mahsulotlarni taklif qiling. ID va narxlarni menyudan oling.\n"
-    "2) Mahsulot va miqdorni mijoz aytganda 'add_to_cart' funksiyasini chaqiring.\n"
-    "3) Mijoz fikrini o'zgartirsa 'remove_from_cart' yoki 'clear_cart' chaqiring.\n"
-    "4) Manzilni so'rang va 'set_address' chaqiring (yetkazib berish bo'lsa).\n"
-    "5) Buyurtmani tasdiqlashdan oldin 'view_cart' bilan tekshirib, mijozga ovoz "
-    "chiqarib aytib bering: nimalar, miqdor, jami summa.\n"
-    "6) Faqat mijoz aniq 'ha, tasdiqlayman' degandagina 'confirm_order' chaqiring.\n"
-    "7) Agar mijoz 100 dan ortiq somsa yoki ko'p miqdorda kichik mahsulot so'rasa — "
-    "bu CATERING (tadbir uchun) buyurtmasi. Mijozga ayting: 'tadbir uchun katta "
-    "buyurtmalar alohida menejer orqali qabul qilinadi, sizga qo'ng'iroq qilamiz' "
-    "va 'transfer_to_catering' chaqiring.\n"
-    "8) Hech qachon o'zingizdan narx, mahsulot yoki ID o'ylab topmang.\n"
-    "9) Javoblar qisqa — ovoz uchun mo'ljallangan, 1-2 jumla."
-)
+_LANGUAGE_INSTRUCTIONS = {
+    "uz": "Mijoz bilan o'zbek tilida (jonli, qisqa va xushmuomala) gaplashasan.",
+    "ru": "Общайся с клиентом на русском языке (живо, кратко и вежливо).",
+    "auto": (
+        "Mijoz qaysi tilda gaplashsa shu tilda javob ber (o'zbek yoki rus). "
+        "Standart — o'zbek tili."
+    ),
+}
+
+
+def _language_instruction(restaurant: Restaurant) -> str:
+    lang = (getattr(restaurant, "ai_agent_language", None) or "uz").lower()
+    return _LANGUAGE_INSTRUCTIONS.get(lang, _LANGUAGE_INSTRUCTIONS["uz"])
 
 
 def build_system_prompt(restaurant: Restaurant, menu_text: str) -> str:
+    """Restoranga moslangan system prompt.
+
+    Muhim: AI faqat shu restoranning menyusidan mahsulot taklif qiladi va
+    narxlarni faqat shu yerdagi ro'yxatdan oladi. Hech qanday tashqi mahsulot
+    yoki narx kiritilmaydi.
+    """
+    base = (
+        f"Sen '{restaurant.name}' restoranining AI operatorisan. "
+        f"{_language_instruction(restaurant)} "
+        "Vazifang: mijozdan buyurtma qabul qilish.\n\n"
+        "Qat'iy qoidalar:\n"
+        "1) Faqat quyidagi menyuda mavjud mahsulotlarni taklif qil. "
+        "Menyuda yo'q narsani hech qachon o'ylab topma yoki taklif qilma.\n"
+        "2) ID va narxlarni faqat menyudan ol — boshqa joydan emas.\n"
+        "3) Mijoz menyuda yo'q mahsulot so'rasa: 'Kechirasiz, bizda yo'q' deb ayt.\n"
+        "4) Mahsulot va miqdorni mijoz aytganda 'add_to_cart' funksiyasini chaqir.\n"
+        "5) Mijoz fikrini o'zgartirsa 'remove_from_cart' yoki 'clear_cart' chaqir.\n"
+        "6) Manzilni so'ra va 'set_address' chaqir (yetkazib berish bo'lsa).\n"
+        "7) Buyurtmani tasdiqlashdan oldin 'view_cart' bilan tekshir va mijozga "
+        "ovoz chiqarib aytib ber: nimalar, miqdor, jami summa.\n"
+        "8) Faqat mijoz aniq 'ha, tasdiqlayman' degandagina 'confirm_order' chaqir.\n"
+        "9) Agar mijoz juda ko'p miqdor so'rasa (tadbir uchun) — "
+        "'transfer_to_catering' chaqir va mijozga 'sizga qo'ng'iroq qilamiz' deb ayt.\n"
+        "10) Javoblar qisqa — ovoz uchun mo'ljallangan, 1-2 jumla."
+    )
+
+    parts = [base]
+
     custom = (restaurant.ai_agent_prompt or "").strip()
-    parts = [DEFAULT_SYSTEM]
     if custom:
         parts.append(f"\nRestoran ko'rsatmasi:\n{custom}")
+
+    greeting = (getattr(restaurant, "ai_agent_greeting", None) or "").strip()
+    if greeting:
+        parts.append(
+            f"\nKIRISH TABRIGI (suhbat boshida shu gapni ayt):\n\"{greeting}\""
+        )
+
+    fallback_phone = (getattr(restaurant, "ai_agent_fallback_phone", None) or "").strip()
+    if fallback_phone:
+        parts.append(
+            f"\nAgar mijozning so'rovini tushunmasang yoki murakkab vaziyat bo'lsa, "
+            f"unga ayting: 'Operator bilan bog'lanish uchun {fallback_phone} raqamiga qo'ng'iroq qiling.'"
+        )
+
     parts.append(
         f"\nRESTORAN: {restaurant.name}\n"
         f"ISH VAQTI: {restaurant.work_hours_from}–{restaurant.work_hours_until}\n"
@@ -319,10 +442,75 @@ async def _openai_chat(
         return r.json()
 
 
+def _platform_api_key() -> str:
+    """LLM API kaliti — mezbon platforma sozlamalaridan (super-admin tomonidan kiritiladi).
+
+    Fallback tartibi: platform_settings.ai_llm_api_key → ENV OPENAI_API_KEY.
+    """
+    return (platform.get("ai_llm_api_key") or os.getenv("OPENAI_API_KEY") or "").strip()
+
+
+def _platform_model() -> str:
+    return (platform.get("ai_llm_model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+
+
 def _is_mock_mode(restaurant: Restaurant) -> bool:
-    """API key topilmasa mock mode (test).  AI hech narsa qaytarmaydi, statik javob."""
-    api_key = restaurant.ai_agent_api_key or os.getenv("OPENAI_API_KEY", "")
-    return not api_key.strip()
+    """API key topilmasa mock mode (test).  AI hech narsa qaytarmaydi, statik javob.
+
+    Eslatma: API kalit mezbon platforma sozlamalaridan olinadi, restoran emas.
+    """
+    return not _platform_api_key()
+
+
+def _is_within_work_hours(restaurant: Restaurant) -> bool:
+    """Restoran ish vaqti ichidami? (Asia/Tashkent vaqti bo'yicha)
+
+    work_hours_from va work_hours_until "HH:MM" formatida saqlanadi.
+    Kechki o'tish (masalan 22:00–02:00) ham qo'llab-quvvatlanadi.
+    """
+    try:
+        from datetime import datetime
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.now(ZoneInfo("Asia/Tashkent"))
+        except Exception:
+            now = datetime.now()
+        wf = (restaurant.work_hours_from or "00:00").strip()
+        wu = (restaurant.work_hours_until or "23:59").strip()
+        fh, fm = [int(x) for x in wf.split(":")[:2]]
+        uh, um = [int(x) for x in wu.split(":")[:2]]
+        cur_minutes = now.hour * 60 + now.minute
+        from_minutes = fh * 60 + fm
+        until_minutes = uh * 60 + um
+        if until_minutes >= from_minutes:
+            return from_minutes <= cur_minutes <= until_minutes
+        # Kechki o'tish (22:00 → 02:00)
+        return cur_minutes >= from_minutes or cur_minutes <= until_minutes
+    except Exception:
+        # Xatolik bo'lsa — yopib qo'ymaymiz, ochiq deb hisoblaymiz
+        return True
+
+
+def _build_offline_reply(restaurant: Restaurant) -> str:
+    """AI o'chirilgan vaqtda (ish vaqtidan tashqari) mijozga aytiladigan xabar."""
+    wf = restaurant.work_hours_from or "09:00"
+    wu = restaurant.work_hours_until or "22:00"
+    fallback = (getattr(restaurant, "ai_agent_fallback_phone", None) or "").strip()
+    parts = [
+        f"Kechirasiz, hozir restoran yopiq. Ish vaqti: {wf}–{wu}.",
+        "Iltimos, ish vaqtida qayta qo'ng'iroq qiling.",
+    ]
+    if fallback:
+        parts.append(f"Shoshilinch hollarda: {fallback}")
+    return " ".join(parts)
+
+
+def _build_time_limit_reply(restaurant: Restaurant) -> str:
+    fallback = (getattr(restaurant, "ai_agent_fallback_phone", None) or "").strip()
+    base = "Kechirasiz, suhbat vaqti yakunlandi. Buyurtmangizni yana boshlash uchun qayta qo'ng'iroq qiling."
+    if fallback:
+        return f"{base} Yoki operator bilan bog'laning: {fallback}"
+    return base
 
 
 async def process_message(
@@ -344,6 +532,30 @@ async def process_message(
         "is_catering": bool,
       }
     """
+    # ── Ish vaqti tekshiruvi ─────────────────────────────────────────────
+    if getattr(restaurant, "ai_agent_work_hours_only", False):
+        if not _is_within_work_hours(restaurant):
+            reply = _build_offline_reply(restaurant)
+            sess.messages.append({"role": "assistant", "content": reply})
+            return {
+                "reply": reply, "tool_calls": [], "confirmed": False,
+                "transferred": False, "cart": _cart_to_dicts(sess.cart),
+                "address": sess.address, "is_catering": False,
+                "ended_reason": "outside_work_hours",
+            }
+
+    # ── Max suhbat davomiyligi (xarajat nazorati) ────────────────────────
+    max_min = int(getattr(restaurant, "ai_agent_max_call_minutes", None) or 10)
+    if sess.elapsed_minutes() >= max_min:
+        reply = _build_time_limit_reply(restaurant)
+        sess.messages.append({"role": "assistant", "content": reply})
+        return {
+            "reply": reply, "tool_calls": [], "confirmed": False,
+            "transferred": False, "cart": _cart_to_dicts(sess.cart),
+            "address": sess.address, "is_catering": False,
+            "ended_reason": "time_limit",
+        }
+
     products = await load_menu(db, restaurant.id)
     products_by_id = {p.id: p for p in products}
     menu_text = menu_to_text(products)
@@ -355,22 +567,25 @@ async def process_message(
         sess.messages[0] = {"role": "system", "content": build_system_prompt(restaurant, menu_text)}
 
     sess.messages.append({"role": "user", "content": user_text})
+    sess.user_turn_count += 1
+    sess.add_transcript("user", user_text)
 
     # ── Mock rejim — API key yo'q bo'lsa minimal javob qaytaramiz ────────
     if _is_mock_mode(restaurant):
         reply = (
-            "AI agent test rejimida. Iltimos, OpenAI kalitini Sozlamalar > "
-            "AI Operator bo'limida kiriting."
+            "AI agent test rejimida. Mezbon platforma administratori AI kalitni "
+            "sozlamasi kerak."
         )
         sess.messages.append({"role": "assistant", "content": reply})
+        sess.add_transcript("assistant", reply)
         return {
             "reply": reply, "tool_calls": [], "confirmed": False,
             "transferred": False, "cart": [], "address": sess.address,
             "is_catering": False, "mock": True,
         }
 
-    api_key = restaurant.ai_agent_api_key or os.getenv("OPENAI_API_KEY", "")
-    model = restaurant.ai_agent_model or DEFAULT_MODEL
+    api_key = _platform_api_key()
+    model = _platform_model()
 
     transferred = False
     executed_tools: list[dict] = []
@@ -407,6 +622,11 @@ async def process_message(
                 "address": sess.address, "is_catering": False, "error": err,
             }
 
+        # Token usage tracking
+        usage = data.get("usage") or {}
+        sess.tokens_in += int(usage.get("prompt_tokens") or 0)
+        sess.tokens_out += int(usage.get("completion_tokens") or 0)
+
         choice = (data.get("choices") or [{}])[0]
         msg = choice.get("message", {})
         tool_calls = msg.get("tool_calls") or []
@@ -419,8 +639,11 @@ async def process_message(
         })
 
         if not tool_calls:
+            reply = (msg.get("content") or "").strip()
+            if reply:
+                sess.add_transcript("assistant", reply)
             return {
-                "reply": (msg.get("content") or "").strip(),
+                "reply": reply,
                 "tool_calls": executed_tools,
                 "confirmed": sess.confirmed,
                 "transferred": transferred,
@@ -452,12 +675,18 @@ async def process_message(
             # Yakuniy assistant javobini olish uchun yana bir marta chaqiramiz
             try:
                 data = await _openai_chat(api_key, model, sess.messages, TOOLS)
+                usage = data.get("usage") or {}
+                sess.tokens_in += int(usage.get("prompt_tokens") or 0)
+                sess.tokens_out += int(usage.get("completion_tokens") or 0)
                 final = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
                 sess.messages.append({"role": "assistant", "content": final})
             except Exception:
                 final = "Buyurtma tasdiqlandi." if sess.confirmed else "Sizga qo'ng'iroq qilamiz."
+            final = final.strip()
+            if final:
+                sess.add_transcript("assistant", final)
             return {
-                "reply": final.strip(),
+                "reply": final,
                 "tool_calls": executed_tools,
                 "confirmed": sess.confirmed,
                 "transferred": transferred,

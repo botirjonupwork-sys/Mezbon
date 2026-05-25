@@ -119,6 +119,12 @@ export const getPOSConfig = (params) => api.get('/admin/pos/config', { params })
 export const updatePOSConfig = (data, params) => api.put('/admin/pos/config', data, { params })
 export const testPOSPrint = (params) => api.post('/admin/pos/test-print', null, { params })
 
+// ── AI Operator ───────────────────────────────────────
+export const getAiLogs = (params) => api.get('/ai/logs', { params })
+export const getAiLogDetail = (id, params) => api.get(`/ai/logs/${id}`, { params })
+export const getAiStats = (params) => api.get('/ai/stats', { params })
+export const aiProcessCall = (data, params) => api.post('/ai/process-call', data, { params })
+
 // ── Super Admin ───────────────────────────────────────
 export const getSuperStats = (params) => api.get('/super-admin/stats', { params })
 // Admin panelda super-admin restoran tanlashi uchun ham ishlatiladi

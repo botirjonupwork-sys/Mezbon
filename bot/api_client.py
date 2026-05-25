@@ -335,3 +335,61 @@ async def cancel_unpaid_order(order_id: int) -> dict:
         )
         r.raise_for_status()
         return r.json()
+
+
+# ── AI Voice Agent ───────────────────────────────────────────────────────
+
+def _ai_headers() -> dict:
+    """AI endpoint'lari uchun JWT (bot_login'dan kelgan)."""
+    h = dict(_BOT_HEADERS)
+    if _auth_token:
+        h["Authorization"] = f"Bearer {_auth_token}"
+    return h
+
+
+async def ai_voice_turn(
+    call_id: str, user_phone: str, audio_bytes: bytes,
+    user_name: str = "", filename: str = "voice.ogg",
+) -> dict:
+    """Voice xabarni AI agentga yuborish va audio javob olish.
+
+    Qaytaradi: VoiceTurnResponse JSON yoki {"error": "..."} (status != 200)
+    """
+    files = {"audio": (filename, audio_bytes, "audio/ogg")}
+    data = {"call_id": call_id, "user_phone": user_phone}
+    if user_name:
+        data["user_name"] = user_name
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.post(
+            f"{BASE_URL}/ai/voice-turn",
+            params={"restaurant_id": _restaurant_id},
+            data=data, files=files,
+            headers=_ai_headers(),
+        )
+        if r.status_code == 200:
+            return r.json()
+        try:
+            return {"error": r.json().get("detail") or r.text, "status": r.status_code}
+        except Exception:
+            return {"error": r.text, "status": r.status_code}
+
+
+async def ai_text_turn(
+    call_id: str, user_phone: str, message: str, user_name: str = "",
+) -> dict:
+    """AI'ga matnli xabar yuborish (test rejimi yoki Telegram text fallback)."""
+    payload = {"call_id": call_id, "user_phone": user_phone, "message": message}
+    if user_name:
+        payload["user_name"] = user_name
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.post(
+            f"{BASE_URL}/ai/process-call",
+            params={"restaurant_id": _restaurant_id},
+            json=payload, headers=_ai_headers(),
+        )
+        if r.status_code == 200:
+            return r.json()
+        try:
+            return {"error": r.json().get("detail") or r.text, "status": r.status_code}
+        except Exception:
+            return {"error": r.text, "status": r.status_code}
