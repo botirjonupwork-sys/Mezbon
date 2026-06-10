@@ -93,18 +93,12 @@ def _const_time_eq(a: str, b: str) -> bool:
 def get_bot_secret_candidates() -> list[str]:
     """Bot-server autentifikatsiya uchun ruxsat etilgan secret'lar ro'yxati.
 
-    Production'da BOT_API_SECRET o'rnatilishi tavsiya etiladi (SECRET_KEY'dan ajratish).
-    Backward-compat uchun SECRET_KEY ham qabul qilinadi.
+    Faqat BOT_API_SECRET ishlatiladi — SECRET_KEY fallback OLIB TASHLANDI (audit C1),
+    chunki SECRET_KEY JWT imzolaydi: uni bot transportiga qo'ymaslik kerak.
     """
-    import os
     from api.config import settings
-    out = []
-    bot_api = (os.getenv("BOT_API_SECRET") or "").strip()
-    if bot_api:
-        out.append(bot_api)
-    if settings.SECRET_KEY:
-        out.append(settings.SECRET_KEY)
-    return [s for s in out if s]
+    bot_api = (settings.BOT_API_SECRET or "").strip()
+    return [bot_api] if bot_api else []
 
 
 def is_valid_bot_secret(token: str) -> bool:

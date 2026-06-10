@@ -77,9 +77,14 @@ async def uzum_webhook(
     if not rest or not rest.uzum_enabled:
         return {"status": "ERROR", "errorCode": 6, "errorMessage": "Uzum not configured"}
 
-    # Basic auth tekshiruvi
-    if rest.uzum_webhook_user and rest.uzum_webhook_pass:
-        if not _check_uzum_basic_auth(authorization, rest.uzum_webhook_user, rest.uzum_webhook_pass):
-            return {"status": "ERROR", "errorCode": 7, "errorMessage": "Auth failed"}
+    # Basic auth tekshiruvi — MAJBURIY.
+    # Agar restoran Uzum'ni yoqgan bo'lsa, lekin webhook login/parol o'rnatmagan
+    # bo'lsa, webhook'ni autentifikatsiyasiz qabul qilish mumkin emas (aks holda
+    # istalgan kishi buyurtmani "paid" qila oladi).
+    if not rest.uzum_webhook_user or not rest.uzum_webhook_pass:
+        log.error("Uzum webhook reddi: restaurant_id=%s webhook credentials o'rnatilmagan", rest.id)
+        return {"status": "ERROR", "errorCode": 7, "errorMessage": "Auth not configured"}
+    if not _check_uzum_basic_auth(authorization, rest.uzum_webhook_user, rest.uzum_webhook_pass):
+        return {"status": "ERROR", "errorCode": 7, "errorMessage": "Auth failed"}
 
     return await handle_uzum_order_webhook(action, payload, db)

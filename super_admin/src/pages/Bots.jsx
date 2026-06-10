@@ -7,7 +7,7 @@ import {
   ReloadOutlined, RobotOutlined, CheckCircleOutlined, CloseCircleOutlined,
   WarningOutlined, ThunderboltOutlined,
 } from '@ant-design/icons'
-import { getBotsStatus, restartBots } from '../api'
+import { getBotsStatus, restartBots, restartBot } from '../api'
 
 const { Title, Text } = Typography
 
@@ -15,6 +15,7 @@ export default function Bots() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [restarting, setRestarting] = useState(false)
+  const [restartingId, setRestartingId] = useState(null)
   const intervalRef = useRef(null)
 
   const fetchStatus = async () => {
@@ -39,8 +40,8 @@ export default function Bots() {
     try {
       const r = await restartBots()
       if (r.data?.ok) {
-        message.success('Bots service qayta ishga tushirildi (yangi tokenlar yuklanmoqda)')
-        setTimeout(fetchStatus, 5000)
+        message.success(r.data?.message || 'Barcha botlar restart signali yuborildi (~10s)')
+        setTimeout(fetchStatus, 12000)
       } else {
         message.error(r.data?.error || 'Restart xato')
       }
@@ -48,6 +49,19 @@ export default function Bots() {
       message.error(e?.response?.data?.detail || 'Xato')
     } finally {
       setRestarting(false)
+    }
+  }
+
+  const onRestartOne = async (restaurantId) => {
+    setRestartingId(restaurantId)
+    try {
+      const r = await restartBot(restaurantId)
+      message.success(r.data?.message || 'Bot restart signali yuborildi (~10s)')
+      setTimeout(fetchStatus, 12000)
+    } catch (e) {
+      message.error(e?.response?.data?.detail || 'Xato')
+    } finally {
+      setRestartingId(null)
     }
   }
 
@@ -100,6 +114,28 @@ export default function Bots() {
       title: 'Courier Bot', dataIndex: 'courier_bot', width: 160,
       render: renderBotCell,
     },
+    {
+      title: 'Amal', width: 120,
+      render: (_, r) => {
+        const hasBot = r.customer_bot?.configured || r.courier_bot?.configured
+        return (
+          <Popconfirm
+            title="Shu restoran botini restart qilasizmi?"
+            description="~10 soniya ichida qayta ishga tushadi."
+            onConfirm={() => onRestartOne(r.restaurant_id)}
+            disabled={!hasBot}
+          >
+            <Button
+              size="small" icon={<ThunderboltOutlined />}
+              loading={restartingId === r.restaurant_id}
+              disabled={!hasBot}
+            >
+              Restart
+            </Button>
+          </Popconfirm>
+        )
+      },
+    },
   ]
 
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '80px auto' }} />
@@ -115,20 +151,20 @@ export default function Bots() {
         <Space>
           <Button icon={<ReloadOutlined />} onClick={fetchStatus}>Yangilash</Button>
           <Popconfirm
-            title="Botlarni qayta ishga tushirish?"
-            description="Yangi qo'shilgan tokenlarni o'qish uchun. ~10 soniya."
+            title="BARCHA botlarni qayta ishga tushirish?"
+            description="Har bir restoran boti restart qilinadi. ~10 soniya."
             onConfirm={onRestart}
           >
             <Button type="primary" icon={<ThunderboltOutlined />} loading={restarting}>
-              Bots service restart
+              Hammasini restart
             </Button>
           </Popconfirm>
         </Space>
       </Space>
 
       <Alert type="info" showIcon style={{ marginBottom: 16 }}
-        message="Bot tokenlari Restaurant.bot_token va courier_bot_token maydonlarida"
-        description="Token kiritish: Restoranlar → tahrir yoki restoran admin Sozlamalar bo'limidan. Yangi token qo'shilganda 'Bots service restart' tugmasini bosing." />
+        message="Bot menejeri har bir restoran botini alohida boshqaradi"
+        description="Restart tugmasi DB signal yuboradi — bot menejeri (bot/manager.py) ~10s ichida botni qayta ishga tushiradi. Har bir restoran uchun alohida 'Restart', yoki yuqorida 'Hammasini restart'. Token o'zgartirilganda restart bosing." />
 
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={12} md={6}>

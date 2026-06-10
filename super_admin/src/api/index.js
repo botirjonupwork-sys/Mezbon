@@ -73,6 +73,7 @@ export const getBotsStatus = () => api.get('/super/bots/status')
 export const startBots = () => api.post('/super/bots/start')
 export const stopBots = () => api.post('/super/bots/stop')
 export const restartBots = () => api.post('/super/bots/restart')
+export const restartBot = (restaurantId) => api.post(`/super/bots/${restaurantId}/restart`)
 
 // Filiallar (Branches)
 export const getBranches = (restaurantId) => api.get(`/super/restaurants/${restaurantId}/branches`)

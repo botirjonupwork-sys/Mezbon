@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import Order, OrderStatus, Restaurant, User
-from api.services.order_payments import parse_order_id
+from api.services.order_payments import parse_order_id, order_amount_uzs, order_amount_tiyin
 
 
 log = logging.getLogger(__name__)
@@ -144,7 +144,7 @@ async def handle_click_order_webhook(
     except (KeyError, ValueError):
         return {"error": -8, "error_note": "Invalid request"}
 
-    expected_uzs = float(order.total_price or 0)
+    expected_uzs = order_amount_uzs(order)
     if abs(amount_uzs - expected_uzs) > 0.5:
         await _mark_order_failed(db, order, f"Sum mos kelmadi: kelgan {amount_uzs}, kutilgan {expected_uzs}")
         await _notify_customer(db, order, success=False, error_reason="To'lov summasi mos kelmadi")
@@ -262,7 +262,7 @@ async def handle_payme_order_method(
         return _payme_error(-31050, "Order not found", request_id)
 
     if method == "CheckPerformTransaction":
-        expected_tiyin = int(round((order.total_price or 0) * 100))
+        expected_tiyin = order_amount_tiyin(order)
         if params.get("amount") != expected_tiyin:
             return _payme_error(-31001, "Wrong amount", request_id)
         if order.payment_status == "paid":
@@ -298,7 +298,7 @@ async def handle_payme_order_method(
                 "state": PAYME_STATE_PERFORMED,
             }, request_id)
 
-        amount_tiyin = int(round((order.total_price or 0) * 100))
+        amount_tiyin = order_amount_tiyin(order)
         await _mark_order_paid(db, order, "payme", payme_tx, amount_tiyin)
         await _notify_customer(db, order, success=True)
         return _payme_ok({
@@ -374,7 +374,7 @@ async def handle_uzum_order_webhook(
     amount_tiyin = int(payload.get("amount") or 0)
 
     if action == "check":
-        expected = int(round((order.total_price or 0) * 100))
+        expected = order_amount_tiyin(order)
         if amount_tiyin != expected:
             return {"status": "ERROR", "errorCode": 3, "errorMessage": "Amount mismatch"}
         if order.payment_status == "paid":
@@ -397,6 +397,14 @@ async def handle_uzum_order_webhook(
     if action == "confirm":
         if order.payment_status == "paid":
             return {"status": "OK", "errorCode": 0}  # idempotent
+        # transactionId `create` bosqichida saqlangani bilan mos kelishi shart —
+        # aks holda soxta confirm bilan buyurtma "paid" qilinishi mumkin.
+        if not uzum_tx_id or not order.provider_tx_id or uzum_tx_id != order.provider_tx_id:
+            return {"status": "ERROR", "errorCode": 5, "errorMessage": "Transaction mismatch"}
+        # Summa buyurtma summasiga teng bo'lishi shart (faqat `check` emas).
+        expected = order_amount_tiyin(order)
+        if amount_tiyin != expected:
+            return {"status": "ERROR", "errorCode": 3, "errorMessage": "Amount mismatch"}
         await _mark_order_paid(db, order, "uzum", uzum_tx_id, amount_tiyin)
         await _notify_customer(db, order, success=True)
         return {"status": "OK", "errorCode": 0}

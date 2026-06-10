@@ -1,7 +1,7 @@
 """Admin uchun maxsus endpointlar — mahsulot CRUD, kategoriya, statistika"""
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_, or_
 from datetime import datetime, date
 from typing import Optional
 from pydantic import BaseModel
@@ -106,6 +106,12 @@ class SettingsUpdate(BaseModel):
     delivery_provider: Optional[str] = None
     yandex_api_token: Optional[str] = None
     yandex_test_mode: Optional[bool] = None
+    yandex_balance_monitor_enabled: Optional[bool] = None
+    yandex_balance_amount: Optional[float] = None
+    yandex_balance_currency: Optional[str] = None
+    yandex_balance_low_threshold: Optional[float] = None
+    yandex_balance_critical_threshold: Optional[float] = None
+    yandex_balance_block_on_critical: Optional[bool] = None
     # Catering / valyuta
     currency_auto: Optional[bool] = None
     currency_rate_manual: Optional[float] = None
@@ -273,6 +279,7 @@ async def get_stats(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     branch_id: Optional[int] = None,
+    operational_date: bool = False,
     restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db)
 ):
@@ -308,11 +315,26 @@ async def get_stats(
                     "active_orders": 0, "average_rating": 0, "total_reviews": 0}
         rest_filter = (Order.branch_id == branch_id)
 
-    order_filters = [
-        func.date(Order.created_at) >= d_from,
-        func.date(Order.created_at) <= d_to,
-        rest_filter,
-    ]
+    if operational_date:
+        order_date_filter = or_(
+            and_(
+                Order.order_kind != "catering",
+                func.date(Order.created_at) >= d_from,
+                func.date(Order.created_at) <= d_to,
+            ),
+            and_(
+                Order.order_kind == "catering",
+                Order.schedule_date >= d_from.isoformat(),
+                Order.schedule_date <= d_to.isoformat(),
+            ),
+        )
+    else:
+        order_date_filter = and_(
+            func.date(Order.created_at) >= d_from,
+            func.date(Order.created_at) <= d_to,
+        )
+
+    order_filters = [order_date_filter, rest_filter]
 
     orders_q = await db.execute(
         select(func.count(Order.id)).where(*order_filters)
@@ -371,6 +393,7 @@ async def get_all_orders(
     branch_id: Optional[int] = None,
     restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     order_kind: Optional[str] = None,  # 'regular' | 'catering'
+    operational_date: bool = False,
     limit: int = 100,
     offset: int = 0,
     db: AsyncSession = Depends(get_db)
@@ -416,14 +439,26 @@ async def get_all_orders(
     if date_from:
         try:
             d_from = datetime.strptime(date_from, "%Y-%m-%d").date()
-            query = query.where(func.date(Order.created_at) >= d_from)
+            if operational_date:
+                query = query.where(or_(
+                    and_(Order.order_kind != "catering", func.date(Order.created_at) >= d_from),
+                    and_(Order.order_kind == "catering", Order.schedule_date >= d_from.isoformat()),
+                ))
+            else:
+                query = query.where(func.date(Order.created_at) >= d_from)
         except ValueError:
             pass
 
     if date_to:
         try:
             d_to = datetime.strptime(date_to, "%Y-%m-%d").date()
-            query = query.where(func.date(Order.created_at) <= d_to)
+            if operational_date:
+                query = query.where(or_(
+                    and_(Order.order_kind != "catering", func.date(Order.created_at) <= d_to),
+                    and_(Order.order_kind == "catering", Order.schedule_date <= d_to.isoformat()),
+                ))
+            else:
+                query = query.where(func.date(Order.created_at) <= d_to)
         except ValueError:
             pass
 
@@ -471,6 +506,7 @@ async def get_all_orders(
             "schedule_date": order.schedule_date,
             "schedule_time": order.schedule_time,
             "delivery_subtype": order.delivery_subtype,
+            "service_type": order.service_type,
             "payment_method": order.payment_method,
             "payment_timing": order.payment_timing,
             "payment_status": order.payment_status,
@@ -826,6 +862,36 @@ from database.models import Restaurant
 import hashlib as _hashlib
 
 
+# ── Maxfiy sozlama maydonlari (token / secret key / merchant id) ──────
+# Bu maydonlar GET'da maskalanadi (faqat oxirgi 4 belgi ko'rinadi).
+# PUT'da maskalangan yoki bo'sh qiymat kelsa — eski qiymat saqlanadi.
+SECRET_MASK_CHAR = "•"
+
+SENSITIVE_SETTING_FIELDS = {
+    "click_merchant_id", "click_service_id", "click_secret_key",
+    "payme_merchant_id", "payme_secret_key",
+    "uzum_service_id", "uzum_webhook_user", "uzum_webhook_pass",
+    "telegram_provider_token_click", "telegram_provider_token_payme",
+    "bot_token", "courier_bot_token",
+    "yandex_api_token",
+}
+
+
+def _mask_secret(value: Optional[str]) -> str:
+    """Maxfiy qiymatni maskalash — faqat oxirgi 4 belgi ko'rinadi.
+
+    Bo'sh        → ""
+    uzunlik ≤ 4  → to'liq yulduzcha (hech narsa ochilmasin)
+    aks holda    → "••••" + oxirgi 4 belgi
+    """
+    if not value:
+        return ""
+    s = str(value)
+    if len(s) <= 4:
+        return SECRET_MASK_CHAR * len(s)
+    return SECRET_MASK_CHAR * 4 + s[-4:]
+
+
 @router.get("/settings")
 async def get_settings(
     restaurant_id: Optional[int] = Depends(require_restaurant_admin),
@@ -849,8 +915,18 @@ async def get_settings(
         "restaurant_lat": rest.restaurant_lat,
         "restaurant_lon": rest.restaurant_lon,
         "delivery_provider": rest.delivery_provider or "own",
-        "yandex_api_token": rest.yandex_api_token,
+        "yandex_api_token": _mask_secret(rest.yandex_api_token),
         "yandex_test_mode": rest.yandex_test_mode if rest.yandex_test_mode is not None else True,
+        "yandex_balance_monitor_enabled": bool(rest.yandex_balance_monitor_enabled),
+        "yandex_balance_amount": rest.yandex_balance_amount,
+        "yandex_balance_currency": rest.yandex_balance_currency or "UZS",
+        "yandex_balance_checked_at": rest.yandex_balance_checked_at.isoformat() if rest.yandex_balance_checked_at else None,
+        "yandex_balance_low_threshold": float(rest.yandex_balance_low_threshold or 300000),
+        "yandex_balance_critical_threshold": float(rest.yandex_balance_critical_threshold or 100000),
+        "yandex_balance_status": rest.yandex_balance_status or "unknown",
+        "yandex_balance_source": rest.yandex_balance_source or "manual",
+        "yandex_balance_last_alert_at": rest.yandex_balance_last_alert_at.isoformat() if rest.yandex_balance_last_alert_at else None,
+        "yandex_balance_block_on_critical": bool(rest.yandex_balance_block_on_critical),
         # Catering / valyuta
         "currency_auto": rest.currency_auto if rest.currency_auto is not None else True,
         "currency_rate_manual": rest.currency_rate_manual,
@@ -863,24 +939,29 @@ async def get_settings(
         "catering_nan_min": rest.catering_nan_min or 40,
         "catering_nan_step": rest.catering_nan_step or 40,
         "catering_delivery_per_km_uzs": rest.catering_delivery_per_km_uzs or 5000,
-        # To'lov gateway'lar
-        "click_merchant_id": rest.click_merchant_id,
-        "click_service_id": rest.click_service_id,
-        "click_secret_key": rest.click_secret_key,
+        # To'lov gateway'lar (maxfiy maydonlar maskalanadi — oxirgi 4 belgi)
+        "click_merchant_id": _mask_secret(rest.click_merchant_id),
+        "click_service_id": _mask_secret(rest.click_service_id),
+        "click_secret_key": _mask_secret(rest.click_secret_key),
         "click_enabled": bool(rest.click_enabled),
-        "payme_merchant_id": rest.payme_merchant_id,
-        "payme_secret_key": rest.payme_secret_key,
+        "payme_merchant_id": _mask_secret(rest.payme_merchant_id),
+        "payme_secret_key": _mask_secret(rest.payme_secret_key),
         "payme_enabled": bool(rest.payme_enabled),
+        # Uzum Bank
+        "uzum_service_id": _mask_secret(rest.uzum_service_id),
+        "uzum_webhook_user": _mask_secret(rest.uzum_webhook_user),
+        "uzum_webhook_pass": _mask_secret(rest.uzum_webhook_pass),
+        "uzum_enabled": bool(rest.uzum_enabled),
         # Faza 1.4: Telegram Native Payments
-        "telegram_provider_token_click": rest.telegram_provider_token_click or "",
-        "telegram_provider_token_payme": rest.telegram_provider_token_payme or "",
+        "telegram_provider_token_click": _mask_secret(rest.telegram_provider_token_click),
+        "telegram_provider_token_payme": _mask_secret(rest.telegram_provider_token_payme),
         "payment_test_mode": bool(rest.payment_test_mode),
         "is_vat_payer": bool(rest.is_vat_payer),
         "vat_percent": float(rest.vat_percent or 12.0),
         "enforce_prepayment_for_delivery": bool(rest.enforce_prepayment_for_delivery),
         "catering_notifier_chat_id": rest.catering_notifier_chat_id or "",
-        "bot_token": rest.bot_token or "",
-        "courier_bot_token": rest.courier_bot_token or "",
+        "bot_token": _mask_secret(rest.bot_token),
+        "courier_bot_token": _mask_secret(rest.courier_bot_token),
         # Faza 4-5: to'lov sozlamalari
         "catering_service_fee": float(rest.catering_service_fee or 0),
         "prepayment_required_above": float(rest.prepayment_required_above or 0),
@@ -926,6 +1007,12 @@ async def update_settings(
         "delivery_provider": "delivery_provider",
         "yandex_api_token": "yandex_api_token",
         "yandex_test_mode": "yandex_test_mode",
+        "yandex_balance_monitor_enabled": "yandex_balance_monitor_enabled",
+        "yandex_balance_amount": "yandex_balance_amount",
+        "yandex_balance_currency": "yandex_balance_currency",
+        "yandex_balance_low_threshold": "yandex_balance_low_threshold",
+        "yandex_balance_critical_threshold": "yandex_balance_critical_threshold",
+        "yandex_balance_block_on_critical": "yandex_balance_block_on_critical",
         "currency_auto": "currency_auto",
         "currency_rate_manual": "currency_rate_manual",
         "catering_payment_card": "catering_payment_card",
@@ -942,6 +1029,10 @@ async def update_settings(
         "payme_merchant_id": "payme_merchant_id",
         "payme_secret_key": "payme_secret_key",
         "payme_enabled": "payme_enabled",
+        "uzum_service_id": "uzum_service_id",
+        "uzum_webhook_user": "uzum_webhook_user",
+        "uzum_webhook_pass": "uzum_webhook_pass",
+        "uzum_enabled": "uzum_enabled",
         "telegram_provider_token_click": "telegram_provider_token_click",
         "telegram_provider_token_payme": "telegram_provider_token_payme",
         "payment_test_mode": "payment_test_mode",
@@ -964,11 +1055,56 @@ async def update_settings(
     }
     for form_key, db_key in update_map.items():
         val = getattr(data, form_key, None)
-        if val is not None:
-            setattr(rest, db_key, val)
+        if val is None:
+            continue
+        # Maxfiy maydon: maskalangan (•) yoki bo'sh qiymat kelsa — eski qiymat saqlanadi.
+        # Faqat admin yangi haqiqiy qiymat kiritganda almashtiriladi.
+        if form_key in SENSITIVE_SETTING_FIELDS:
+            if isinstance(val, str) and (val == "" or SECRET_MASK_CHAR in val):
+                continue
+        setattr(rest, db_key, val)
 
     await db.commit()
     return {"success": True}
+
+
+# ── Yandex balance monitoring ────────────────────────
+@router.get("/yandex-balance")
+async def get_yandex_balance(
+    restaurant_id: int = Depends(get_restaurant_context),
+    db: AsyncSession = Depends(get_db),
+):
+    if not restaurant_id:
+        raise HTTPException(400, "restaurant_id kerak")
+    rest = (await db.execute(
+        select(Restaurant).where(Restaurant.id == restaurant_id)
+    )).scalar_one_or_none()
+    if not rest:
+        raise HTTPException(404, "Restoran topilmadi")
+
+    from api.services.yandex_balance import yandex_balance_ai_template, yandex_balance_snapshot
+    data = yandex_balance_snapshot(rest)
+    data["ai_template"] = yandex_balance_ai_template()
+    return data
+
+
+@router.post("/yandex-balance/check-now")
+async def check_yandex_balance_now(
+    restaurant_id: int = Depends(get_restaurant_context),
+    db: AsyncSession = Depends(get_db),
+):
+    if not restaurant_id:
+        raise HTTPException(400, "restaurant_id kerak")
+    rest = (await db.execute(
+        select(Restaurant).where(Restaurant.id == restaurant_id)
+    )).scalar_one_or_none()
+    if not rest:
+        raise HTTPException(404, "Restoran topilmadi")
+
+    from api.services.yandex_balance import check_restaurant_yandex_balance, yandex_balance_ai_template
+    data = await check_restaurant_yandex_balance(db, rest, notify=True)
+    data["ai_template"] = yandex_balance_ai_template()
+    return data
 
 
 # ── Profil (restaurant-specific) ─────────────────────
@@ -1298,8 +1434,8 @@ async def get_my_plan(
 
     if not plan:
         return {
-            "plan": {"id": None, "name": "Tariff yo'q", "slug": None},
-            "features": {"catering": False, "ai_agent": False, "yandex": False},
+            "plan": {"id": None, "name": "Tariff yo'q", "slug": None, "max_branches_limit": 1},
+            "features": {"catering": False, "ai_agent": False, "yandex": False, "multi_branch": False},
             "order_limit": 0,
         }
 
@@ -1310,11 +1446,13 @@ async def get_my_plan(
             "slug": plan.slug,
             "monthly_price": plan.monthly_price,
             "commission_percent": plan.commission_percent,
+            "max_branches_limit": int(plan.max_branches_limit or 1),
         },
         "features": {
             "catering": bool(plan.has_catering),
             "ai_agent": bool(plan.has_ai_agent),
             "yandex": bool(plan.has_yandex),
+            "multi_branch": bool(plan.has_multi_branch),
         },
         "order_limit": plan.order_limit,
     }

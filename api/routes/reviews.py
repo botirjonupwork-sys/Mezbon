@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from typing import Optional
@@ -10,6 +10,14 @@ from database.models import Review, User, Branch
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 
 
+async def _require_bot_secret(x_bot_secret: Optional[str] = Header(None, alias="X-Bot-Secret")):
+    """Sharh qalbakilashtirilishidan himoya — bot↔API auth (audit C6)."""
+    from api.services.security import is_valid_bot_secret
+    if not is_valid_bot_secret(x_bot_secret or ""):
+        raise HTTPException(403, "Ruxsat berilmadi")
+    return True
+
+
 @router.post("", response_model=ReviewOut)
 async def create_review(
     telegram_id: str,
@@ -17,9 +25,12 @@ async def create_review(
     branch_id: Optional[int] = None,
     restaurant_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
+    _bot: bool = Depends(_require_bot_secret),
 ):
     if not 1 <= data.rating <= 5:
         raise HTTPException(400, "Reyting 1 dan 5 gacha bo'lishi kerak")
+    if data.comment and len(data.comment) > 1000:
+        raise HTTPException(400, "Izoh juda uzun (maks. 1000 belgi)")
 
     result = await db.execute(select(User).where(User.telegram_id == telegram_id))
     user = result.scalar_one_or_none()

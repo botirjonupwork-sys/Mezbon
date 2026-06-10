@@ -40,7 +40,11 @@ export default function Dashboard() {
         if (!alive) return
         setStats(s.data); setHealth(h.data)
       })
-      .catch((e) => alive && setErr(e?.response?.data?.detail || 'Yuklashda xato'))
+      .catch((e) => {
+        // detail satr bo'lmasligi mumkin (422 → obyektlar massivi) — faqat satrni ko'rsatamiz
+        const d = e?.response?.data?.detail
+        if (alive) setErr(typeof d === 'string' ? d : 'Yuklashda xato')
+      })
       .finally(() => alive && setLoading(false))
     return () => { alive = false }
   }, [])

@@ -21,6 +21,7 @@ Hozir Variant A ishlatamiz: `ENABLE_SCHEDULER=1` env bilan boshqariladi.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Optional
@@ -38,6 +39,19 @@ TZ = "Asia/Tashkent"
 
 # Global scheduler instance — bittagina (singleton)
 _scheduler: Optional[AsyncIOScheduler] = None
+
+# Daily check serializatsiyasi: cron job (`max_instances=1`) va manual trigger
+# (`trigger_daily_check_now`) bir vaqtda `charge_autopay`ni ishga tushira oladi —
+# bu kartani ikki marta yechishi mumkin. Ikkala kirish nuqtasi shu lock'ni oladi.
+# Lazy yaratamiz: Python 3.9'da asyncio.Lock() import paytida (loop'siz) xato beradi.
+_DAILY_CHECK_LOCK: Optional[asyncio.Lock] = None
+
+
+def _daily_check_lock() -> asyncio.Lock:
+    global _DAILY_CHECK_LOCK
+    if _DAILY_CHECK_LOCK is None:
+        _DAILY_CHECK_LOCK = asyncio.Lock()
+    return _DAILY_CHECK_LOCK
 
 
 def is_enabled() -> bool:
@@ -117,11 +131,25 @@ async def _job_daily_subscription_check() -> None:
     notifier yuboramiz.
     """
     log.info("Daily subscription check started")
+    lock = _daily_check_lock()
+    if lock.locked():
+        log.warning("Daily check allaqachon ishlamoqda — cron run o'tkazib yuborildi")
+        return
+    try:
+        async with lock:
+            await _run_daily_subscription_check_body()
+    except Exception as e:
+        log.exception("Daily subscription check xato: %s", e)
+
+
+async def _run_daily_subscription_check_body() -> None:
+    """Daily check'ning asl mazmuni (lock ichida chaqiriladi)."""
     try:
         from api.database import AsyncSessionLocal
         from api.services.notifier import (
             daily_summary_text, expiry_warning_text, grace_started_text,
-            notify_platform_admin, queued_applied_text, suspended_text,
+            notify_platform_admin, notify_restaurant_owner, queued_applied_text,
+            suspended_text,
         )
         from api.services.subscription import run_daily_subscription_check
         from sqlalchemy import select
@@ -145,19 +173,33 @@ async def _job_daily_subscription_check() -> None:
                 )).scalars().all()
                 by_id = {r.id: r for r in rests}
 
-                # Platforma admin uchun shaxsiy
+                # Grace boshlandi → platforma admin + restoran egasi
                 for rid in summary.get("graced", []):
                     rest = by_id.get(rid)
                     if rest:
                         await notify_platform_admin(
                             f"🟡 Grace started: <b>{rest.name}</b> (rid={rid})"
                         )
+                        await notify_restaurant_owner(rest, grace_started_text(rest))
+
+                # 3 va 1 kun ogohlantirish → restoran egasiga
+                for rid in summary.get("warnings_3d", []):
+                    rest = by_id.get(rid)
+                    if rest:
+                        await notify_restaurant_owner(rest, expiry_warning_text(rest, 3))
+                for rid in summary.get("warnings_1d", []):
+                    rest = by_id.get(rid)
+                    if rest:
+                        await notify_restaurant_owner(rest, expiry_warning_text(rest, 1))
+
+                # Suspended → platforma admin + restoran egasi
                 for rid in summary.get("suspended", []):
                     rest = by_id.get(rid)
                     if rest:
                         await notify_platform_admin(
                             f"🔴 Suspended: <b>{rest.name}</b> (rid={rid})"
                         )
+                        await notify_restaurant_owner(rest, suspended_text(rest))
 
             # Kunlik hisobot platforma adminga
             await notify_platform_admin(daily_summary_text(summary))
@@ -376,6 +418,24 @@ async def _job_catering_notifier_tomorrow() -> None:
         )
 
 
+# ── Job: Yandex balans monitoringi — har 30 daqiqa ─────
+
+async def _job_yandex_balance_monitoring() -> None:
+    """Yandex Delivery balanslarini tekshiradi va threshold bo'yicha ogohlantiradi."""
+    try:
+        from api.database import AsyncSessionLocal
+        from api.services.yandex_balance import check_all_yandex_balances
+
+        async with AsyncSessionLocal() as db:
+            stats = await check_all_yandex_balances(db, notify=True)
+        log.info("Yandex balance monitoring complete: %s", stats)
+    except Exception as e:
+        log_critical(
+            "scheduler", "Yandex balance monitoring FAILED",
+            error=str(e), error_type=type(e).__name__,
+        )
+
+
 # ── Public API ───────────────────────────────────────────
 
 def start_scheduler() -> None:
@@ -433,10 +493,19 @@ def start_scheduler() -> None:
         replace_existing=True,
     )
 
+    # Har 30 daqiqada — Yandex balans monitoringi (Faza 17)
+    sched.add_job(
+        _job_yandex_balance_monitoring,
+        trigger=CronTrigger(minute="*/30", timezone=TZ),
+        id="yandex_balance_monitoring",
+        name="Yandex balance monitoring (every 30 minutes)",
+        replace_existing=True,
+    )
+
     sched.start()
     log.info(
-        "Scheduler started — 5 jobs: subscription@10:00, auto-cancel/5min, "
-        "anomaly/15min, monthly@1d-09:00, catering@20:00 (TZ=%s)",
+        "Scheduler started — 6 jobs: subscription@10:00, auto-cancel/5min, "
+        "anomaly/15min, monthly@1d-09:00, catering@20:00, yandex-balance/30min (TZ=%s)",
         TZ,
     )
 
@@ -459,5 +528,9 @@ async def trigger_daily_check_now() -> dict:
     """
     from api.database import AsyncSessionLocal
     from api.services.subscription import run_daily_subscription_check
-    async with AsyncSessionLocal() as db:
-        return await run_daily_subscription_check(db)
+    lock = _daily_check_lock()
+    if lock.locked():
+        return {"skipped": "daily check already running"}
+    async with lock:
+        async with AsyncSessionLocal() as db:
+            return await run_daily_subscription_check(db)

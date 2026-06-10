@@ -243,21 +243,40 @@ class PlatformSettingsUpdate(BaseModel):
     default_delivery_per_km: Optional[float] = None
     default_work_from: Optional[str] = None
     default_work_until: Optional[str] = None
-    # AI Call Operator (mezbon platforma boshqaradi)
-    ai_llm_provider: Optional[str] = None
+    # AI Call Operator — multi-provider
+    ai_llm_provider: Optional[str] = None    # 'openai' | 'groq' | 'anthropic' | 'gemini'
     ai_llm_model: Optional[str] = None
-    ai_llm_api_key: Optional[str] = None
-    ai_tts_provider: Optional[str] = None
-    ai_tts_api_key: Optional[str] = None
+    ai_llm_api_keys: Optional[dict] = None   # {provider_name: api_key}
+    ai_stt_provider: Optional[str] = None    # 'openai' | 'groq'
+    ai_tts_provider: Optional[str] = None    # 'openai' | 'none'
     ai_voice_gateway: Optional[str] = None
+    # Payme Subscribe — restoran obunalarini avtomatik undirish (platforma kassasi)
+    payme_subscribe_merchant_id: Optional[str] = None
+    payme_subscribe_key: Optional[str] = None       # maskalanadi (GET'da qaytmaydi)
+    payme_subscribe_test_mode: Optional[bool] = None
 
 
 @router.get("/platform-settings")
 async def get_platform_settings(actor: dict = Depends(require_superuser)):
-    """Platform-level sozlamalar (brending + standart restoran qiymatlari)."""
+    """Platform-level sozlamalar (brending + standart restoran qiymatlari + AI provayder)."""
+    from api.services.llm import list_providers
+
     data = platform.get_all()
-    api_key = data.get("ai_llm_api_key", "") or ""
-    tts_key = data.get("ai_tts_api_key", "") or ""
+
+    # Multi-provider API keys — har biri uchun mask
+    keys = data.get("ai_llm_api_keys") or {}
+    # Backward compat: eski ai_llm_api_key (OpenAI uchun) ham qabul qilamiz
+    if not keys and data.get("ai_llm_api_key"):
+        keys = {"openai": data["ai_llm_api_key"]}
+
+    api_keys_status = {}
+    for pname in ("openai", "groq", "anthropic", "gemini", "aisha"):
+        k = (keys.get(pname) or "").strip()
+        api_keys_status[pname] = {
+            "set": bool(k),
+            "masked": (f"…{k[-4:]}" if len(k) >= 4 else ""),
+        }
+
     return {
         "platform_name": data.get("platform_name", "SaaS Buyurtma Platformasi"),
         "platform_url": data.get("platform_url", ""),
@@ -269,19 +288,31 @@ async def get_platform_settings(actor: dict = Depends(require_superuser)):
         "default_delivery_per_km": data.get("default_delivery_per_km", 3000),
         "default_work_from": data.get("default_work_from", "09:00"),
         "default_work_until": data.get("default_work_until", "22:00"),
-        # Maintenance ham shu yerda — eski sahifa o'qimasligi mumkin, lekin frontend yangilansa foydali
+        # Maintenance
         "maintenance_mode": data.get("maintenance_mode", False),
         "maintenance_message": data.get("maintenance_message", ""),
-        # AI Call Operator config
+        # AI Call Operator — multi-provider
         "ai_llm_provider": data.get("ai_llm_provider", "openai"),
         "ai_llm_model": data.get("ai_llm_model", "gpt-4o-mini"),
-        # API kalitlarni hech qachon plaintext qaytarmaymiz — faqat oxirgi 4 belgi
-        "ai_llm_api_key_masked": (f"…{api_key[-4:]}" if len(api_key) >= 4 else ""),
-        "ai_llm_api_key_set": bool(api_key.strip()),
+        "ai_llm_api_keys_status": api_keys_status,    # {provider: {set, masked}}
+        "ai_stt_provider": data.get("ai_stt_provider", "openai"),
         "ai_tts_provider": data.get("ai_tts_provider", "openai"),
-        "ai_tts_api_key_masked": (f"…{tts_key[-4:]}" if len(tts_key) >= 4 else ""),
-        "ai_tts_api_key_set": bool(tts_key.strip()),
         "ai_voice_gateway": data.get("ai_voice_gateway", "telegram"),
+        # Provider katalogini ham qaytaramiz — UI dinamik tarzda model list yangilashi uchun
+        "ai_providers": list_providers(),
+        # Payme Subscribe (obuna avtopay) — kalit maskalanadi
+        "payme_subscribe_merchant_id": data.get("payme_subscribe_merchant_id", ""),
+        "payme_subscribe_test_mode": data.get("payme_subscribe_test_mode", True),
+        "payme_subscribe_configured": bool(
+            (data.get("payme_subscribe_merchant_id") or "").strip()
+            and (data.get("payme_subscribe_key") or "").strip()
+        ),
+        "payme_subscribe_key_status": {
+            "set": bool((data.get("payme_subscribe_key") or "").strip()),
+            "masked": (lambda k: f"…{k[-4:]}" if len(k) >= 4 else "")(
+                (data.get("payme_subscribe_key") or "").strip()
+            ),
+        },
     }
 
 
@@ -295,14 +326,44 @@ async def update_platform_settings(
     updates = {k: v for k, v in body.model_dump(exclude_none=True).items()}
     if not updates:
         return platform.get_all()
+
+    # ai_llm_api_keys — partial merge (faqat o'zgargan kalitlarni almashtirish)
+    if "ai_llm_api_keys" in updates:
+        incoming = updates.pop("ai_llm_api_keys") or {}
+        current = platform.get("ai_llm_api_keys") or {}
+        if not isinstance(current, dict):
+            current = {}
+        # Backward compat: eski ai_llm_api_key (faqat OpenAI uchun)
+        if not current and platform.get("ai_llm_api_key"):
+            current = {"openai": platform.get("ai_llm_api_key")}
+        merged = dict(current)
+        for pname, val in incoming.items():
+            if val is None:
+                continue
+            if val == "":
+                # Bo'sh string → kalitni o'chirish
+                merged.pop(pname, None)
+            else:
+                merged[pname] = val
+        updates["ai_llm_api_keys"] = merged
+
+    # Payme Subscribe kaliti — bo'sh yoki maskalangan ("…"/"•") qiymat kelsa eski qiymat saqlanadi
+    if "payme_subscribe_key" in updates:
+        val = (updates.get("payme_subscribe_key") or "").strip()
+        if not val or "…" in val or "•" in val:
+            updates.pop("payme_subscribe_key", None)
+
     before = platform.get_all()
     after = platform.set_many(updates)
     # API kalitlarni audit logga plaintext yozmaymiz
     log_updates = dict(updates)
-    for secret_key in ("ai_llm_api_key", "ai_tts_api_key"):
-        if secret_key in log_updates:
-            v = log_updates[secret_key] or ""
-            log_updates[secret_key] = (f"…{v[-4:]}" if len(v) >= 4 else "(set)") if v else "(cleared)"
+    if "payme_subscribe_key" in log_updates:
+        log_updates["payme_subscribe_key"] = "(set)"
+    if "ai_llm_api_keys" in log_updates:
+        log_updates["ai_llm_api_keys"] = {
+            k: (f"…{v[-4:]}" if v and len(v) >= 4 else "(set)") if v else "(cleared)"
+            for k, v in (log_updates["ai_llm_api_keys"] or {}).items()
+        }
     await _log_action(
         db, actor=actor.get("u", "super"), action="platform.update",
         target_type="platform", target_id=None,
@@ -391,20 +452,62 @@ async def bots_stop(actor: dict = Depends(require_superuser)):
 
 
 @router.post("/bots/restart")
-async def bots_restart(actor: dict = Depends(require_superuser)):
-    """Bot service'ni systemd orqali qayta ishga tushirish (yangi tokenlar uchun)."""
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["systemctl", "restart", "restaurant-bots"],
-            capture_output=True, text=True, timeout=10,
+async def bots_restart(
+    request: Request,
+    actor: dict = Depends(require_superuser),
+    db: AsyncSession = Depends(get_db),
+):
+    """BARCHA restoran botlarini qayta ishga tushirish (bot_reload_at signali).
+
+    systemctl/docker'ga bog'liq emas — bot menejeri (bot/manager.py) bu signalni
+    ~10 sekund ichida ko'rib, har bir token bor restoran botini restart qiladi.
+    """
+    from datetime import datetime
+    from sqlalchemy import or_
+    from database.models import Restaurant
+
+    now = datetime.utcnow()
+    rests = (await db.execute(
+        select(Restaurant).where(
+            or_(Restaurant.bot_token.isnot(None), Restaurant.courier_bot_token.isnot(None))
         )
-        if result.returncode == 0:
-            return {"ok": True, "message": "Bots service qayta ishga tushirildi"}
-        return {"ok": False, "error": result.stderr or result.stdout}
-    except FileNotFoundError:
-        raise HTTPException(501, "systemctl topilmadi (lokal dev?)")
-    except subprocess.TimeoutExpired:
-        raise HTTPException(504, "systemctl restart timeout")
-    except Exception as e:
-        raise HTTPException(500, f"Restart xato: {e}")
+    )).scalars().all()
+    n = 0
+    for r in rests:
+        if (r.bot_token or "").strip() or (r.courier_bot_token or "").strip():
+            r.bot_reload_at = now
+            n += 1
+    await db.commit()
+    await _log_action(
+        db, actor=actor.get("u", "super"), action="bots.restart_all",
+        target_type="bots", target_id=None, details={"count": n}, ip=_client_ip(request),
+    )
+    return {"ok": True, "count": n, "message": f"{n} ta restoran boti restart signali yuborildi (~10s)"}
+
+
+@router.post("/bots/{restaurant_id}/restart")
+async def bot_restart_one(
+    restaurant_id: int,
+    request: Request,
+    actor: dict = Depends(require_superuser),
+    db: AsyncSession = Depends(get_db),
+):
+    """BITTA restoran botini qayta ishga tushirish (bot_reload_at signali)."""
+    from datetime import datetime
+    from database.models import Restaurant
+
+    rest = (await db.execute(
+        select(Restaurant).where(Restaurant.id == restaurant_id)
+    )).scalar_one_or_none()
+    if not rest:
+        raise HTTPException(404, "Restoran topilmadi")
+    if not ((rest.bot_token or "").strip() or (rest.courier_bot_token or "").strip()):
+        raise HTTPException(400, "Bu restoranda bot tokeni yo'q")
+    rest.bot_reload_at = datetime.utcnow()
+    await db.commit()
+    await _log_action(
+        db, actor=actor.get("u", "super"), action="bots.restart_one",
+        target_type="restaurant", target_id=rest.id, details={"name": rest.name},
+        ip=_client_ip(request),
+    )
+    return {"ok": True, "message": f"{rest.name} boti restart signali yuborildi (~10s)"}

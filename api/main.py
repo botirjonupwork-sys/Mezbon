@@ -8,13 +8,14 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
+from api.config import settings
 from api.database import create_tables
 from api.logging_config import setup_logging
 from api.services import platform
 from api.routes import (
-    users, menu, orders, reviews, admin, auth, couriers, superadmin, branches,
+    users, menu, orders, reviews, admin, auth, couriers, branches,
     catering, billing, ai, health, super_admin, super_legacy, pos,
-    registration, yandex_webhook, uzum_webhook,
+    registration, yandex_webhook, uzum_webhook, delivery_quote, autopay,
 )
 
 # Logging — eng birinchi sozlanishi shart (boshqa modullar import paytida ham log yozishi mumkin)
@@ -39,10 +40,16 @@ async def lifespan(app: FastAPI):
     shutdown_scheduler()
 
 
+# /docs, /redoc, /openapi.json faqat DEBUG rejimda ochiq — prod'da yashirin
+# (API sxemasini, endpoint'larni oshkor qilmaslik uchun, audit H4).
+_docs_enabled = settings.DEBUG
 app = FastAPI(
     title="Muhsina Dollar Somsa API",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
 )
 
 # Rate limiting
@@ -257,6 +264,7 @@ app.include_router(couriers.router)
 app.include_router(branches.router)
 app.include_router(catering.router)
 app.include_router(billing.router)
+app.include_router(autopay.router)
 app.include_router(ai.router)
 app.include_router(health.router)
 app.include_router(super_admin.router)
@@ -265,6 +273,7 @@ app.include_router(pos.router)
 app.include_router(registration.router)
 app.include_router(yandex_webhook.router)
 app.include_router(uzum_webhook.router)
+app.include_router(delivery_quote.router)
 from api.routes import legal  # noqa: E402
 app.include_router(legal.router)
 

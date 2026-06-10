@@ -12,6 +12,11 @@ from aiogram.fsm.state import State, StatesGroup
 router = Router()
 
 API_URL = os.getenv("API_URL", "http://localhost:8000")
+_BOT_HEADERS = {"X-Bot-Secret": os.getenv("BOT_API_SECRET", "")}
+# Bot manager har bir restoran kuryer botini BOT_RESTAURANT_ID bilan spawn qiladi.
+# Bu botning kuryeri FAQAT shu restoran filiallarini ko'rishi/ro'yxatdan o'tishi
+# shart — aks holda restoran #5 kuryeri restoran #1 filialiga bog'lanib qoladi.
+COURIER_RESTAURANT_ID = int(os.getenv("BOT_RESTAURANT_ID") or "1")
 
 
 class CourierReg(StatesGroup):
@@ -65,7 +70,7 @@ async def _get_nearest_branches(lat: float, lon: float):
         try:
             r = await client.get(
                 f"{API_URL}/branches/nearest",
-                params={"lat": lat, "lon": lon},
+                params={"lat": lat, "lon": lon, "restaurant_id": COURIER_RESTAURANT_ID},
                 timeout=5.0,
             )
             if r.status_code == 200:
@@ -91,7 +96,7 @@ async def cmd_start(message: Message, state: FSMContext):
     # Kuryer bazada bormi?
     try:
         async with httpx.AsyncClient() as client:
-            r = await client.get(f"{API_URL}/couriers/{tg_id}")
+            r = await client.get(f"{API_URL}/couriers/{tg_id}", headers=_BOT_HEADERS)
             if r.status_code == 200:
                 courier = r.json()
                 status = courier.get("status")
@@ -202,6 +207,7 @@ async def branch_selected_reg(callback: CallbackQuery, state: FSMContext):
                     "transport_type": data["transport"],
                     "branch_id": branch_id,
                 },
+                headers=_BOT_HEADERS,
             )
             if r.status_code == 200:
                 await callback.message.answer(
@@ -271,6 +277,7 @@ async def branch_changed(callback: CallbackQuery, state: FSMContext):
             await client.patch(
                 f"{API_URL}/couriers/{tg_id}/branch",
                 params={"branch_id": branch_id},
+                headers=_BOT_HEADERS,
                 timeout=5.0,
             )
     except Exception:

@@ -580,7 +580,18 @@ async def _show_confirmation(message: Message, state: FSMContext, edit: bool = F
     # Mahsulotlar ro'yxati
     items_text = ""
     for b in price.get("breakdown", []):
-        items_text += f"  • {b['name_uz']}: <b>{b['quantity']} ta</b> (${b['item_usd']:.2f})\n"
+        if delivery_subtype == "pickup":
+            unit = float(b.get("unit_price_uzs") or 0)
+            items_text += (
+                f"  • {b['name_uz']}: <b>{b['quantity']} ta</b> × "
+                f"{unit:,.0f} so'm = {b['item_uzs']:,.0f} so'm\n"
+            )
+        else:
+            unit = float(b.get("unit_price_usd") or 0)
+            items_text += (
+                f"  • {b['name_uz']}: <b>{b['quantity']} ta</b> × "
+                f"${unit:.2f} = ${b['item_usd']:.2f}\n"
+            )
 
     d = datetime.fromisoformat(data.get("schedule_date")).date()
     text = (
@@ -601,7 +612,7 @@ async def _show_confirmation(message: Message, state: FSMContext, edit: bool = F
         f"💰 <b>Jami summa:</b>\n"
         f"   💵 {price['total_price_uzs']:,.0f} so'm\n"
         f"   💲 ${price['total_price_usd']:.2f}\n"
-        f"   📊 Kurs: 1$ = {price['currency_rate']:,.0f} so'm\n"
+        f"   📊 Kurs: 1$ = {price['currency_rate']:,.2f} so'm\n"
     )
     if price.get("delivery_fee_uzs"):
         text += f"   🚗 Dastavka: {price['delivery_fee_uzs']:,.0f} so'm\n"

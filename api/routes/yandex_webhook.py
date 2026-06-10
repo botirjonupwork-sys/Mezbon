@@ -31,12 +31,14 @@ from __future__ import annotations
 
 import os
 import logging
+import secrets
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.config import settings
 from api.database import get_db
 from database.models import Order, OrderStatus, Restaurant, User
 from api.services.yandex_delivery import YandexDeliveryClient, YandexDeliveryError
@@ -103,8 +105,14 @@ def _check_webhook_auth(request: Request) -> None:
     """
     expected = os.getenv("YANDEX_WEBHOOK_SECRET", "").strip()
     if not expected:
-        log.warning("YANDEX_WEBHOOK_SECRET env yo'q — webhook autentifikatsiyasi o'chiq")
-        return
+        # Fail-CLOSED prod'da: secret sozlanmagan bo'lsa webhook'ni umuman qabul
+        # qilmaymiz (aks holda istalgan kishi buyurtma holatini o'zgartira oladi).
+        # DEBUG rejimida (lokal test) ruxsat beramiz.
+        if settings.DEBUG:
+            log.warning("YANDEX_WEBHOOK_SECRET yo'q — DEBUG rejimida auth o'tkazib yuborildi")
+            return
+        log.error("YANDEX_WEBHOOK_SECRET sozlanmagan — webhook rad etildi (prod fail-closed)")
+        raise HTTPException(503, "Webhook auth not configured")
 
     # 1) IP allowlist (agar sozlangan bo'lsa)
     allowed_ips_raw = os.getenv("YANDEX_WEBHOOK_ALLOWED_IPS", "").strip()
@@ -118,9 +126,9 @@ def _check_webhook_auth(request: Request) -> None:
             log.warning("Yandex webhook IP rad etildi: %s (allowlist: %s)", real_ip, allowed)
             raise HTTPException(403, "IP allowlist'da emas")
 
-    # 2) Token tekshiruvi
+    # 2) Token tekshiruvi — constant-time (timing side-channel'dan himoya)
     token = request.query_params.get("token", "").strip()
-    if token == expected:
+    if secrets.compare_digest(token, expected):
         return
 
     raise HTTPException(401, "Webhook autentifikatsiya yaroqsiz")

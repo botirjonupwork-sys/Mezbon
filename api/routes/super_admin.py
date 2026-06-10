@@ -29,6 +29,19 @@ from database.models import (
     Order, OrderStatus, Plan, Restaurant, SuperAdminAction,
 )
 
+# Maxfiy qiymatni maskalash (admin.py bilan bir xil mantiq) — audit C4
+SECRET_MASK_CHAR = "•"
+
+
+def _mask_secret(value):
+    """Token/secret'ni maskalash — faqat oxirgi 4 belgi ko'rinadi."""
+    if not value:
+        return ""
+    s = str(value)
+    if len(s) <= 4:
+        return SECRET_MASK_CHAR * len(s)
+    return SECRET_MASK_CHAR * 4 + s[-4:]
+
 
 router = APIRouter(prefix="/super-admin", tags=["super-admin"])
 
@@ -37,7 +50,7 @@ router = APIRouter(prefix="/super-admin", tags=["super-admin"])
 
 async def require_superuser(
     request: Request,
-    authorization: str = Header(..., alias="Authorization"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
 ) -> dict:
     """Super-admin tokenini qabul qiladi.
 
@@ -49,7 +62,9 @@ async def require_superuser(
 
     Qaytaradi: payload `{"u": username, ...}`.
     """
-    raw = (authorization or "").replace("Bearer ", "").strip()
+    # Token Authorization header'dan YOKI admin_token HttpOnly cookie'dan (admin bilan bir xil).
+    from api.auth_deps import _get_token_from_request
+    raw = _get_token_from_request(authorization, request).replace("Bearer ", "").strip()
 
     # 1. JWT
     if raw.count(".") == 2:
@@ -290,8 +305,51 @@ async def list_restaurants(
             "ai_agent_enabled": bool(r.ai_agent_enabled),
             "ai_agent_provider": r.ai_agent_provider or None,
             "ai_agent_model": r.ai_agent_model or None,
+            "delivery_provider": r.delivery_provider or "own",
+            "yandex_balance": {
+                "monitor_enabled": bool(r.yandex_balance_monitor_enabled),
+                "amount": float(r.yandex_balance_amount) if r.yandex_balance_amount is not None else None,
+                "currency": r.yandex_balance_currency or "UZS",
+                "status": r.yandex_balance_status or "unknown",
+                "checked_at": r.yandex_balance_checked_at.isoformat() if r.yandex_balance_checked_at else None,
+                "low_threshold": float(r.yandex_balance_low_threshold or 300000),
+                "critical_threshold": float(r.yandex_balance_critical_threshold or 100000),
+                "block_on_critical": bool(r.yandex_balance_block_on_critical),
+            },
         })
     return output
+
+
+@router.get("/yandex-balances")
+async def list_yandex_balances(
+    actor: dict = Depends(require_superuser),
+    db: AsyncSession = Depends(get_db),
+):
+    """Super-admin uchun barcha Yandex partner balanslari."""
+    rows = (await db.execute(
+        select(Restaurant)
+        .where(Restaurant.delivery_provider == "yandex")
+        .order_by(Restaurant.yandex_balance_status.desc(), Restaurant.id)
+    )).scalars().all()
+
+    return [
+        {
+            "restaurant_id": r.id,
+            "restaurant_name": r.name,
+            "phone": r.phone,
+            "monitor_enabled": bool(r.yandex_balance_monitor_enabled),
+            "amount": float(r.yandex_balance_amount) if r.yandex_balance_amount is not None else None,
+            "currency": r.yandex_balance_currency or "UZS",
+            "status": r.yandex_balance_status or "unknown",
+            "checked_at": r.yandex_balance_checked_at.isoformat() if r.yandex_balance_checked_at else None,
+            "source": r.yandex_balance_source or "manual",
+            "low_threshold": float(r.yandex_balance_low_threshold or 300000),
+            "critical_threshold": float(r.yandex_balance_critical_threshold or 100000),
+            "last_alert_at": r.yandex_balance_last_alert_at.isoformat() if r.yandex_balance_last_alert_at else None,
+            "block_on_critical": bool(r.yandex_balance_block_on_critical),
+        }
+        for r in rows
+    ]
 
 
 @router.patch("/restaurants/{restaurant_id}")
@@ -352,6 +410,14 @@ async def patch_restaurant(
 
     await db.commit()
     await db.refresh(rest)
+
+    # Status 'blocked'ga o'zgardi → restoran egasiga to'lov/murojaat xabari (best-effort)
+    if body.status == "blocked" and before.get("status") != "blocked":
+        try:
+            from api.services.notifier import notify_restaurant_owner, admin_block_text
+            await notify_restaurant_owner(rest, admin_block_text(rest))
+        except Exception:
+            pass
 
     after = {
         "status": rest.status,
@@ -472,8 +538,9 @@ async def get_restaurant_full(
         "plan_id": rest.plan_id,
         "commission_percent": float(rest.commission_percent or 0),
         "plan_expires_at": rest.plan_expires_at.isoformat() if rest.plan_expires_at else None,
-        "bot_token": rest.bot_token,
-        "courier_bot_token": rest.courier_bot_token,
+        # Bot tokenlari maskalanadi — to'liq token = bot hisobini egallash (audit C4)
+        "bot_token": _mask_secret(rest.bot_token),
+        "courier_bot_token": _mask_secret(rest.courier_bot_token),
         "catering_payment_card": rest.catering_payment_card,
         "catering_payment_owner": rest.catering_payment_owner,
         "restaurant_lat": rest.restaurant_lat,
@@ -649,9 +716,18 @@ async def soft_delete_restaurant(
     if not rest:
         raise HTTPException(404, "Restoran topilmadi")
 
+    was_blocked = rest.status == "blocked"
     rest.status = "blocked"
     # Bot tokenlarini saqlash, lekin bot service o'qiganda blocked'larni o'tkazib yuboradi
     await db.commit()
+
+    # Restoran egasiga to'lov/murojaat xabari (best-effort, faqat yangi bloklanganda)
+    if not was_blocked:
+        try:
+            from api.services.notifier import notify_restaurant_owner, admin_block_text
+            await notify_restaurant_owner(rest, admin_block_text(rest))
+        except Exception:
+            pass
 
     await _log_action(
         db, actor=actor.get("username") or "super",
@@ -685,11 +761,16 @@ async def update_restaurant_info(
         "min_order", "delivery_base_fee", "delivery_per_km",
         "admin_username",
     )
+    _sensitive = {"bot_token", "courier_bot_token"}
     for field in editable_fields:
         val = getattr(body, field, None)
-        if val is not None:
-            setattr(rest, field, val)
-            changes.append(field)
+        if val is None:
+            continue
+        # Maskalangan/bo'sh token kelsa — eski qiymat saqlanadi (audit C4)
+        if field in _sensitive and isinstance(val, str) and (val == "" or SECRET_MASK_CHAR in val):
+            continue
+        setattr(rest, field, val)
+        changes.append(field)
 
     if not changes:
         raise HTTPException(400, "Hech bir maydon ko'rsatilmadi")

@@ -70,6 +70,8 @@ export const getReviews = (params) => api.get('/reviews', { params })
 // ── Settings ──────────────────────────────────────────
 export const getSettings = (params) => api.get('/admin/settings', { params })
 export const updateSettings = (data, params) => api.put('/admin/settings', data, { params })
+export const getYandexBalance = (params) => api.get('/admin/yandex-balance', { params })
+export const checkYandexBalanceNow = (params) => api.post('/admin/yandex-balance/check-now', null, { params })
 
 // ── Profile ──────────────────────────────────────────
 export const getProfile = (params) => api.get('/admin/profile', { params })
@@ -89,6 +91,13 @@ export const createInvoice = (data, params) => api.post('/payments/create-invoic
 export const mockCompletePayment = (merchantTransId, params) =>
   api.post('/payments/mock/complete', null, { params: { ...params, merchant_trans_id: merchantTransId } })
 export const updateProfile = (data, params) => api.put('/admin/profile', data, { params })
+
+// ── Autopay (Payme Subscribe) ─────────────────────────
+export const getAutopayStatus = (params) => api.get('/admin/autopay/status', { params })
+export const bindAutopayCard = (data, params) => api.post('/admin/autopay/card', data, { params })
+export const verifyAutopayCard = (data, params) => api.post('/admin/autopay/verify', data, { params })
+export const removeAutopayCard = (params) => api.delete('/admin/autopay/card', { params })
+export const toggleAutopay = (data, params) => api.post('/admin/autopay/toggle', data, { params })
 
 // ── Couriers ──────────────────────────────────────────
 export const getCouriers = (params) => api.get('/couriers/', { params })

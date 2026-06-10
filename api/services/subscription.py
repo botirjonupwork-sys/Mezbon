@@ -62,6 +62,36 @@ def _days_left(rest: Restaurant, now: Optional[datetime] = None) -> int:
     return max(0, delta.days + (1 if delta.seconds else 0))
 
 
+def service_block_state(rest: Restaurant) -> dict:
+    """Bot/mijoz uchun xizmat holati — yagona manba (info endpoint + bot middleware).
+
+    blocked=True bo'lsa bot xizmat ko'rsatmasligi kerak:
+      * status == 'blocked'            → super-admin qo'lda bloklagan (darhol)
+      * subscription_status=='suspended' → tarif + 10 kun grace tugagan
+    'active' va 'grace_period' → blocked EMAS (grace ichida bot ishlaydi, lekin
+    egasiga ogohlantirish boradi).
+
+    Qaytaradi: {"blocked": bool, "reason": str|None, "message": str}
+    """
+    status = (getattr(rest, "status", None) or "active").lower()
+    sub = (getattr(rest, "subscription_status", None) or "active").lower()
+    if status == "blocked":
+        reason = "admin_block"
+    elif sub == "suspended":
+        reason = "suspended"
+    else:
+        return {"blocked": False, "reason": None, "message": ""}
+
+    phone = (getattr(rest, "phone", None) or "").strip()
+    msg = (
+        f"🔴 <b>{rest.name}</b> hozircha xizmat ko'rsatmayapti.\n"
+        "Iltimos keyinroq qayta urinib ko'ring."
+    )
+    if phone:
+        msg += f"\n\n📞 Aloqa: {phone}"
+    return {"blocked": True, "reason": reason, "message": msg}
+
+
 # ── Variant A: hozir o'tish + freeze ─────────────────────
 
 async def upgrade_immediate(
@@ -323,6 +353,178 @@ async def get_billing_status(
     }
 
 
+# ── Avtomatik undirish (Payme Subscribe) ───────────────
+
+# Payme receipt holati: 4 = to'langan (sandbox'da tasdiqlanadi)
+PAYME_RECEIPT_PAID = 4
+
+
+async def charge_autopay(db: AsyncSession, restaurant: Restaurant) -> Optional[dict]:
+    """Restoran obunasini saqlangan karta tokeni bilan avtomatik undirish.
+
+    Faqat scheduler chaqiradi (tarif tugayotgan yoki grace'dagi, autopay yoqilgan restoranlar).
+    Qaytaradi:
+        None        — undirishga shart yo'q (karta yo'q / bepul tarif / yaqinda undirilgan)
+        {"ok": True}  — muvaffaqiyatli, tarif uzaytirildi
+        {"ok": False, "error": ...} — undirish muvaffaqiyatsiz
+    """
+    from api.services import payme_subscribe as ps
+    from api.services.billing import (
+        uzs_to_tiyin, _gen_merchant_trans_id, mark_payment_success, mark_payment_failed,
+    )
+    from database.models import PaymeCard
+
+    if not restaurant.autopay_enabled or not ps.is_configured():
+        return None
+
+    card = (await db.execute(
+        select(PaymeCard).where(
+            PaymeCard.restaurant_id == restaurant.id,
+            PaymeCard.is_active == True,   # noqa: E712
+            PaymeCard.verified == True,    # noqa: E712
+        )
+    )).scalar_one_or_none()
+    if not card:
+        return None
+
+    # To'lanadigan tarif = joriy tarif
+    plan = None
+    if restaurant.plan_id:
+        plan = (await db.execute(select(Plan).where(Plan.id == restaurant.plan_id))).scalar_one_or_none()
+    if not plan or not plan.monthly_price or plan.monthly_price <= 0:
+        return None  # bepul tarif — undirish shart emas
+
+    # Idempotency: oxirgi 1 kunda HAR QANDAY muvaffaqiyatli to'lov bo'lgan bo'lsa —
+    # qayta undirmaymiz. (upgrade_type'ga tayanmaymiz: mark_payment_success uni
+    # 'immediate'ga o'zgartiradi. Asosiy gate — "tugayotgan/grace" trigeri.)
+    recent = (await db.execute(
+        select(Payment).where(
+            Payment.restaurant_id == restaurant.id,
+            Payment.status == "success",
+            Payment.paid_at >= datetime.utcnow() - timedelta(days=1),
+        )
+    )).scalar_one_or_none()
+    if recent:
+        return None
+
+    # ── Rekonsiliatsiya ────────────────────────────────────────────────
+    # Oldingi run'da receipts.pay javobi tarmoq xatosi tufayli yo'qolgan bo'lishi
+    # mumkin (karta YECHILGAN, lekin biz buni bilmaymiz). Bunday holatda Payment
+    # 'pending' + external_id (receipt_id) saqlangan holda qoladi. Yangi chek
+    # yaratishdan OLDIN shu chek holatini tekshiramiz — aks holda ikki marta yechamiz.
+    stale = (await db.execute(
+        select(Payment).where(
+            Payment.restaurant_id == restaurant.id,
+            Payment.status == "pending",
+            Payment.provider == "payme",
+            Payment.upgrade_type == "renewal",
+            Payment.external_id.isnot(None),
+            Payment.created_at >= datetime.utcnow() - timedelta(days=3),
+        ).order_by(Payment.created_at.desc())
+    )).scalars().first()
+    if stale:
+        try:
+            rc = await ps.receipts_check(stale.external_id)
+        except ps.PaymeSubscribeError as e:
+            # Holat hali ham noaniq — bu run'da undirmaymiz (keyingi run qayta tekshiradi).
+            log_critical(
+                "payment", "Autopay rekonsiliatsiya muvaffaqiyatsiz — undirish kechiktirildi",
+                restaurant_id=restaurant.id, error=e.message,
+            )
+            return {"ok": False, "error": f"reconcile pending: {e.message}"}
+        if int(rc.get("state", 0)) == PAYME_RECEIPT_PAID:
+            # Avvalgi to'lov aslida o'tgan — tarifni uzaytirib, qayta undirmaymiz.
+            await mark_payment_success(stale, external_id=stale.external_id, db=db)
+            return {"ok": True, "reconciled": True}
+        # Chek to'lanmagan — eski pending'ni yopamiz va odatdagidek davom etamiz.
+        await mark_payment_failed(stale, "Autopay: rekonsiliatsiya — chek to'lanmagan", db)
+
+    amount_tiyin = uzs_to_tiyin(plan.monthly_price)
+    merchant_trans_id = _gen_merchant_trans_id(restaurant.id, plan.id)
+    payment = Payment(
+        restaurant_id=restaurant.id,
+        plan_id=plan.id,
+        amount_tiyin=amount_tiyin,
+        status="pending",
+        provider="payme",
+        merchant_trans_id=merchant_trans_id,
+        upgrade_type="renewal",
+    )
+    db.add(payment)
+    await db.commit()
+    await db.refresh(payment)
+
+    # 1-bosqich: chek yaratish. Bu yerdagi xato xavfsiz (hali pul yechilmagan).
+    try:
+        token = ps.decrypt_token(card.token_enc)
+        receipt = await ps.receipts_create(
+            amount_tiyin,
+            account={"merchant_trans_id": merchant_trans_id},
+            detail=None,
+        )
+        receipt_id = receipt.get("_id")
+        if not receipt_id:
+            raise ps.PaymeSubscribeError(-1, "receipt _id qaytmadi")
+        # receipt_id ni DARHOL saqlaymiz — receipts.pay javobi yo'qolsa ham
+        # keyingi run yuqoridagi rekonsiliatsiya orqali shu chekni tekshira oladi.
+        payment.external_id = str(receipt_id)
+        await db.commit()
+    except ps.PaymeSubscribeError as e:
+        await mark_payment_failed(payment, f"Autopay: {e.message}", db)
+        log_critical(
+            "payment", "Autopay chek yaratish muvaffaqiyatsiz",
+            restaurant_id=restaurant.id, plan_id=plan.id, error=e.message,
+        )
+        await _notify_autopay_failed(restaurant, plan, e.message)
+        return {"ok": False, "error": e.message}
+
+    # 2-bosqich: to'lash. Bu yerdagi tarmoq xatosi NOANIQ — karta yechilgan
+    # bo'lishi mumkin. Shu sabab failed qilmaymiz, balki holatni tekshiramiz.
+    try:
+        paid = await ps.receipts_pay(receipt_id, token)
+    except ps.PaymeSubscribeError as e:
+        try:
+            rc = await ps.receipts_check(receipt_id)
+            if int(rc.get("state", 0)) == PAYME_RECEIPT_PAID:
+                await mark_payment_success(payment, external_id=str(receipt_id), db=db)
+                return {"ok": True}
+        except ps.PaymeSubscribeError:
+            pass
+        # Hali noaniq — Payment 'pending' (external_id bilan) holda QOLADI;
+        # keyingi run rekonsiliatsiya qiladi. FAILED qilmaymiz (qayta yechmaslik uchun).
+        log_critical(
+            "payment", "Autopay to'lov javobi noaniq — pending qoldirildi",
+            restaurant_id=restaurant.id, plan_id=plan.id, error=e.message,
+        )
+        await _notify_autopay_failed(restaurant, plan, f"to'lov holati noaniq: {e.message}")
+        return {"ok": False, "error": f"ambiguous: {e.message}"}
+
+    if int(paid.get("state", 0)) != PAYME_RECEIPT_PAID:
+        reason = f"receipt state={paid.get('state')}"
+        await mark_payment_failed(payment, f"Autopay: {reason}", db)
+        await _notify_autopay_failed(restaurant, plan, reason)
+        return {"ok": False, "error": reason}
+
+    # Muvaffaqiyat — mavjud billing oqimi tarifni uzaytiradi + platforma adminga xabar
+    await mark_payment_success(payment, external_id=str(receipt_id), db=db)
+    return {"ok": True}
+
+
+async def _notify_autopay_failed(restaurant: Restaurant, plan: Plan, reason: str) -> None:
+    """Avtomatik undirish muvaffaqiyatsizligi — platforma adminga Telegram xabar."""
+    try:
+        from api.services.notifier import notify_platform_admin
+        await notify_platform_admin(
+            f"⚠️ Autopay muvaffaqiyatsiz\n"
+            f"Restoran: {restaurant.name} (#{restaurant.id})\n"
+            f"Tarif: {plan.name}\n"
+            f"Sabab: {reason}\n\n"
+            f"Restoran grace_period'ga o'tadi va keyingi kunlar qayta urinib ko'riladi."
+        )
+    except Exception:
+        pass
+
+
 # ── Daily check (har kuni 10:00 da chaqiriladi) ─────────
 
 async def run_daily_subscription_check(
@@ -347,6 +549,8 @@ async def run_daily_subscription_check(
         "queued_applied": [],  # navbatdagi tarif faollashdi
         "warnings_3d": [],     # 3 kun qolgani haqida xabar
         "warnings_1d": [],     # 1 kun qolgani haqida xabar
+        "autopay_charged": [], # avtomatik undirildi → tarif uzaytirildi
+        "autopay_failed": [],  # avtomatik undirish muvaffaqiyatsiz
     }
 
     # Barcha aktiv restoranlarni olib chiqamiz (suspended emas)
@@ -355,6 +559,19 @@ async def run_daily_subscription_check(
     )).scalars().all()
 
     for rest in rows:
+        # 0. Avtomatik undirish — tarif tugayotgan (≤1 kun) yoki grace'dagi, autopay yoqilgan.
+        #    Muvaffaqiyatли bo'lsa tarif uzayadi (status active qoladi) → grace/suspend ishlamaydi.
+        if rest.autopay_enabled:
+            expiring = bool(rest.plan_expires_at and rest.plan_expires_at <= now + timedelta(days=1))
+            in_grace = rest.subscription_status == "grace_period"
+            if expiring or in_grace:
+                charged = await charge_autopay(db, rest)
+                if charged and charged.get("ok"):
+                    summary["autopay_charged"].append(rest.id)
+                    await db.refresh(rest)   # plan_expires_at / status yangilandi
+                elif charged:
+                    summary["autopay_failed"].append(rest.id)
+
         # 1. Tarif tugadi → grace
         if rest.subscription_status == "active":
             if rest.plan_expires_at and rest.plan_expires_at <= now:

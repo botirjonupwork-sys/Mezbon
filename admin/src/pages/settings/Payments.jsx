@@ -9,6 +9,7 @@ import {
   DollarOutlined, CopyOutlined, CheckOutlined,
 } from '@ant-design/icons'
 import { getSettings, updateSettings } from '../../api'
+import AutopayCard from '../../components/AutopayCard'
 import { useAuthStore } from '../../store/auth'
 import { useBranchStore } from '../../store/branch'
 import { moneyFormatter, moneyParser } from '../../utils/format'
@@ -125,6 +126,18 @@ export default function PaymentsSettings() {
       </div>
 
       <Form form={form} layout="vertical" requiredMark={false}>
+        {/* Maxfiy kalitlar haqida ogohlantirish */}
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12, borderRadius: 14 }}
+          message="Maxfiy kalitlar yashirilgan"
+          description="Token, secret key va merchant ID'lar xavfsizlik uchun faqat oxirgi 4 belgi bilan ko'rsatiladi. O'zgartirish uchun maydonni tozalab, yangi qiymatni to'liq kiriting. Bo'sh qoldirsangiz — eski qiymat saqlanadi."
+        />
+
+        {/* Avtomatik obuna to'lovi (restoran o'z tarifini avtomatik to'laydi) */}
+        <AutopayCard restaurantId={restaurantId} />
+
         {/* Test/Live Mode */}
         <Card style={cardStyle} styles={{ body: cardBody }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

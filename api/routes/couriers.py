@@ -1,7 +1,7 @@
 import os
 import httpx
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 
 load_dotenv()
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +19,14 @@ router = APIRouter(prefix="/couriers", tags=["couriers"])
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 
+async def _require_bot_secret(x_bot_secret: Optional[str] = Header(None, alias="X-Bot-Secret")):
+    """Courier-bot↔API ichki auth — telegram_id spoofing'dan himoya (audit C3)."""
+    from api.services.security import is_valid_bot_secret
+    if not is_valid_bot_secret(x_bot_secret or ""):
+        raise HTTPException(403, "Ruxsat berilmadi")
+    return True
+
+
 class CourierRegister(BaseModel):
     telegram_id: str
     full_name: str
@@ -29,7 +37,7 @@ class CourierRegister(BaseModel):
 
 # ── Ro'yxatdan o'tish ──────────────────────────────────
 @router.post("/register")
-async def register_courier(data: CourierRegister, db: AsyncSession = Depends(get_db)):
+async def register_courier(data: CourierRegister, db: AsyncSession = Depends(get_db), _bot: bool = Depends(_require_bot_secret)):
     """Yangi kuryer ro'yxatdan o'tishi.
 
     SaaS izolatsiya: courier.restaurant_id branch.restaurant_id'dan olinadi.
@@ -67,7 +75,7 @@ async def register_courier(data: CourierRegister, db: AsyncSession = Depends(get
 
 # ── Kuryer ma'lumotlari ────────────────────────────────
 @router.get("/{telegram_id}")
-async def get_courier(telegram_id: str, db: AsyncSession = Depends(get_db)):
+async def get_courier(telegram_id: str, db: AsyncSession = Depends(get_db), _bot: bool = Depends(_require_bot_secret)):
     result = await db.execute(
         select(Courier).where(Courier.telegram_id == telegram_id)
     )
@@ -86,7 +94,7 @@ async def get_courier(telegram_id: str, db: AsyncSession = Depends(get_db)):
 
 # ── Kuryerning faol zakazlari ──────────────────────────
 @router.get("/{telegram_id}/orders")
-async def courier_orders(telegram_id: str, db: AsyncSession = Depends(get_db)):
+async def courier_orders(telegram_id: str, db: AsyncSession = Depends(get_db), _bot: bool = Depends(_require_bot_secret)):
     result = await db.execute(
         select(Courier).where(Courier.telegram_id == telegram_id)
     )
@@ -117,7 +125,7 @@ async def courier_orders(telegram_id: str, db: AsyncSession = Depends(get_db)):
 
 # ── Statistika ─────────────────────────────────────────
 @router.get("/{telegram_id}/stats")
-async def courier_stats(telegram_id: str, db: AsyncSession = Depends(get_db)):
+async def courier_stats(telegram_id: str, db: AsyncSession = Depends(get_db), _bot: bool = Depends(_require_bot_secret)):
     result = await db.execute(
         select(Courier).where(Courier.telegram_id == telegram_id)
     )
@@ -146,7 +154,7 @@ async def courier_stats(telegram_id: str, db: AsyncSession = Depends(get_db)):
 
 # ── Zakazni qabul qilish ──────────────────────────────
 @router.post("/{telegram_id}/accept/{order_id}")
-async def accept_order(telegram_id: str, order_id: int, db: AsyncSession = Depends(get_db)):
+async def accept_order(telegram_id: str, order_id: int, db: AsyncSession = Depends(get_db), _bot: bool = Depends(_require_bot_secret)):
     result = await db.execute(
         select(Courier).where(Courier.telegram_id == telegram_id)
     )
@@ -192,7 +200,7 @@ async def accept_order(telegram_id: str, order_id: int, db: AsyncSession = Depen
 
 # ── Yetkazildi ─────────────────────────────────────────
 @router.post("/{telegram_id}/delivered/{order_id}")
-async def mark_delivered(telegram_id: str, order_id: int, db: AsyncSession = Depends(get_db)):
+async def mark_delivered(telegram_id: str, order_id: int, db: AsyncSession = Depends(get_db), _bot: bool = Depends(_require_bot_secret)):
     result = await db.execute(
         select(Courier).where(Courier.telegram_id == telegram_id)
     )

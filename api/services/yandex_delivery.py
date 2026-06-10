@@ -315,3 +315,79 @@ class YandexDeliveryClient:
             "price": 25000.0,
             "request_id": request_id,
         }
+
+    async def quote_price(
+        self,
+        *,
+        pickup_lat: float,
+        pickup_lon: float,
+        dropoff_lat: float,
+        dropoff_lon: float,
+        weight_kg: float = 1.0,
+    ) -> dict:
+        """Faqat narx hisoblash — claim YARATMAYDI, restoran balansidan pul KETMAYDI.
+
+        Qaytaradi:
+          {"ok": True, "price": 18200.0, "currency": "UZS", "eta_minutes": 25}
+          yoki
+          {"ok": False, "code": "no_coverage" | "no_offer" | "error", "message": "..."}
+        """
+        if self.mock_mode:
+            return {"ok": True, "price": 18000.0, "currency": "UZS", "eta_minutes": 20, "mock": True}
+
+        payload = {
+            "items": [{
+                "quantity": 1,
+                "size": {"length": 0.3, "width": 0.2, "height": 0.15},
+                "weight": float(weight_kg or 1.0),
+            }],
+            "route_points": [
+                {"coordinates": [float(pickup_lon), float(pickup_lat)]},
+                {"coordinates": [float(dropoff_lon), float(dropoff_lat)]},
+            ],
+            "skip_door_to_door": False,
+            "requirements": {"taxi_class": "express"},
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.post(
+                    f"{self.base_url}/check-price",
+                    headers=self._headers(),
+                    json=payload,
+                )
+        except Exception as e:
+            log.warning("Yandex quote_price network error: %s", e)
+            return {"ok": False, "code": "network_error", "message": str(e)}
+
+        if r.status_code == 200:
+            try:
+                d = r.json()
+            except Exception:
+                return {"ok": False, "code": "bad_response", "message": r.text[:200]}
+            price = d.get("price") or d.get("price_raw") or 0
+            return {
+                "ok": True,
+                "price": float(price),
+                "currency": d.get("currency_rules", {}).get("code", "UZS"),
+                "eta_minutes": int(d.get("eta") or 0) or None,
+            }
+
+        # 409 — coverage / no available offer
+        if r.status_code == 409:
+            try:
+                d = r.json()
+                code = (d.get("code") or "").lower()
+            except Exception:
+                code = ""
+            return {
+                "ok": False,
+                "code": "no_coverage" if "not_found" in code or "suitable" in code else "no_offer",
+                "message": "Bu manzilga hozir Yandex kuryeri yo'q",
+            }
+
+        log.warning("Yandex quote_price %d: %s", r.status_code, r.text[:200])
+        return {
+            "ok": False,
+            "code": "error",
+            "message": f"HTTP {r.status_code}: {r.text[:200]}",
+        }

@@ -36,6 +36,9 @@ from api.config import settings
 ACCESS_TOKEN_TTL_SECONDS = 60 * 60          # 1 soat
 REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7  # 7 kun
 SUPER_ACCESS_TTL_SECONDS = 60 * 60          # 1 soat (audit'ga yozilgani uchun qisqaroq)
+# Bot uzoq ishlaydigan jarayon, qayta login qilmaydi — uning scoped JWT'si uzoq TTL.
+# (Eski `SECRET_KEY:rid` o'rniga — endi master kalit emas, faqat o'sha restoran huquqi.)
+BOT_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30    # 30 kun
 
 JWT_ALGO = "HS256"
 JWT_ISSUER = "muhsina-saas"
@@ -72,16 +75,20 @@ def make_access_token(
     restaurant_id: Optional[int],
     is_super: bool = False,
     username: Optional[str] = None,
+    ttl_seconds: Optional[int] = None,
 ) -> str:
-    """Restaurant admin yoki super-admin uchun access token."""
+    """Restaurant admin yoki super-admin uchun access token.
+
+    ttl_seconds berilsa — standart TTL o'rniga ishlatiladi (masalan bot uchun uzoq).
+    """
     if is_super:
         sub = f"super:{username or 'admin'}"
-        ttl = SUPER_ACCESS_TTL_SECONDS
+        ttl = ttl_seconds or SUPER_ACCESS_TTL_SECONDS
     else:
         if restaurant_id is None:
             raise ValueError("Restaurant admin uchun restaurant_id kerak")
         sub = f"rid:{restaurant_id}"
-        ttl = ACCESS_TOKEN_TTL_SECONDS
+        ttl = ttl_seconds or ACCESS_TOKEN_TTL_SECONDS
 
     return _make_token({
         "sub": sub,
@@ -195,30 +202,10 @@ def refresh_access_token(refresh_token_raw: str) -> Optional[dict]:
 # ── Backward-compat: eski `SECRET_KEY:rid` formati ──────────────────────
 
 def parse_legacy_token(raw: str) -> Optional[TokenContext]:
-    """Eski statik token formatini tushunadi. Yangi tokenlar JWT bo'lgani
-    uchun bu funksiya migration davrida ishlatiladi va keyin olib tashlanadi.
+    """[O'CHIRILGAN — xavfsizlik] Eski statik `SECRET_KEY` / `SECRET_KEY:rid` tokenlari
+    endi QABUL QILINMAYDI. Ular master kalitni oshkor qilardi (auditda Critical C1).
+    Faqat JWT va super-HMAC tokenlar ishlatiladi.
     """
-    if not raw:
-        return None
-    token = raw.replace("Bearer ", "").strip()
-    if not token or "." in token:   # JWT'da nuqta bor — bu legacy emas
-        return None
-
-    if token == settings.SECRET_KEY:
-        return TokenContext(
-            is_super=True, restaurant_id=None, username=None,
-            token_type="legacy", jti="", expires_at=0,
-        )
-    if ":" in token:
-        secret, rid = token.rsplit(":", 1)
-        if secret == settings.SECRET_KEY:
-            try:
-                return TokenContext(
-                    is_super=False, restaurant_id=int(rid), username=None,
-                    token_type="legacy", jti="", expires_at=0,
-                )
-            except ValueError:
-                pass
     return None
 
 

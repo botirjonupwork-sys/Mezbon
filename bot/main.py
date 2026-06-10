@@ -11,6 +11,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from bot.handlers import start, menu, cart, order, review, profile, catering, payments, ai_voice
 from bot import api_client
+from bot.middlewares.service_gate import ServiceGateMiddleware
 
 
 async def run_bot(bot_token: str):
@@ -41,6 +42,10 @@ async def run_bot(bot_token: str):
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher(storage=MemoryStorage())
+
+    # Xizmat darvozasi — bloklangan/suspended restoran botini to'xtatadi (handler'dan oldin)
+    dp.message.outer_middleware(ServiceGateMiddleware())
+    dp.callback_query.outer_middleware(ServiceGateMiddleware())
 
     # FSM state filterlari bor routerlar BIRINCHI — global F.location'lar oldidan
     dp.include_router(catering.router)

@@ -31,6 +31,16 @@ class Settings(BaseSettings):
     SUPER_ADMIN_USERNAME: str = "superadmin"
     SUPER_ADMIN_PASSWORD: str = ""     # .env'da o'rnatilishi SHART
 
+    # Bot<->API ichki autentifikatsiya — SECRET_KEY'dan AJRATILGAN (audit C1).
+    # Bo'sh bo'lsa bot so'rovlari rad etiladi (fail-closed). .env va bot bir xil qiymat.
+    BOT_API_SECRET: str = ""
+
+    # Payme Subscribe — saqlangan karta tokenlarini shifrlash master-kaliti (Fernet).
+    # Bu kalit DB'dan AJRATILGAN holda env'da turishi SHART (token'lar DB'da, kalit env'da).
+    # Yaratish: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # Autopay ishlatilmasa bo'sh bo'lishi mumkin; ishlatilganда bo'sh bo'lsa shifrlash xato beradi.
+    PAYME_TOKEN_ENC_KEY: str = ""
+
     # Biznes qoidalari
     DELIVERY_FEE: float = 10000.0
     MIN_ORDER_AMOUNT: float = 20000.0
@@ -38,7 +48,8 @@ class Settings(BaseSettings):
     WORK_END: str = "22:00"
 
     # App
-    DEBUG: bool = True
+    DEBUG: bool = False               # default False (audit H1) — prod xavfsiz
+    SQL_ECHO: bool = False             # SQL echo alohida (DEBUG'dan ajratilgan) — odatda False
     API_URL: str = "http://localhost:8000"
 
     # Critical alerts (ixtiyoriy) — `log_critical()` shu kanalga ham xabar yuboradi

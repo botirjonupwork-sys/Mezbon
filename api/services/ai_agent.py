@@ -52,6 +52,7 @@ class AIConversation:
     messages: list[dict] = field(default_factory=list)   # OpenAI chat formatida
     cart: list[CartItem] = field(default_factory=list)
     address: Optional[str] = None
+    delivery_type: Optional[str] = None   # 'delivery' | 'pickup' | None — slot
     confirmed: bool = False
     started_at: float = field(default_factory=time.time)
     last_active: float = field(default_factory=time.time)
@@ -108,15 +109,34 @@ def end_session(call_id: str) -> None:
 
 # ── Xarajat hisobi va DB log yozish ──────────────────────────────────────
 
-# LLM tarif (per 1M tokens). Manba: OpenAI pricing 2026-05.
+# LLM tarif (per 1M tokens). Provayderlar bo'yicha — 2026-05 yangilangan.
+# Groq/Gemini bepul tier'da $0, lekin pullik o'tishda hisoblansin.
 _LLM_RATES = {
-    "gpt-4o-mini": (0.15, 0.60),     # input, output ($/1M)
-    "gpt-4o":      (2.50, 10.00),
+    # OpenAI
+    "gpt-4o-mini":      (0.15, 0.60),
+    "gpt-4o":           (2.50, 10.00),
+    "gpt-4.1-mini":     (0.40, 1.60),
+    "gpt-4.1":          (2.00, 8.00),
+    # Anthropic
+    "claude-haiku-4-5":  (1.00, 5.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-opus-4-7":   (15.00, 75.00),
+    # Gemini (faqat pullik tier)
+    "gemini-1.5-pro":    (1.25, 5.00),
+    # Bepul modellar — taxminiy 0 (Groq, Gemini free)
+    "llama-3.3-70b-versatile": (0.0, 0.0),
+    "llama-3.1-70b-versatile": (0.0, 0.0),
+    "llama-3.1-8b-instant":    (0.0, 0.0),
+    "mixtral-8x7b-32768":      (0.0, 0.0),
+    "gemma2-9b-it":            (0.0, 0.0),
+    "gemini-2.0-flash":        (0.0, 0.0),
+    "gemini-2.0-flash-lite":   (0.0, 0.0),
+    "gemini-1.5-flash":        (0.0, 0.0),
 }
 
 
 def _llm_cost(model: str, tokens_in: int, tokens_out: int) -> float:
-    rate_in, rate_out = _LLM_RATES.get(model, _LLM_RATES["gpt-4o-mini"])
+    rate_in, rate_out = _LLM_RATES.get(model, (0.0, 0.0))
     return (tokens_in * rate_in + tokens_out * rate_out) / 1_000_000.0
 
 
@@ -192,15 +212,53 @@ async def load_menu(db: AsyncSession, restaurant_id: int) -> list[Product]:
     return list(result.scalars().all())
 
 
-def menu_to_text(products: list[Product]) -> str:
-    """AI uchun menyu — faqat ID, nom va narx."""
+async def load_categories(db: AsyncSession, restaurant_id: int) -> dict[int, str]:
+    """Restoranning faol kategoriyalari: {id: name_uz}."""
+    from database.models import Category
+    result = await db.execute(
+        select(Category).where(
+            Category.restaurant_id == restaurant_id,
+            Category.is_active == True,
+        ).order_by(Category.order, Category.id)
+    )
+    return {c.id: c.name_uz for c in result.scalars().all()}
+
+
+def menu_to_text(products: list[Product], categories: Optional[dict[int, str]] = None) -> str:
+    """AI uchun menyu — kategoriyalar bo'yicha guruhlangan.
+
+    Format:
+      [Kategoriya 1]
+      #1 — Mahsulot — 5,000 so'm
+      #2 — Mahsulot 2 — 6,000 so'm
+
+      [Kategoriya 2]
+      ...
+
+    Bu ko'rinish AI'ga "qaysi kategoriya kerak?" deb so'rashga yordam beradi.
+    """
     if not products:
         return "(Menyu bo'sh)"
-    lines = []
+    cats = categories or {}
+    by_cat: dict[int, list[Product]] = {}
     for p in products:
-        ctype = " [catering]" if (p.product_type or "regular") == "catering" else ""
-        lines.append(f"#{p.id} — {p.name_uz} — {int(p.price):,} so'm{ctype}")
-    return "\n".join(lines)
+        by_cat.setdefault(p.category_id or 0, []).append(p)
+
+    lines: list[str] = []
+    for cat_id, items in by_cat.items():
+        cat_name = cats.get(cat_id, "Boshqa")
+        lines.append(f"\n[{cat_name}]")
+        for p in items:
+            ctype = " [catering]" if (p.product_type or "regular") == "catering" else ""
+            lines.append(f"#{p.id} {p.name_uz} — {int(p.price):,} so'm{ctype}")
+    return "\n".join(lines).strip()
+
+
+def categories_to_text(categories: dict[int, str]) -> str:
+    """Faqat kategoriya nomlarini ro'yxat qilib chiqaradi (AI'ga 'menyuda nima bor' uchun)."""
+    if not categories:
+        return ""
+    return ", ".join(categories.values())
 
 
 # ── System prompt va tool schemas ────────────────────────────────────────
@@ -220,49 +278,87 @@ def _language_instruction(restaurant: Restaurant) -> str:
     return _LANGUAGE_INSTRUCTIONS.get(lang, _LANGUAGE_INSTRUCTIONS["uz"])
 
 
-def build_system_prompt(restaurant: Restaurant, menu_text: str) -> str:
-    """Restoranga moslangan system prompt.
+def build_system_prompt(
+    restaurant: Restaurant,
+    menu_text: str,
+    categories_list: str = "",
+) -> str:
+    """Restoranga moslangan system prompt — qadam-qadam suhbat shabloni.
 
     Muhim: AI faqat shu restoranning menyusidan mahsulot taklif qiladi va
-    narxlarni faqat shu yerdagi ro'yxatdan oladi. Hech qanday tashqi mahsulot
-    yoki narx kiritilmaydi.
+    narxlarni faqat shu yerdagi ro'yxatdan oladi.
     """
+    greeting_default = (
+        f"Assalomu alaykum! '{restaurant.name}' AI operatori. "
+        "Menyumiz bilan tanishasizmi yoki to'g'ridan-to'g'ri buyurtma berasizmi?"
+    )
+    custom_greeting = (getattr(restaurant, "ai_agent_greeting", None) or "").strip()
+    greeting = custom_greeting or greeting_default
+
+    category_hint = (
+        f"Bizdagi kategoriyalar: {categories_list}." if categories_list else ""
+    )
+
     base = (
-        f"Sen '{restaurant.name}' restoranining AI operatorisan. "
+        f"Sen '{restaurant.name}' restorani AI operatorisan. "
         f"{_language_instruction(restaurant)} "
-        "Vazifang: mijozdan buyurtma qabul qilish.\n\n"
-        "Qat'iy qoidalar:\n"
-        "1) Faqat quyidagi menyuda mavjud mahsulotlarni taklif qil. "
-        "Menyuda yo'q narsani hech qachon o'ylab topma yoki taklif qilma.\n"
-        "2) ID va narxlarni faqat menyudan ol — boshqa joydan emas.\n"
-        "3) Mijoz menyuda yo'q mahsulot so'rasa: 'Kechirasiz, bizda yo'q' deb ayt.\n"
-        "4) Mahsulot va miqdorni mijoz aytganda 'add_to_cart' funksiyasini chaqir.\n"
-        "5) Mijoz fikrini o'zgartirsa 'remove_from_cart' yoki 'clear_cart' chaqir.\n"
-        "6) Manzilni so'ra va 'set_address' chaqir (yetkazib berish bo'lsa).\n"
-        "7) Buyurtmani tasdiqlashdan oldin 'view_cart' bilan tekshir va mijozga "
-        "ovoz chiqarib aytib ber: nimalar, miqdor, jami summa.\n"
-        "8) Faqat mijoz aniq 'ha, tasdiqlayman' degandagina 'confirm_order' chaqir.\n"
-        "9) Agar mijoz juda ko'p miqdor so'rasa (tadbir uchun) — "
-        "'transfer_to_catering' chaqir va mijozga 'sizga qo'ng'iroq qilamiz' deb ayt.\n"
-        "10) Javoblar qisqa — ovoz uchun mo'ljallangan, 1-2 jumla."
+        "Javoblar qisqa (1-2 jumla), tabiiy va xushmuomala.\n\n"
+
+        "SUHBAT OQIMI (har bosqichni o'tkazib yubormaslik kerak):\n"
+        f"1. SALOMLASHISH (faqat suhbat boshida, agar hali aytmagan bo'lsang): "
+        f"\"{greeting}\"\n"
+        "2. AGAR MIJOZ MENYU SO'RASA: Kategoriyalarni ro'yxat qil va so'ra: "
+        f"'{category_hint} Qaysi turidan boshlaymiz?'\n"
+        "3. AGAR MIJOZ KATEGORIYA TANLASA: Shu kategoriyadagi mahsulotlarni "
+        "narx bilan sanab ber. Yana yangi mahsulot taklif qilma.\n"
+        "4. AGAR MIJOZ TO'G'RIDAN-TO'G'RI BUYURTMA BERSA: mahsulot va miqdorni "
+        "add_to_cart bilan saqla. Mijoz bir vaqtda bir nechta narsa aytsa "
+        "(masalan: '3 ta somsa va manzilim Chilonzor 5'), hammasini bir bora qabul qil "
+        "— bir necha tool chaqir va qayta so'rama.\n"
+        "5. SAVAT BO'SH EMAS BO'LGACH (agar yetkazish_turi hali tanlanmagan bo'lsa): "
+        "so'ra: 'Yetkazib beraylikmi yoki o'zingiz olib ketasizmi?' "
+        "→ Javobiga ko'ra set_delivery_type chaqir.\n"
+        "6. AGAR DELIVERY TANLANSA va MANZIL HALI YO'Q BO'LSA: manzilni so'ra "
+        "(ko'cha, uy raqami) → set_address.\n"
+        "7. BARCHA MA'LUMOT TO'LGANIDA (savat + yetkazish_turi + delivery'da manzil): "
+        "view_cart bilan tekshir va mijozga jamlamani ayt: mahsulotlar, jami summa, "
+        "yetkazish turi, manzil. So'ra: 'Tasdiqlaysizmi?'\n"
+        "8. AGAR MIJOZ 'HA, TASDIQLAYMAN' DESA: confirm_order chaqir.\n\n"
+
+        "MUHIM QOIDALAR:\n"
+        "- Mijoz allaqachon aytib bergan ma'lumotni QAYTA SO'RAMA. "
+        "Masalan 'manzilim Yunusobod 5-uy, 4 ta somsa kerak' desa — manzil va "
+        "miqdorni bir bora qabul qil.\n"
+        "- Faqat menyudagi mahsulotlarni taklif qil (narx/ID menyudan).\n"
+        "- Menyuda yo'q narsani taklif qilma. Mijoz so'rasa: 'Kechirasiz, bizda yo'q'.\n"
+        "- confirm_order chaqirishdan oldin barcha slot to'la bo'lsin. "
+        "Server validatsiyasi xato qaytarsa, yetishmayotgan ma'lumotni so'ra.\n"
+        "- Tadbir uchun katta miqdor (100+ somsa, 40+ non) — transfer_to_catering.\n"
+        "\n"
+        "STT XATOLARINI TANISH (ovoz orqali kelgan matn aniq bo'lmaydi):\n"
+        "- 'savoy', 'saboy', 'savoyni', 'soyim', 'o'zim', 'ozim', 'olaman', "
+        "'olib ketaman', 'olib ketish', 'kelaman olib', 'pikap' → PICKUP "
+        "(set_delivery_type('pickup')).\n"
+        "- 'yetkazib', 'yetkazing', 'olib keling', 'manzilga', 'uyga bering', "
+        "'eshikkacha', 'dostavka', 'dostavkasi' → DELIVERY "
+        "(set_delivery_type('delivery')).\n"
+        "- Raqamlar: 'тут' → 'to'rt' (4); 'бир-икки' → 'bir-ikki' (1-2, aniqlashtir); "
+        "'ани' → 'ana o'sha' (oldingi nomga).\n"
+        "- Agar mijoz 'yo'q, ...' deb gap boshlasa — bu rad etish/tuzatish. "
+        "Oldingi qadamni qayta ko'rib chiq.\n"
+        "- Ovoz juda noaniq bo'lsa — taxmin qilma, aniq so'ra."
     )
 
     parts = [base]
 
     custom = (restaurant.ai_agent_prompt or "").strip()
     if custom:
-        parts.append(f"\nRestoran ko'rsatmasi:\n{custom}")
-
-    greeting = (getattr(restaurant, "ai_agent_greeting", None) or "").strip()
-    if greeting:
-        parts.append(
-            f"\nKIRISH TABRIGI (suhbat boshida shu gapni ayt):\n\"{greeting}\""
-        )
+        parts.append(f"\nRestoran maxsus ko'rsatmasi:\n{custom}")
 
     fallback_phone = (getattr(restaurant, "ai_agent_fallback_phone", None) or "").strip()
     if fallback_phone:
         parts.append(
-            f"\nAgar mijozning so'rovini tushunmasang yoki murakkab vaziyat bo'lsa, "
+            f"\nAgar mijozning so'rovini tushuna olmasang yoki murakkab vaziyat bo'lsa, "
             f"unga ayting: 'Operator bilan bog'lanish uchun {fallback_phone} raqamiga qo'ng'iroq qiling.'"
         )
 
@@ -270,86 +366,135 @@ def build_system_prompt(restaurant: Restaurant, menu_text: str) -> str:
         f"\nRESTORAN: {restaurant.name}\n"
         f"ISH VAQTI: {restaurant.work_hours_from}–{restaurant.work_hours_until}\n"
         f"MIN. BUYURTMA: {int(restaurant.min_order or 0):,} so'm\n"
-        f"\nJORIY MENYU (faqat shu mahsulotlarni taklif qiling):\n{menu_text}"
+        f"\nMENYU (kategoriyalar bo'yicha, faqat shu mahsulotlar taklif qilinadi):\n{menu_text}"
     )
     return "\n".join(parts)
 
 
+def _recover_failed_tool_calls(failed_generation: str) -> list[dict]:
+    """Llama 4 va boshqa modellar ba'zan tool_call'larni xato formatda yuboradi:
+      - Raqamlarni string sifatida ('product_id': '92')
+      - 'parameters' field nomini ishlatadi (OpenAI 'arguments' kutadi)
+      - 'arguments' o'rniga to'liq object yuboradi
+
+    Bu funksiya failed_generation matnini parse qilib, to'g'ri formatda
+    tool_calls ro'yxatini qaytaradi. Type coercion ham qo'shilgan.
+    """
+    import json as _json
+    import re as _re
+    if not failed_generation:
+        return []
+
+    # JSON'ni topib parse qilamiz (matnda boshqa narsalar bo'lishi mumkin)
+    text = failed_generation.strip()
+    # Markdown code blocks olib tashlash
+    if text.startswith("```"):
+        text = _re.sub(r"^```\w*\n?", "", text)
+        text = _re.sub(r"\n?```$", "", text)
+    try:
+        parsed = _json.loads(text)
+    except Exception:
+        # Massiv emas, faqat bitta object bo'lishi mumkin
+        try:
+            # Birinchi { dan oxirgi } gacha yoki [ dan ]
+            start = min((text.find(c) for c in "[{" if text.find(c) >= 0), default=-1)
+            end_arr = text.rfind("]")
+            end_obj = text.rfind("}")
+            end = max(end_arr, end_obj)
+            if start < 0 or end <= start:
+                return []
+            parsed = _json.loads(text[start:end+1])
+        except Exception:
+            return []
+
+    items = parsed if isinstance(parsed, list) else [parsed]
+
+    # Tools schema'sidan integer maydonlarini olamiz
+    int_fields_per_tool: dict[str, set] = {}
+    for t in TOOLS:
+        fn = t.get("function", {})
+        name = fn.get("name", "")
+        props = (fn.get("parameters") or {}).get("properties") or {}
+        int_fields_per_tool[name] = {
+            k for k, v in props.items() if isinstance(v, dict) and v.get("type") == "integer"
+        }
+
+    recovered = []
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or item.get("function") or ""
+        if not name:
+            continue
+        # arguments yoki parameters yoki to'g'ridan-to'g'ri object
+        args = item.get("arguments")
+        if args is None:
+            args = item.get("parameters") or {}
+        # arguments string bo'lsa — JSON parse
+        if isinstance(args, str):
+            try:
+                args = _json.loads(args)
+            except Exception:
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+
+        # Integer maydonlarini coerce qilish (string → int)
+        for f in int_fields_per_tool.get(name, set()):
+            if f in args and isinstance(args[f], str):
+                try:
+                    args[f] = int(args[f].strip())
+                except Exception:
+                    pass
+
+        recovered.append({
+            "id": f"recovered_{i}",
+            "name": name,
+            "arguments": args,
+        })
+
+    return recovered
+
+
 TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "add_to_cart",
-            "description": "Mahsulotni mijoz savatiga qo'shadi.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "product_id": {"type": "integer", "description": "Menyudagi mahsulot ID"},
-                    "quantity": {"type": "integer", "minimum": 1},
-                },
-                "required": ["product_id", "quantity"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "remove_from_cart",
-            "description": "Mahsulotni savatdan olib tashlash.",
-            "parameters": {
-                "type": "object",
-                "properties": {"product_id": {"type": "integer"}},
-                "required": ["product_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "clear_cart",
-            "description": "Savatni butunlay tozalash.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "view_cart",
-            "description": "Joriy savat tarkibini va jami summani qaytaradi.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "set_address",
-            "description": "Yetkazib berish manzilini saqlash.",
-            "parameters": {
-                "type": "object",
-                "properties": {"address": {"type": "string"}},
-                "required": ["address"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "confirm_order",
-            "description": "Buyurtmani tasdiqlash. Faqat mijoz ochiq tasdiqlasa chaqiring.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "transfer_to_catering",
-            "description": "Katta (catering) buyurtmani alohida kanalga yo'naltirish.",
-            "parameters": {
-                "type": "object",
-                "properties": {"reason": {"type": "string"}},
-            },
-        },
-    },
+    {"type": "function", "function": {
+        "name": "add_to_cart", "description": "Savatga qo'shish.",
+        "parameters": {"type": "object", "properties": {
+            "product_id": {"type": "integer"}, "quantity": {"type": "integer", "minimum": 1}
+        }, "required": ["product_id", "quantity"]},
+    }},
+    {"type": "function", "function": {
+        "name": "remove_from_cart", "description": "Savatdan o'chirish.",
+        "parameters": {"type": "object", "properties": {"product_id": {"type": "integer"}}, "required": ["product_id"]},
+    }},
+    {"type": "function", "function": {
+        "name": "clear_cart", "description": "Savatni tozalash.",
+        "parameters": {"type": "object", "properties": {}},
+    }},
+    {"type": "function", "function": {
+        "name": "view_cart", "description": "Savatni ko'rish.",
+        "parameters": {"type": "object", "properties": {}},
+    }},
+    {"type": "function", "function": {
+        "name": "set_address", "description": "Yetkazish manzilini saqlash.",
+        "parameters": {"type": "object", "properties": {"address": {"type": "string"}}, "required": ["address"]},
+    }},
+    {"type": "function", "function": {
+        "name": "set_delivery_type",
+        "description": "Yetkazib berish yoki olib ketish turini saqlash.",
+        "parameters": {"type": "object", "properties": {
+            "type": {"type": "string", "enum": ["delivery", "pickup"]}
+        }, "required": ["type"]},
+    }},
+    {"type": "function", "function": {
+        "name": "confirm_order",
+        "description": "Buyurtmani tasdiqlash. Faqat barcha ma'lumotlar to'liq bo'lganda chaqiring.",
+        "parameters": {"type": "object", "properties": {}},
+    }},
+    {"type": "function", "function": {
+        "name": "transfer_to_catering", "description": "Catering kanaliga uzatish.",
+        "parameters": {"type": "object", "properties": {"reason": {"type": "string"}}},
+    }},
 ]
 
 
@@ -394,13 +539,37 @@ def _exec_tool(
 
     if name == "set_address":
         sess.address = (args.get("address") or "").strip() or None
-        return {"ok": True, "address": sess.address}
+        # Manzil berilganda — yetkazib berish deb belgilaymiz (agar hali aniqlanmagan bo'lsa)
+        if sess.address and not sess.delivery_type:
+            sess.delivery_type = "delivery"
+        return {"ok": True, "address": sess.address, "delivery_type": sess.delivery_type}
+
+    if name == "set_delivery_type":
+        dt = (args.get("type") or "").strip().lower()
+        if dt not in ("delivery", "pickup"):
+            return {"error": "type 'delivery' yoki 'pickup' bo'lishi kerak"}
+        sess.delivery_type = dt
+        if dt == "pickup":
+            sess.address = None
+        return {"ok": True, "delivery_type": dt}
 
     if name == "confirm_order":
-        if not sess.cart:
-            return {"error": "Savat bo'sh"}
+        # Slot validatsiyasi — kerakli ma'lumotlar to'liqmi?
+        missing = order_missing_slots(sess)
+        if missing:
+            return {
+                "error": "missing_slots",
+                "missing": missing,
+                "instruction": (
+                    f"Buyurtmani tasdiqlash uchun quyidagi ma'lumotlar yetishmayapti: "
+                    f"{', '.join(missing)}. Mijozdan shularni so'rang."
+                ),
+            }
         sess.confirmed = True
-        return {"ok": True, "summary": sess.cart_summary(), "address": sess.address}
+        return {
+            "ok": True, "summary": sess.cart_summary(),
+            "address": sess.address, "delivery_type": sess.delivery_type,
+        }
 
     if name == "transfer_to_catering":
         # Sessiyani belgilab qo'yamiz — tashqi handler order yaratmasdan transfer qiladi
@@ -408,6 +577,26 @@ def _exec_tool(
         return {"ok": True, "transferred": True, "reason": args.get("reason", "")}
 
     return {"error": f"Noma'lum funksiya: {name}"}
+
+
+# ── Slot validatsiyasi (buyurtma to'liqligini tekshirish) ───────────────
+
+def order_missing_slots(sess: AIConversation) -> list[str]:
+    """Buyurtma tasdiqlashga yetishmayotgan slotlar ro'yxati.
+
+    Slotlar:
+      - 'mahsulot' — savatda kamida 1 ta mahsulot
+      - 'yetkazish_turi' — delivery yoki pickup tanlanishi kerak
+      - 'manzil' — agar delivery bo'lsa, manzil
+    """
+    missing: list[str] = []
+    if not sess.cart:
+        missing.append("mahsulot (savat bo'sh)")
+    if not sess.delivery_type:
+        missing.append("yetkazish_turi (delivery yoki pickup)")
+    elif sess.delivery_type == "delivery" and not sess.address:
+        missing.append("manzil (yetkazib berish uchun)")
+    return missing
 
 
 # ── Catering aniqlash ────────────────────────────────────────────────────
@@ -423,42 +612,27 @@ def is_catering_cart(cart: list[CartItem], restaurant: Restaurant) -> bool:
     return False
 
 
-# ── OpenAI chat call ─────────────────────────────────────────────────────
+# ── LLM provayder qatlami (multi-provider abstraktsiya) ─────────────────
 
-async def _openai_chat(
-    api_key: str, model: str, messages: list[dict], tools: list[dict]
-) -> dict:
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": model,
-        "messages": messages,
-        "tools": tools,
-        "tool_choice": "auto",
-        "temperature": 0.4,
-    }
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.post(OPENAI_URL, json=payload, headers=headers)
-        r.raise_for_status()
-        return r.json()
+from api.services.llm import get_provider, get_provider_by_name
+from api.services.llm.registry import get_provider_api_key
 
 
 def _platform_api_key() -> str:
-    """LLM API kaliti — mezbon platforma sozlamalaridan (super-admin tomonidan kiritiladi).
-
-    Fallback tartibi: platform_settings.ai_llm_api_key → ENV OPENAI_API_KEY.
-    """
-    return (platform.get("ai_llm_api_key") or os.getenv("OPENAI_API_KEY") or "").strip()
+    """Joriy provayder uchun API kalit (super-admin tomonidan kiritiladi)."""
+    return get_provider_api_key()
 
 
 def _platform_model() -> str:
     return (platform.get("ai_llm_model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
 
 
-def _is_mock_mode(restaurant: Restaurant) -> bool:
-    """API key topilmasa mock mode (test).  AI hech narsa qaytarmaydi, statik javob.
+def _platform_provider_name() -> str:
+    return (platform.get("ai_llm_provider") or "openai").strip().lower() or "openai"
 
-    Eslatma: API kalit mezbon platforma sozlamalaridan olinadi, restoran emas.
-    """
+
+def _is_mock_mode(restaurant: Restaurant) -> bool:
+    """Joriy provayder uchun API kalit yo'q bo'lsa mock rejim."""
     return not _platform_api_key()
 
 
@@ -558,13 +732,16 @@ async def process_message(
 
     products = await load_menu(db, restaurant.id)
     products_by_id = {p.id: p for p in products}
-    menu_text = menu_to_text(products)
+    categories = await load_categories(db, restaurant.id)
+    menu_text = menu_to_text(products, categories)
+    categories_list = categories_to_text(categories)
 
     # Tizim xabarini har murojaatda yangilab qo'yamiz (menyu o'zgargan bo'lishi mumkin)
+    sys_content = build_system_prompt(restaurant, menu_text, categories_list)
     if not sess.messages:
-        sess.messages.append({"role": "system", "content": build_system_prompt(restaurant, menu_text)})
+        sess.messages.append({"role": "system", "content": sys_content})
     else:
-        sess.messages[0] = {"role": "system", "content": build_system_prompt(restaurant, menu_text)}
+        sess.messages[0] = {"role": "system", "content": sys_content}
 
     sess.messages.append({"role": "user", "content": user_text})
     sess.user_turn_count += 1
@@ -586,33 +763,154 @@ async def process_message(
 
     api_key = _platform_api_key()
     model = _platform_model()
+    provider = get_provider()
+    provider_label = provider.display_name
 
     transferred = False
     executed_tools: list[dict] = []
 
-    # Function-calling loop — tool chaqirilsa natija qo'shib, qayta chaqiramiz
+    # ── Conversation history trim — eski xabarlar token'larini tejash ───
+    # system + oxirgi 6 ta xabar (user/assistant/tool) yetadi — buyurtma uchun
+    # context'ning so'nggi bosqichlari muhim
+    MAX_HISTORY = 7   # 1 system + 6 oxirgi
+    if len(sess.messages) > MAX_HISTORY:
+        # System xabarni saqlab, oxirgi (MAX_HISTORY-1) ta xabarni qoldiramiz
+        system_msg = sess.messages[0] if sess.messages and sess.messages[0].get("role") == "system" else None
+        kept = sess.messages[-(MAX_HISTORY - 1):]
+        # tool/assistant juftliklari sinmasligi uchun — agar birinchi qolgan xabar 'tool' bo'lsa, uni o'tkazib yuboramiz
+        while kept and kept[0].get("role") == "tool":
+            kept = kept[1:]
+        sess.messages = ([system_msg] if system_msg else []) + kept
+
+    # ── Function-calling loop (max 5 iteratsiya) + retry on 429/tool_use_failed ──
+    async def _chat_with_retry():
+        """Avtomatik retry: 429 → server aytgan vaqtni kutib; tool_use_failed → qayta."""
+        import asyncio as _asyncio
+        import re as _re
+        try:
+            return await provider.chat(api_key, model, sess.messages, TOOLS)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                # 1) Retry-After header
+                wait_s = 0.0
+                try:
+                    ra = e.response.headers.get("retry-after")
+                    if ra:
+                        wait_s = float(ra)
+                except Exception:
+                    pass
+                # 2) Yoki xato matnidan "try again in X.YYs" olib kutamiz
+                if wait_s <= 0:
+                    try:
+                        body = e.response.json()
+                        msg = (body.get("error") or {}).get("message") or ""
+                        m = _re.search(r"try again in ([\d.]+)\s*s", msg)
+                        if m:
+                            wait_s = float(m.group(1)) + 0.5  # +0.5 sek xavfsizlik
+                    except Exception:
+                        pass
+                # 3) Default 3 sek
+                if wait_s <= 0:
+                    wait_s = 3.0
+                # Max 15 sekund — undan ko'p kutmaymiz (foydalanuvchi kutib qoladi)
+                wait_s = min(15.0, wait_s)
+                await _asyncio.sleep(wait_s)
+                return await provider.chat(api_key, model, sess.messages, TOOLS)
+            # tool_use_failed → Llama'ning xato tool format chiqishi.
+            # 1) Avval failed_generation'dan tool call'larni parse qilib, qaytarib ko'ramiz
+            # 2) Bu ishlamasa — oddiy retry
+            if e.response.status_code == 400:
+                try:
+                    body = e.response.json()
+                    err = body.get("error") or {}
+                    if err.get("code") == "tool_use_failed":
+                        fg = err.get("failed_generation") or ""
+                        recovered = _recover_failed_tool_calls(fg)
+                        if recovered:
+                            # AI to'g'ri tushindi, lekin format xato — biz qutqaramiz
+                            from .llm.base import ChatResult
+                            return ChatResult(
+                                content="", tool_calls=recovered,
+                                usage={"prompt_tokens": 0, "completion_tokens": 0},
+                            )
+                        # Recover bo'lmasa — retry
+                        await _asyncio.sleep(0.5)
+                        return await provider.chat(api_key, model, sess.messages, TOOLS)
+                except Exception:
+                    pass
+            raise
+
     for _ in range(5):  # max 5 iteratsiya (cheksiz cycle himoyasi)
         try:
-            data = await _openai_chat(api_key, model, sess.messages, TOOLS)
+            result_chat = await _chat_with_retry()
         except httpx.HTTPStatusError as e:
+            # Provayder batafsil xato xabarini ajratib olamiz
+            err_code = None
+            err_msg = ""
+            failed_gen = ""
+            try:
+                body = e.response.json()
+                # OpenAI/Groq formati
+                if isinstance(body, dict) and "error" in body and isinstance(body["error"], dict):
+                    err_code = body["error"].get("code") or body["error"].get("type")
+                    err_msg = body["error"].get("message") or ""
+                    # Groq tool_use_failed uchun batafsil generation
+                    fg = body["error"].get("failed_generation")
+                    if fg:
+                        failed_gen = str(fg)[:600]
+                # Anthropic formati
+                elif isinstance(body, dict) and body.get("type") == "error":
+                    err_code = (body.get("error") or {}).get("type")
+                    err_msg = (body.get("error") or {}).get("message") or ""
+            except Exception:
+                err_msg = e.response.text[:200]
             from api.logging_config import log_critical
             log_critical(
-                "ai_agent", "OpenAI request failed",
-                http_code=e.response.status_code, restaurant_id=restaurant.id,
-                call_id=sess.call_id, model=model,
+                "ai_agent", "LLM provider request failed",
+                provider=provider.name,
+                http_code=e.response.status_code, error_code=err_code, error_message=err_msg,
+                failed_generation=failed_gen,
+                restaurant_id=restaurant.id, call_id=sess.call_id, model=model,
             )
-            err = f"OpenAI xato: {e.response.status_code}"
-            sess.messages.append({"role": "assistant", "content": err})
+            # Foydalanuvchiga tushunarli xabar
+            err_msg_l = (err_msg or "").lower()
+            err_code_s = str(err_code or "")
+
+            if err_code in {"insufficient_quota", "billing_not_active"}:
+                friendly = f"{provider_label} hisobida kredit yo'q. Super-admin balansni to'ldirishi yoki bepul provayderga (Groq) o'tishi kerak."
+            elif e.response.status_code == 429 and "free_tier" in err_msg_l and "limit: 0" in err_msg_l:
+                # Gemini-spesifik: free tier mavjud emas (mintaqa cheklov)
+                friendly = (
+                    f"{provider_label} sizning hisobingiz uchun bepul tier'ni bermagan "
+                    "(mintaqa cheklov yoki yangi loyiha bo'lishi mumkin). "
+                    "Groq (Llama) provayderiga o'ting — u O'zbekistonda bepul ishlaydi."
+                )
+            elif e.response.status_code == 429:
+                friendly = f"Hozir {provider_label}'ga juda ko'p so'rov. Bir necha soniyadan keyin qayta urinib ko'ring."
+            elif err_code in {"rate_limit_exceeded", "rate_limit_error"}:
+                friendly = f"Hozir {provider_label}'ga juda ko'p so'rov. Bir necha soniyadan keyin qayta urinib ko'ring."
+            elif err_code in {"invalid_api_key", "authentication_error"} or e.response.status_code == 401:
+                friendly = f"{provider_label} kaliti noto'g'ri yoki mos kelmaydi (boshqa provayderning kaliti bo'lishi mumkin). Super-admin sozlamalarda kalitni qayta tekshiring."
+            elif err_code == "tool_use_failed":
+                friendly = (
+                    "AI buyurtmangizni tushuna olmadi. Iltimos, aniqroq aytib bering. "
+                    "Masalan: 'Bitta go'shli somsa olaman' yoki 'Manzilim Chilonzor 5-mavze, 12-uy'."
+                )
+            else:
+                code_label = err_code_s or "noma'lum"
+                friendly = f"{provider_label} xato: {e.response.status_code} ({code_label})"
+            sess.messages.append({"role": "assistant", "content": friendly})
             return {
-                "reply": err, "tool_calls": executed_tools, "confirmed": False,
+                "reply": friendly, "tool_calls": executed_tools, "confirmed": False,
                 "transferred": False, "cart": _cart_to_dicts(sess.cart),
-                "address": sess.address, "is_catering": False, "error": err,
+                "address": sess.address, "is_catering": False, "error": err_msg or friendly,
             }
         except Exception as e:
             from api.logging_config import log_critical
             log_critical(
                 "ai_agent", "AI service unavailable",
-                error=str(e), restaurant_id=restaurant.id, call_id=sess.call_id,
+                provider=provider.name, error=str(e),
+                restaurant_id=restaurant.id, call_id=sess.call_id,
             )
             err = f"AI xizmati ishlamayapti: {e}"
             sess.messages.append({"role": "assistant", "content": err})
@@ -623,23 +921,32 @@ async def process_message(
             }
 
         # Token usage tracking
-        usage = data.get("usage") or {}
-        sess.tokens_in += int(usage.get("prompt_tokens") or 0)
-        sess.tokens_out += int(usage.get("completion_tokens") or 0)
+        sess.tokens_in += int(result_chat.usage.get("prompt_tokens") or 0)
+        sess.tokens_out += int(result_chat.usage.get("completion_tokens") or 0)
 
-        choice = (data.get("choices") or [{}])[0]
-        msg = choice.get("message", {})
-        tool_calls = msg.get("tool_calls") or []
-
-        # LLM xabarini history ga qo'shish
-        sess.messages.append({
+        # LLM xabarini history ga qo'shish (OpenAI shaklida — provayderlar normalizatsiya qiladi)
+        # MUHIM: Groq null tool_calls'ni qabul qilmaydi, shuning uchun tool_calls yo'q bo'lsa
+        # field'ni butunlay qo'shmaymiz.
+        assistant_msg: dict = {
             "role": "assistant",
-            "content": msg.get("content") or "",
-            "tool_calls": tool_calls or None,
-        })
+            "content": result_chat.content or "",
+        }
+        if result_chat.tool_calls:
+            assistant_msg["tool_calls"] = [
+                {
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {
+                        "name": tc["name"],
+                        "arguments": json.dumps(tc.get("arguments") or {}, ensure_ascii=False),
+                    },
+                }
+                for tc in result_chat.tool_calls
+            ]
+        sess.messages.append(assistant_msg)
 
-        if not tool_calls:
-            reply = (msg.get("content") or "").strip()
+        if not result_chat.tool_calls:
+            reply = (result_chat.content or "").strip()
             if reply:
                 sess.add_transcript("assistant", reply)
             return {
@@ -653,32 +960,27 @@ async def process_message(
             }
 
         # Tool chaqiruvlarni ketma-ket bajaramiz
-        for tc in tool_calls:
-            fn = tc.get("function", {})
-            name = fn.get("name", "")
-            try:
-                args = json.loads(fn.get("arguments") or "{}")
-            except json.JSONDecodeError:
-                args = {}
-            result = _exec_tool(name, args, sess, products_by_id, restaurant)
-            executed_tools.append({"name": name, "args": args, "result": result})
+        for tc in result_chat.tool_calls:
+            name = tc.get("name", "")
+            args = tc.get("arguments") or {}
+            tool_result = _exec_tool(name, args, sess, products_by_id, restaurant)
+            executed_tools.append({"name": name, "args": args, "result": tool_result})
             if name == "transfer_to_catering":
                 transferred = True
             sess.messages.append({
                 "role": "tool",
                 "tool_call_id": tc.get("id"),
-                "content": json.dumps(result, ensure_ascii=False),
+                "name": name,
+                "content": json.dumps(tool_result, ensure_ascii=False),
             })
 
         # confirm yoki transfer bo'lsa loop'dan chiqamiz — yakuniy javobni LLM dan olish uchun
         if sess.confirmed or transferred:
-            # Yakuniy assistant javobini olish uchun yana bir marta chaqiramiz
             try:
-                data = await _openai_chat(api_key, model, sess.messages, TOOLS)
-                usage = data.get("usage") or {}
-                sess.tokens_in += int(usage.get("prompt_tokens") or 0)
-                sess.tokens_out += int(usage.get("completion_tokens") or 0)
-                final = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+                final_chat = await _chat_with_retry()
+                sess.tokens_in += int(final_chat.usage.get("prompt_tokens") or 0)
+                sess.tokens_out += int(final_chat.usage.get("completion_tokens") or 0)
+                final = final_chat.content or ""
                 sess.messages.append({"role": "assistant", "content": final})
             except Exception:
                 final = "Buyurtma tasdiqlandi." if sess.confirmed else "Sizga qo'ng'iroq qilamiz."

@@ -62,6 +62,9 @@ class Restaurant(Base):
 
     bot_token = Column(String)
     courier_bot_token = Column(String)
+    # Bot menejeri uchun restart signali — API restart so'rovida now() qo'yiladi,
+    # menejer buni poll qilib, shu restoran botini qayta ishga tushiradi.
+    bot_reload_at = Column(DateTime, nullable=True)
 
     admin_username = Column(String, default="admin")
     admin_password_hash = Column(String)
@@ -89,6 +92,19 @@ class Restaurant(Base):
     delivery_provider = Column(String, default="own")
     yandex_api_token = Column(String)
     yandex_test_mode = Column(Boolean, default=True)
+    # Yandex Delivery hisob balansi monitoringi.
+    # Rasmiy Express API'da balans endpointi topilmagani uchun hozir manual/mock source,
+    # keyin real API adapter shu maydonlarni yangilaydi.
+    yandex_balance_monitor_enabled = Column(Boolean, default=False, nullable=False)
+    yandex_balance_amount = Column(Float)
+    yandex_balance_currency = Column(String, default="UZS")
+    yandex_balance_checked_at = Column(DateTime)
+    yandex_balance_low_threshold = Column(Float, default=300000.0, nullable=False)
+    yandex_balance_critical_threshold = Column(Float, default=100000.0, nullable=False)
+    yandex_balance_status = Column(String, default="unknown", nullable=False)
+    yandex_balance_last_alert_at = Column(DateTime)
+    yandex_balance_source = Column(String, default="manual", nullable=False)
+    yandex_balance_block_on_critical = Column(Boolean, default=False, nullable=False)
 
     # Valyuta kursi (USD → UZS) catering uchun
     currency_auto = Column(Boolean, default=True)    # True: CBU API, False: qo'lda
@@ -126,6 +142,10 @@ class Restaurant(Base):
     payme_merchant_id = Column(String)
     payme_secret_key = Column(String)
     payme_enabled = Column(Boolean, default=False)
+
+    # Payme Subscribe — obunani avtomatik undirish (karta tokenlashtirilgan bo'lsa).
+    # Karta tokeni alohida PaymeCard jadvalida (shifrlangan) saqlanadi.
+    autopay_enabled = Column(Boolean, default=False, nullable=False)
 
     # Uzum Bank Merchant API (developer.uzumbank.uz)
     uzum_service_id = Column(String)        # serviceId kabinetdan
@@ -553,6 +573,29 @@ class Payment(Base):
     upgrade_type = Column(String, nullable=False, default="initial")
     # Queued upgrade qachon tarifga qo'llanildi (NULL = hali ko'chirilmagan)
     applied_at = Column(DateTime, nullable=True)
+
+
+class PaymeCard(Base):
+    """Restoran obunasini avtomatik undirish uchun Payme Subscribe karta tokeni.
+
+    Xavfsizlik:
+      * `token_enc` — Payme karta tokeni Fernet bilan SHIFRLANGAN holda saqlanadi
+        (ochiq token DB'da hech qachon turmaydi). Master kalit env: PAYME_TOKEN_ENC_KEY.
+      * Karta RAQAMI hech qachon saqlanmaydi/loglanmaydi — faqat `card_last4` (oxirgi 4).
+      * Bir restoranda bir vaqtda bitta `is_active=True` karta bo'ladi; eskilari
+        is_active=False bo'lib tarix uchun qoladi (audit + token rotatsiyasi).
+    """
+    __tablename__ = "payme_cards"
+
+    id = Column(Integer, primary_key=True)
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False, index=True)
+    token_enc = Column(Text, nullable=False)          # Fernet(token) — shifrlangan
+    card_last4 = Column(String, nullable=True)        # faqat ko'rsatish uchun (•••• 1234)
+    card_expire = Column(String, nullable=True)       # "MM/YY" — ko'rsatish uchun
+    verified = Column(Boolean, default=False, nullable=False)   # SMS kod bilan tasdiqlangan
+    is_active = Column(Boolean, default=True, nullable=False)   # joriy ishlatiladigan karta
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    verified_at = Column(DateTime, nullable=True)
 
 
 class SecurityLog(Base):

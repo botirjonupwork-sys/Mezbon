@@ -1,4 +1,6 @@
 """Bildirishnomalar: adminga yangi zakaz, mijozga status yangilanishi"""
+import html
+
 from aiogram import Bot
 
 STATUS_MSG = {
@@ -42,7 +44,7 @@ async def notify_admin(
 
     if cart:
         items_text = "\n".join(
-            f"  • {v['name']} x{v['quantity']} — {v['price'] * v['quantity']:,.0f} so'm"
+            f"  • {html.escape(str(v['name']))} x{v['quantity']} — {v['price'] * v['quantity']:,.0f} so'm"
             for v in cart.values()
         )
     else:
@@ -51,16 +53,19 @@ async def notify_admin(
             for i in order.get("items", [])
         )
 
-    address_line = f"\n📍 {order.get('address', '—')}" if order.get("delivery_type") == "delivery" else ""
-    comment_line = f"\n💬 {order['comment']}" if order.get("comment") else ""
+    address_line = (
+        f"\n📍 {html.escape(str(order.get('address', '—')))}"
+        if order.get("delivery_type") == "delivery" else ""
+    )
+    comment_line = f"\n💬 {html.escape(str(order['comment']))}" if order.get("comment") else ""
 
     try:
         await bot.send_message(
             chat_id=admin_chat_id,
             text=(
                 f"🔔 <b>Yangi zakaz #{order['id']}</b>\n\n"
-                f"👤 {user_name}\n"
-                f"📞 {user_phone}\n"
+                f"👤 {html.escape(str(user_name))}\n"
+                f"📞 {html.escape(str(user_phone))}\n"
                 f"{delivery}"
                 f"{address_line}"
                 f"{comment_line}\n\n"

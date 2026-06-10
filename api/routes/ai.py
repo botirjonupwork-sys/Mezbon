@@ -329,9 +329,21 @@ async def voice_turn(
     # Whisper xarajati past, taxminiy qiymat yetarli.
     sess.stt_seconds += max(1.0, len(audio_bytes) / 6000.0)  # ~6 KB/sec Telegram Opus
     lang_hint = voice_svc.language_hint(getattr(restaurant, "ai_agent_language", None))
+
+    # Restoran menyusi nomlarini Whisper prompt'iga qo'shamiz —
+    # bu Uzbek STT'ni mahsulot nomlarida sezilarli yaxshilaydi.
+    try:
+        menu_products = await ai_agent.load_menu(db, restaurant.id)
+        menu_item_names = [p.name_uz for p in menu_products if p.name_uz]
+    except Exception:
+        menu_item_names = []
+
     try:
         transcript = await voice_svc.transcribe(
-            audio_bytes, filename=audio.filename or "voice.ogg", language=lang_hint
+            audio_bytes,
+            filename=audio.filename or "voice.ogg",
+            language=lang_hint,
+            menu_items=menu_item_names,
         )
     except Exception as e:
         from api.logging_config import log_critical
@@ -375,15 +387,15 @@ async def voice_turn(
     if end_call:
         await ai_agent.finalize_session(db, call_id, ended_reason="user_hangup")
 
-    # TTS — javobni audio qilish
+    # TTS — javobni audio qilish (faqat TTS provayder yoqilgan bo'lsa)
     reply_text = (result.get("reply") or "").strip()
     audio_b64: Optional[str] = None
-    if reply_text:
+    tts_provider = (platform.get("ai_tts_provider") or "openai").lower()
+    if reply_text and tts_provider not in ("none", "off", "disabled", ""):
         try:
             voice_id = voice_svc.voice_for_restaurant(restaurant.ai_agent_voice)
             tts_bytes = await voice_svc.synthesize(reply_text, voice=voice_id)
             audio_b64 = base64.b64encode(tts_bytes).decode("ascii")
-            # Sessiyaga TTS xarajatini qo'shamiz (xarajat hisobi uchun)
             if call_id in ai_agent._SESSIONS:
                 ai_agent._SESSIONS[call_id].tts_chars += len(reply_text)
         except Exception as e:

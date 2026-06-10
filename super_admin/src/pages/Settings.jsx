@@ -6,6 +6,7 @@ import {
 import {
   UserOutlined, LockOutlined, GlobalOutlined, PhoneOutlined,
   MailOutlined, SaveOutlined, RobotOutlined, KeyOutlined,
+  CreditCardOutlined,
 } from '@ant-design/icons'
 import { useAuthStore } from '../store/auth'
 import {
@@ -19,30 +20,40 @@ export default function Settings() {
   const [profileForm] = Form.useForm()
   const [platformForm] = Form.useForm()
   const [aiForm] = Form.useForm()
+  const [paymeForm] = Form.useForm()
   const [profileLoading, setProfileLoading] = useState(false)
   const [platformLoading, setPlatformLoading] = useState(false)
   const [aiLoading, setAiLoading] = useState(false)
-  const [aiStatus, setAiStatus] = useState({ llm_set: false, llm_masked: '', tts_set: false, tts_masked: '' })
+  const [paymeLoading, setPaymeLoading] = useState(false)
+  const [paymeKeyStatus, setPaymeKeyStatus] = useState({ set: false, masked: '' })
+  const [providersMeta, setProvidersMeta] = useState([])         // backend'dan kelgan provider katalog
+  const [keysStatus, setKeysStatus] = useState({})               // {openai: {set, masked}, groq: ...}
+  const [selectedProvider, setSelectedProvider] = useState('openai')
   const [fetching, setFetching] = useState(true)
   const setAuth = useAuthStore((s) => s.setAuth)
   const logout = useAuthStore((s) => s.logout)
 
   const applyPlatformData = (d) => {
     platformForm.setFieldsValue(d)
+    const prov = d.ai_llm_provider || 'openai'
     aiForm.setFieldsValue({
-      ai_llm_provider: d.ai_llm_provider || 'openai',
+      ai_llm_provider: prov,
       ai_llm_model: d.ai_llm_model || 'gpt-4o-mini',
-      ai_llm_api_key: '',  // hech qachon plaintext kelmaydi
+      ai_llm_api_key: '',   // hech qachon plaintext kelmaydi
+      ai_stt_provider: d.ai_stt_provider || 'openai',
       ai_tts_provider: d.ai_tts_provider || 'openai',
-      ai_tts_api_key: '',
       ai_voice_gateway: d.ai_voice_gateway || 'telegram',
     })
-    setAiStatus({
-      llm_set: !!d.ai_llm_api_key_set,
-      llm_masked: d.ai_llm_api_key_masked || '',
-      tts_set: !!d.ai_tts_api_key_set,
-      tts_masked: d.ai_tts_api_key_masked || '',
+    setProvidersMeta(d.ai_providers || [])
+    setKeysStatus(d.ai_llm_api_keys_status || {})
+    setSelectedProvider(prov)
+    // Payme Subscribe (obuna avtopay)
+    paymeForm.setFieldsValue({
+      payme_subscribe_merchant_id: d.payme_subscribe_merchant_id || '',
+      payme_subscribe_test_mode: d.payme_subscribe_test_mode !== false,
+      payme_subscribe_key: '',   // kalit hech qachon plaintext kelmaydi
     })
+    setPaymeKeyStatus(d.payme_subscribe_key_status || { set: false, masked: '' })
   }
 
   useEffect(() => {
@@ -94,18 +105,23 @@ export default function Settings() {
   }
 
   const onAiSave = async (values) => {
-    // API kalitlar bo'sh bo'lsa — yubormaymiz (eski qiymat saqlanib qoladi)
     const payload = {
       ai_llm_provider: values.ai_llm_provider,
       ai_llm_model: values.ai_llm_model,
+      ai_stt_provider: values.ai_stt_provider,
       ai_tts_provider: values.ai_tts_provider,
       ai_voice_gateway: values.ai_voice_gateway,
     }
+    // API kalit faqat kiritilgan bo'lsa yuboriladi (tanlangan provayder uchun)
+    const keys = {}
     if (values.ai_llm_api_key && values.ai_llm_api_key.trim()) {
-      payload.ai_llm_api_key = values.ai_llm_api_key.trim()
+      keys[values.ai_llm_provider] = values.ai_llm_api_key.trim()
     }
-    if (values.ai_tts_api_key && values.ai_tts_api_key.trim()) {
-      payload.ai_tts_api_key = values.ai_tts_api_key.trim()
+    if (values.ai_aisha_api_key && values.ai_aisha_api_key.trim()) {
+      keys.aisha = values.ai_aisha_api_key.trim()
+    }
+    if (Object.keys(keys).length) {
+      payload.ai_llm_api_keys = keys
     }
     setAiLoading(true)
     try {
@@ -116,6 +132,27 @@ export default function Settings() {
       message.error(e.response?.data?.detail || 'Xato yuz berdi')
     } finally {
       setAiLoading(false)
+    }
+  }
+
+  const onPaymeSave = async (values) => {
+    const payload = {
+      payme_subscribe_merchant_id: values.payme_subscribe_merchant_id || '',
+      payme_subscribe_test_mode: !!values.payme_subscribe_test_mode,
+    }
+    // Kalit faqat kiritilgan bo'lsa yuboriladi (bo'sh → eski saqlanadi)
+    if (values.payme_subscribe_key && values.payme_subscribe_key.trim()) {
+      payload.payme_subscribe_key = values.payme_subscribe_key.trim()
+    }
+    setPaymeLoading(true)
+    try {
+      const res = await updatePlatformSettings(payload)
+      applyPlatformData(res.data)
+      message.success('Avtomatik to\'lov sozlamalari saqlandi')
+    } catch (e) {
+      message.error(e.response?.data?.detail || 'Xato yuz berdi')
+    } finally {
+      setPaymeLoading(false)
     }
   }
 
@@ -278,8 +315,27 @@ export default function Settings() {
     {
       key: 'ai',
       label: <span><RobotOutlined /> AI Operator</span>,
-      children: (
-        <Card style={{ maxWidth: 720 }}>
+      children: (() => {
+        // Joriy tanlangan provayder uchun metadata
+        const currentMeta = providersMeta.find(p => p.name === selectedProvider) || {}
+        const currentKeyStatus = keysStatus[selectedProvider] || { set: false, masked: '' }
+        const modelOptions = (currentMeta.models || []).map(m => ({
+          value: m.value,
+          label: `${m.label}${m.notes ? ' — ' + m.notes : ''}`,
+        }))
+
+        // Provayder tanlanganda model'ni avtomatik birinchi modelga o'rnatish
+        const onProviderChange = (newProvider) => {
+          setSelectedProvider(newProvider)
+          const meta = providersMeta.find(p => p.name === newProvider)
+          const defaultModel = meta?.models?.[0]?.value
+          if (defaultModel) {
+            aiForm.setFieldsValue({ ai_llm_model: defaultModel, ai_llm_api_key: '' })
+          }
+        }
+
+        return (
+        <Card style={{ maxWidth: 760 }}>
           <Title level={5} style={{ marginBottom: 4 }}>AI Call Operator — global konfiguratsiya</Title>
           <Text type="secondary" style={{ display: 'block', marginBottom: 20 }}>
             Bu sozlamalar barcha restoranlar uchun amal qiladi. Restoran adminlari bu yerga kirmaydi —
@@ -288,74 +344,141 @@ export default function Settings() {
 
           <Form form={aiForm} layout="vertical" onFinish={onAiSave}>
             <Divider orientation="left">LLM (matn modeli)</Divider>
+
+            <Alert
+              type="success" showIcon style={{ marginBottom: 16 }}
+              message="Bepul variantlar mavjud"
+              description="Groq (Llama 3.x) va Google Gemini bepul tier'da yaxshi sifat beradi — kreditka kerak emas. OpenAI/Claude esa pullik lekin yuqori sifat."
+            />
+
             <Row gutter={16}>
               <Col xs={24} sm={12}>
-                <Form.Item name="ai_llm_provider" label="Provayder">
-                  <Select options={[
-                    { value: 'openai', label: 'OpenAI' },
-                  ]} />
+                <Form.Item name="ai_llm_provider" label="LLM Provayder">
+                  <Select onChange={onProviderChange} options={providersMeta.map(p => ({
+                    value: p.name,
+                    label: p.display_name + (p.requires_billing ? '' : ' 🆓'),
+                  }))} />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={12}>
                 <Form.Item name="ai_llm_model" label="Model">
-                  <Select options={[
-                    { value: 'gpt-4o-mini', label: 'gpt-4o-mini (tez, arzon ~$0.15/1M)' },
-                    { value: 'gpt-4o', label: 'gpt-4o (aniqroq ~$2.50/1M)' },
-                  ]} />
+                  <Select options={modelOptions} />
                 </Form.Item>
               </Col>
             </Row>
+
             <Form.Item
               name="ai_llm_api_key"
               label={
                 <span>
-                  OpenAI API kalit{' '}
-                  {aiStatus.llm_set
-                    ? <Tag color="green" icon={<KeyOutlined />}>O'rnatilgan: {aiStatus.llm_masked}</Tag>
+                  {currentMeta.display_name || 'API'} kalit{' '}
+                  {currentKeyStatus.set
+                    ? <Tag color="green" icon={<KeyOutlined />}>O'rnatilgan: {currentKeyStatus.masked}</Tag>
                     : <Tag color="red">Hali kiritilmagan</Tag>}
                 </span>
               }
-              extra={aiStatus.llm_set
-                ? "Yangi qiymat kiritilsagina almashtiriladi. Bo'sh qoldirilsa eski kalit saqlanadi."
-                : "sk-... bilan boshlanadigan OpenAI kalitni kiriting. https://platform.openai.com/api-keys"}
+              extra={
+                <span>
+                  {currentKeyStatus.set
+                    ? "Yangi qiymat kiritilsagina almashtiriladi. Bo'sh qoldirilsa eski kalit saqlanadi. "
+                    : `${currentMeta.api_key_prefix || ''}... bilan boshlanadigan kalitni kiriting. `}
+                  {currentMeta.api_key_help_url && (
+                    <a href={currentMeta.api_key_help_url} target="_blank" rel="noreferrer">
+                      Kalit olish →
+                    </a>
+                  )}
+                </span>
+              }
             >
-              <Input.Password autoComplete="new-password" placeholder={aiStatus.llm_set ? '••••••••••••' : 'sk-...'} />
+              <Input.Password
+                autoComplete="new-password"
+                placeholder={currentKeyStatus.set ? '••••••••••••' : `${currentMeta.api_key_prefix || 'API key'}...`}
+              />
             </Form.Item>
 
-            <Divider orientation="left">TTS (ovozli javob) — keyingi bosqich</Divider>
-            <Alert
-              type="info" showIcon style={{ marginBottom: 16 }}
-              message="TTS hali ulanmagan"
-              description="Hozir AI faqat matn javob qaytaradi. TTS (Text-to-Speech) keyingi bosqichda ulanadi — OpenAI TTS yoki ElevenLabs."
-            />
-            <Row gutter={16}>
-              <Col xs={24} sm={12}>
-                <Form.Item name="ai_tts_provider" label="TTS provayder">
-                  <Select options={[
-                    { value: 'openai', label: 'OpenAI TTS' },
-                    { value: 'elevenlabs', label: 'ElevenLabs (yuqori sifat)' },
-                  ]} />
-                </Form.Item>
-              </Col>
-              <Col xs={24} sm={12}>
+            {/* Boshqa provayder kalit holatlari — tezkor ko'rinish */}
+            <div style={{ marginBottom: 16, padding: 12, background: '#fafafa', borderRadius: 8 }}>
+              <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>
+                BARCHA PROVAYDER KALITLARI HOLATI (har birini alohida sozlay olasiz):
+              </Text>
+              {providersMeta.map(p => {
+                const st = keysStatus[p.name] || {}
+                return (
+                  <Tag
+                    key={p.name}
+                    color={st.set ? 'green' : 'default'}
+                    style={{ marginBottom: 4, cursor: 'pointer' }}
+                    onClick={() => onProviderChange(p.name)}
+                  >
+                    {p.display_name}: {st.set ? `…${st.masked.replace('…', '')}` : 'yo\'q'}
+                  </Tag>
+                )
+              })}
+            </div>
+
+            <Divider orientation="left">STT (ovozni matnga)</Divider>
+            <Form.Item
+              name="ai_stt_provider"
+              label="Speech-to-Text provayder"
+              extra={
+                <span>
+                  <b>Aisha</b> — O'zbek tili uchun maxsus, ~90% aniqlik (425 so'm/daq).{' '}
+                  <b>Groq Whisper</b> — bepul, ~75% aniqlik.{' '}
+                  <b>OpenAI</b> — $0.006/daq, ~75% aniqlik.
+                </span>
+              }
+            >
+              <Select options={[
+                { value: 'aisha', label: '🇺🇿 Aisha (O\'zbek tili uchun, 90% aniqlik — tavsiya)' },
+                { value: 'groq', label: 'Groq Whisper (BEPUL, 75% aniqlik)' },
+                { value: 'openai', label: 'OpenAI Whisper ($0.006/daq, 75% aniqlik)' },
+              ]} />
+            </Form.Item>
+
+            <Form.Item
+              shouldUpdate={(prev, cur) => prev.ai_stt_provider !== cur.ai_stt_provider}
+              noStyle
+            >
+              {({ getFieldValue }) => getFieldValue('ai_stt_provider') === 'aisha' && (
                 <Form.Item
-                  name="ai_tts_api_key"
+                  name="ai_aisha_api_key"
                   label={
                     <span>
-                      TTS API kalit{' '}
-                      {aiStatus.tts_set
-                        ? <Tag color="green">…{aiStatus.tts_masked}</Tag>
-                        : <Tag>Yo'q</Tag>}
+                      Aisha API kalit{' '}
+                      {(keysStatus.aisha && keysStatus.aisha.set)
+                        ? <Tag color="green" icon={<KeyOutlined />}>O'rnatilgan: {keysStatus.aisha.masked}</Tag>
+                        : <Tag color="red">Hali kiritilmagan</Tag>}
                     </span>
                   }
-                  extra="Bo'sh bo'lsa OpenAI kalit (yuqorida) ishlatiladi"
+                  extra={
+                    <span>
+                      Aisha hisobingizdan API kalitni oling: {' '}
+                      <a href="https://aisha.group" target="_blank" rel="noreferrer">aisha.group</a> → Space → API Keys.
+                      {' '}Yangi qiymat kiritilsagina almashtiriladi.
+                    </span>
+                  }
                 >
-                  <Input.Password autoComplete="new-password" placeholder={aiStatus.tts_set ? '••••••••' : "TTS uchun alohida kalit (ixtiyoriy)"} />
+                  <Input.Password
+                    autoComplete="new-password"
+                    placeholder={(keysStatus.aisha && keysStatus.aisha.set) ? '••••••••••••' : 'aisha-key...'}
+                  />
                 </Form.Item>
-              </Col>
-            </Row>
+              )}
+            </Form.Item>
 
-            <Divider orientation="left">Ovoz gateway (telefon ulanish)</Divider>
+            <Divider orientation="left">TTS (matnni ovozga)</Divider>
+            <Form.Item
+              name="ai_tts_provider"
+              label="Text-to-Speech provayder"
+              extra="OpenAI TTS — ~$0.015/1000 belgi. 'O'chirilgan' bo'lsa AI faqat matn javob qaytaradi (bepul rejim)."
+            >
+              <Select options={[
+                { value: 'openai', label: 'OpenAI TTS ($0.015/1k belgi)' },
+                { value: 'none', label: "🆓 O'chirilgan — faqat matn javob (bepul)" },
+              ]} />
+            </Form.Item>
+
+            <Divider orientation="left">Ovoz gateway</Divider>
             <Form.Item
               name="ai_voice_gateway"
               label="Qaysi kanal orqali mijoz AI bilan gaplashadi"
@@ -369,6 +492,66 @@ export default function Settings() {
             </Form.Item>
 
             <Button type="primary" htmlType="submit" loading={aiLoading}
+              icon={<SaveOutlined />}
+              style={{ background: '#722ed1', borderColor: '#722ed1' }}>
+              Saqlash
+            </Button>
+          </Form>
+        </Card>
+        )
+      })(),
+    },
+    {
+      key: 'payme_subscribe',
+      label: <span><CreditCardOutlined /> Avtomatik to'lov</span>,
+      children: (
+        <Card style={{ maxWidth: 600 }}>
+          <Title level={5} style={{ marginBottom: 4 }}>Payme Subscribe — obuna avtopay</Title>
+          <Text type="secondary" style={{ display: 'block', marginBottom: 20 }}>
+            Restoran obunalarini avtomatik undirish uchun PLATFORMA (Mezbon) Payme kassasi
+            credential'lari. Bu restoran kassasi emas — platforma yuridik shaxsi kassasi.
+            Payme Business kabinetidan olinadi.
+          </Text>
+
+          <Form form={paymeForm} layout="vertical" onFinish={onPaymeSave}>
+            <Form.Item name="payme_subscribe_merchant_id" label="Subscribe kassa ID (merchant_id)">
+              <Input prefix={<CreditCardOutlined />} placeholder="5e7c1e..." />
+            </Form.Item>
+
+            <Form.Item
+              name="payme_subscribe_key"
+              label={
+                <span>
+                  Subscribe kassa kaliti{' '}
+                  {paymeKeyStatus.set
+                    ? <Tag color="green" icon={<KeyOutlined />}>O'rnatilgan: {paymeKeyStatus.masked}</Tag>
+                    : <Tag color="red">Hali kiritilmagan</Tag>}
+                </span>
+              }
+              extra={paymeKeyStatus.set
+                ? "Yangi qiymat kiritilsagina almashtiriladi. Bo'sh qoldirilsa eski kalit saqlanadi."
+                : "Payme Business kabinetidan Subscribe kassa kalitini kiriting."}
+            >
+              <Input.Password
+                autoComplete="new-password"
+                placeholder={paymeKeyStatus.set ? '••••••••••••' : 'kalit...'}
+              />
+            </Form.Item>
+
+            <Form.Item name="payme_subscribe_test_mode" label="Rejim">
+              <Select options={[
+                { value: true, label: '🧪 Sandbox (test.paycom.uz)' },
+                { value: false, label: '🟢 Live (checkout.paycom.uz)' },
+              ]} />
+            </Form.Item>
+
+            <Alert
+              type="warning" showIcon style={{ marginBottom: 16 }}
+              message="Yuridik shaxs talab qilinadi"
+              description="Subscribe kassasi faqat ro'yxatdan o'tgan yuridik shaxs (YaTT/MChJ) uchun ochiladi. Token shifrlash kaliti (PAYME_TOKEN_ENC_KEY) serverda .env'da bo'lishi shart."
+            />
+
+            <Button type="primary" htmlType="submit" loading={paymeLoading}
               icon={<SaveOutlined />}
               style={{ background: '#722ed1', borderColor: '#722ed1' }}>
               Saqlash

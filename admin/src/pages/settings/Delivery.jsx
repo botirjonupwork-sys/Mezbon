@@ -2,13 +2,13 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Card, Form, Input, Button, Typography, Row, Col,
-  message, Spin, Switch, Alert, Radio
+  message, Spin, Switch, Alert, Radio, InputNumber, Tag, Space
 } from 'antd'
 import {
   ArrowLeftOutlined, SaveOutlined, CarOutlined,
-  UserOutlined, ApiOutlined,
+  UserOutlined, ApiOutlined, ReloadOutlined,
 } from '@ant-design/icons'
-import { getSettings, updateSettings } from '../../api'
+import { checkYandexBalanceNow, getSettings, updateSettings } from '../../api'
 import { useAuthStore } from '../../store/auth'
 import { useBranchStore } from '../../store/branch'
 
@@ -23,6 +23,8 @@ export default function DeliverySettings() {
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [checkingBalance, setCheckingBalance] = useState(false)
+  const [balanceInfo, setBalanceInfo] = useState(null)
 
   const { currentRestaurantId: restaurantId } = useAuthStore()
   const selectedBranchId = useBranchStore((s) => s.selectedBranchId)
@@ -40,7 +42,17 @@ export default function DeliverySettings() {
         const d = res.data || {}
         if (!d.delivery_provider) d.delivery_provider = 'own'
         if (d.yandex_test_mode === undefined) d.yandex_test_mode = true
+        if (d.yandex_balance_currency === undefined) d.yandex_balance_currency = 'UZS'
+        if (d.yandex_balance_low_threshold === undefined) d.yandex_balance_low_threshold = 300000
+        if (d.yandex_balance_critical_threshold === undefined) d.yandex_balance_critical_threshold = 100000
         form.setFieldsValue(d)
+        setBalanceInfo({
+          status: d.yandex_balance_status,
+          amount: d.yandex_balance_amount,
+          currency: d.yandex_balance_currency || 'UZS',
+          checked_at: d.yandex_balance_checked_at,
+          source: d.yandex_balance_source,
+        })
       })
       .catch(() => message.error("Ma'lumotlarni yuklashda xato"))
       .finally(() => setLoading(false))
@@ -57,6 +69,35 @@ export default function DeliverySettings() {
     } finally {
       setSaving(false)
     }
+  }
+
+  const handleCheckBalance = async () => {
+    setCheckingBalance(true)
+    try {
+      const res = await checkYandexBalanceNow(restParams)
+      setBalanceInfo(res.data)
+      form.setFieldsValue({
+        yandex_balance_amount: res.data.amount,
+        yandex_balance_currency: res.data.currency || 'UZS',
+      })
+      message.success('Balans tekshirildi')
+    } catch {
+      message.error('Balansni tekshirishda xato')
+    } finally {
+      setCheckingBalance(false)
+    }
+  }
+
+  const statusTag = (status) => {
+    const map = {
+      ok: ['green', 'Yetarli'],
+      low: ['orange', 'Kam'],
+      critical: ['red', 'Kritik'],
+      unknown: ['default', "Noma'lum"],
+      disabled: ['default', "O'chiq"],
+    }
+    const [color, label] = map[status || 'unknown'] || map.unknown
+    return <Tag color={color}>{label}</Tag>
   }
 
   if (loading) {
@@ -224,6 +265,81 @@ export default function DeliverySettings() {
                     Yandex'da rasmiy sandbox mavjud emas, faqat token bilan haqiqiy API.
                   </Text>
                 </div>
+              </div>
+
+              <div style={{ height: 1, background: '#f0f0f0', margin: '20px 0' }} />
+
+              <span style={sectionLabel}>Balans monitoringi</span>
+              <Alert
+                type="warning"
+                showIcon
+                message="Yandex Express API'da balans endpointi tasdiqlanmagan"
+                description="Hozir balans qiymati manual/mock yuritiladi. Real endpoint berilganda shu monitoring avtomatik source'ga o'tkaziladi."
+                style={{ marginBottom: 16, borderRadius: 8 }}
+              />
+
+              <Row gutter={16}>
+                <Col xs={24} md={12}>
+                  <Form.Item name="yandex_balance_monitor_enabled" valuePropName="checked" label="Monitoring">
+                    <Switch checkedChildren="Yoqilgan" unCheckedChildren="O'chiq" />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={12}>
+                  <Form.Item name="yandex_balance_block_on_critical" valuePropName="checked" label="Kritik holatda Yandex claim">
+                    <Switch checkedChildren="Bloklash" unCheckedChildren="Faqat alert" />
+                  </Form.Item>
+                </Col>
+              </Row>
+
+              <Row gutter={16}>
+                <Col xs={24} md={12}>
+                  <Form.Item name="yandex_balance_amount" label="Joriy balans">
+                    <InputNumber
+                      min={0}
+                      step={10000}
+                      style={{ width: '100%' }}
+                      size="large"
+                      addonAfter="UZS"
+                      formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ' ')}
+                      parser={(v) => v?.replace(/\s/g, '')}
+                    />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={12}>
+                  <Form.Item name="yandex_balance_currency" label="Valyuta">
+                    <Input size="large" placeholder="UZS" />
+                  </Form.Item>
+                </Col>
+              </Row>
+
+              <Row gutter={16}>
+                <Col xs={24} md={12}>
+                  <Form.Item name="yandex_balance_low_threshold" label="Ogohlantirish chegarasi">
+                    <InputNumber min={0} step={10000} style={{ width: '100%' }} size="large" addonAfter="UZS" />
+                  </Form.Item>
+                </Col>
+                <Col xs={24} md={12}>
+                  <Form.Item name="yandex_balance_critical_threshold" label="Kritik chegara">
+                    <InputNumber min={0} step={10000} style={{ width: '100%' }} size="large" addonAfter="UZS" />
+                  </Form.Item>
+                </Col>
+              </Row>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', padding: 12, border: '1px solid #f0f0f0', borderRadius: 8 }}>
+                <Space direction="vertical" size={2}>
+                  <Space>
+                    <Text strong>Holat</Text>
+                    {statusTag(balanceInfo?.status)}
+                  </Space>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {balanceInfo?.checked_at
+                      ? `Oxirgi tekshiruv: ${new Date(balanceInfo.checked_at).toLocaleString('uz-UZ', { hour12: false })}`
+                      : 'Hali tekshirilmagan'}
+                  </Text>
+                </Space>
+                <Button icon={<ReloadOutlined />} loading={checkingBalance} onClick={handleCheckBalance}>
+                  Hozir tekshirish
+                </Button>
               </div>
             </Card>
           )}

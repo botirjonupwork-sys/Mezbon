@@ -27,17 +27,12 @@ API_PID=$!
 
 sleep 2
 
-echo "🤖 Bot ishga tushmoqda..."
-python -m bot.main &
+# Bot menejeri — DB'dagi BARCHA restoran botlarini (customer + courier) boshqaradi.
+# Har bir bot alohida subprocess'da; restart super-admin paneldan (bot_reload_at signali).
+echo "🤖 Bot menejeri ishga tushmoqda (barcha restoran botlari)..."
+python -m bot.manager &
 BOT_PID=$!
-
-# Kuryer bot (agar token mavjud bo'lsa)
 COURIER_PID=""
-if [ -n "$COURIER_BOT_TOKEN" ]; then
-  echo "🚗 Kuryer bot ishga tushmoqda..."
-  python -m courier_bot.main &
-  COURIER_PID=$!
-fi
 
 echo ""
 echo "✅ Hammasi ishga tushdi!"

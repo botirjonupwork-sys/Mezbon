@@ -13,6 +13,12 @@ env/
 # Local secrets / personal notes (never push)
 SECRETS.local.md
 *.local.md
+admins.json
+*.docx
+.omnichat
+oracle_arm_grabber.py
+arm_retry.pid
+arm_retry.log
 
 # Database
 *.sqlite

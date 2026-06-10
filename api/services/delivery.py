@@ -61,9 +61,50 @@ async def dispatch_order_to_provider(
         if not restaurant_has_feature(plan, "yandex"):
             log.info("[delivery] Yandex feature joriy tarifda yo'q (restaurant_id=%s); 'own' ga fallback", restaurant_id)
             return None
+        balance_guard = await _check_yandex_balance_before_dispatch(restaurant, order, db)
+        if balance_guard:
+            return balance_guard
         return await _dispatch_yandex(order, restaurant, db)
 
     return None
+
+
+async def _check_yandex_balance_before_dispatch(
+    restaurant: Restaurant,
+    order: Order,
+    db: AsyncSession,
+) -> Optional[dict]:
+    """Critical balansda Yandex claim yaratishdan oldin himoya."""
+    if not restaurant.yandex_balance_monitor_enabled:
+        return None
+
+    from api.services.yandex_balance import check_restaurant_yandex_balance
+
+    snapshot = await check_restaurant_yandex_balance(db, restaurant, notify=True)
+    if snapshot.get("status") != "critical":
+        return None
+
+    if not restaurant.yandex_balance_block_on_critical:
+        log.warning(
+            "[delivery] Yandex balance critical, but block disabled; continuing (restaurant_id=%s, order_id=%s)",
+            restaurant.id,
+            order.id,
+        )
+        return None
+
+    order.yandex_status = "blocked_balance_critical"
+    await db.commit()
+    log.warning(
+        "[delivery] Yandex dispatch blocked by critical balance (restaurant_id=%s, order_id=%s)",
+        restaurant.id,
+        order.id,
+    )
+    return {
+        "provider": "yandex",
+        "error": "yandex_balance_critical",
+        "status": "blocked_balance_critical",
+        "balance": snapshot,
+    }
 
 
 async def _dispatch_yandex(order: Order, restaurant: Restaurant, db: AsyncSession) -> dict:

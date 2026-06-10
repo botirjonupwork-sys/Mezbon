@@ -68,17 +68,10 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 _auth_limiter = Limiter(key_func=get_remote_address)
 
 
-# ── Super Admin auth dependency ──────────────────────
-async def require_super_admin(authorization: str = Header(...)):
-    """Super admin tokenni tekshirish."""
-    token = authorization.replace("Bearer ", "")
-    if token != settings.SECRET_KEY:
-        raise HTTPException(403, "Ruxsat yo'q")
-
-
-def _create_token(payload: dict) -> str:
-    """Oddiy token yaratish (hozircha static SECRET_KEY)."""
-    return settings.SECRET_KEY
+# [O'CHIRILDI — audit Critical C1] auth.py'dagi eski `require_super_admin`
+# (bearer == SECRET_KEY) va `_create_token` (SECRET_KEY qaytaruvchi) olib tashlandi:
+# ular ishlatilmasdi va master kalitni auth tokeni sifatida qabul qilardi.
+# Super-admin uchun `api.auth_deps.require_super_admin` (JWT/HMAC) ishlatiladi.
 
 
 class LoginRequest(BaseModel):
@@ -271,20 +264,22 @@ async def me(request: Request, db: AsyncSession = Depends(get_db)):
 
 @router.post("/refresh")
 @_auth_limiter.limit("10/minute")
-async def refresh_token(request: Request, refresh_token: str = ""):
+async def refresh_token(request: Request):
     """Refresh token orqali yangi access token olish.
 
-    Body: `{"refresh_token": "..."}` yoki query/header.
+    Token FAQAT HttpOnly cookie'dan yoki JSON body'dan olinadi — query-param'da
+    QABUL QILINMAYDI (uzoq muddatli token URL/proxy/access loglariga tushmasligi
+    uchun, audit topilmasi).
     """
     from api.services.auth_service import refresh_access_token
-    if not refresh_token:
-        # Body dan ham qabul qilamiz
+    token = request.cookies.get("refresh_token", "")
+    if not token:
         try:
             body = await request.json()
-            refresh_token = body.get("refresh_token", "")
+            token = body.get("refresh_token", "")
         except Exception:
             pass
-    new = refresh_access_token(refresh_token)
+    new = refresh_access_token(token)
     if not new:
         raise HTTPException(401, "Refresh token yaroqsiz yoki muddati o'tgan")
     return new
@@ -304,8 +299,15 @@ async def bot_login(request: Request, data: BotLoginRequest, db: AsyncSession = 
     restaurant = result.scalar_one_or_none()
     if not restaurant:
         raise HTTPException(404, "Bot token bilan restoran topilmadi")
+    # Scoped JWT (faqat shu restoran huquqi) — eski `SECRET_KEY:rid` master kalitni
+    # oshkor qilardi (audit Critical C1). Bot uzoq ishlagani uchun TTL uzoq.
+    from api.services.auth_service import make_access_token, BOT_TOKEN_TTL_SECONDS
+    token = make_access_token(
+        restaurant_id=restaurant.id, is_super=False,
+        username=f"bot:{restaurant.id}", ttl_seconds=BOT_TOKEN_TTL_SECONDS,
+    )
     return {
-        "token": f"{settings.SECRET_KEY}:{restaurant.id}",
+        "token": token,
         "restaurant_id": restaurant.id,
         "restaurant_name": restaurant.name,
     }
@@ -324,12 +326,15 @@ class SuperLoginResponse(BaseModel):
 
 @router.post("/super/login", response_model=SuperLoginResponse)
 @_auth_limiter.limit("5/minute")
-async def super_login(request: Request, data: SuperLoginRequest):
+async def super_login(request: Request, response: Response, data: SuperLoginRequest):
     if (
         data.username == settings.SUPER_ADMIN_USERNAME
         and data.password == settings.SUPER_ADMIN_PASSWORD
     ):
-        return SuperLoginResponse(
-            token=make_super_token(data.username), name="Super Admin",
-        )
+        # JWT + HttpOnly cookie (admin login bilan bir xil) — sahifa qayta yuklanganda
+        # ham auth saqlanadi (token endi faqat xotirada emas, cookie'da).
+        from api.services.auth_service import make_access_token
+        token = make_access_token(restaurant_id=None, is_super=True, username=data.username)
+        _set_auth_cookie(response, token)
+        return SuperLoginResponse(token=token, name="Super Admin")
     raise HTTPException(401, "Login yoki parol noto'g'ri")

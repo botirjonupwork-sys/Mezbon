@@ -120,7 +120,7 @@ ALL_TIME_SLOTS = [
 ]
 
 
-def date_kb(booked: dict | None = None) -> InlineKeyboardMarkup:
+def date_kb(booked=None) -> InlineKeyboardMarkup:
     """30 kunlik sana — kamida 24 soat oldin. To'liq band kunlar 🔒 bilan."""
     booked = booked or {}
     tomorrow = datetime.now().date() + timedelta(days=1)
@@ -158,7 +158,7 @@ def date_kb(booked: dict | None = None) -> InlineKeyboardMarkup:
 
 # ── Vaqt tanlash ─────────────────────────────────────
 
-def time_kb(busy_times: list | None = None) -> InlineKeyboardMarkup:
+def time_kb(busy_times=None) -> InlineKeyboardMarkup:
     """08:00–22:00 oralig'ida 30 daqiqa qadam. Band vaqtlar 🔒 bilan."""
     busy_set = set(busy_times or [])
     rows = []

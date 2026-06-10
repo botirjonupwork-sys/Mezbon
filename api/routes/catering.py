@@ -24,8 +24,12 @@ from database.models import (
 
 
 async def _require_bot_secret(x_bot_secret: Optional[str] = Header(None, alias="X-Bot-Secret")):
-    """Bot'dan kelgan so'rovlarni tekshirish (telegram_id spoofing'dan himoya)."""
-    if not x_bot_secret or x_bot_secret != settings.SECRET_KEY:
+    """Bot'dan kelgan so'rovlarni tekshirish (telegram_id spoofing'dan himoya).
+
+    Constant-time, markaziy is_valid_bot_secret orqali (BOT_API_SECRET) — audit C1/M1.
+    """
+    from api.services.security import is_valid_bot_secret
+    if not is_valid_bot_secret(x_bot_secret or ""):
         raise HTTPException(403, "Ruxsat berilmadi")
     return True
 
@@ -236,6 +240,7 @@ async def _compute_catering_price(
             "name_uz": p.name_uz,
             "quantity": it.quantity,
             "unit_price_usd": p.unit_price_usd,
+            "unit_price_uzs": p.unit_price_pickup_uzs,
             "item_usd": round(item_usd, 2),
             "item_uzs": item_uzs,
         })
@@ -542,6 +547,11 @@ async def create_catering_order(
         schedule_date=data.schedule_date,
         schedule_time=data.schedule_time,
         delivery_subtype=data.delivery_subtype,
+        service_type={
+            "onsite": "onsite_catering",
+            "pickup": "pickup",
+            "delivery": "delivery",
+        }.get(data.delivery_subtype, "pickup"),
         payment_method=data.payment_method,
         payment_timing=data.payment_timing,
         payment_status="pending",

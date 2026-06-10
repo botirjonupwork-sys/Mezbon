@@ -1,4 +1,5 @@
 import asyncio
+import html
 import os
 import httpx
 from dotenv import load_dotenv
@@ -17,6 +18,14 @@ from database.models import Order, OrderItem, OrderStatus, Product, User, Courie
 from pos.alice import alice_pos
 from api.services.delivery import dispatch_order_to_provider
 from api.services.pos_adapter import adapter as pos_adapter
+
+async def _require_bot_secret(x_bot_secret: Optional[str] = Header(None, alias="X-Bot-Secret")):
+    """Bot↔API ichki autentifikatsiya — telegram_id/order_id spoofing'dan himoya (audit C2)."""
+    from api.services.security import is_valid_bot_secret
+    if not is_valid_bot_secret(x_bot_secret or ""):
+        raise HTTPException(403, "Ruxsat berilmadi")
+    return True
+
 
 STATUS_MSG = {
     "confirmed":  "✅ Zakazingiz qabul qilindi! Tayyorlanishni boshlaymiz.",
@@ -96,8 +105,12 @@ async def create_order(
         total += item_price
         order_items.append((product, item.quantity, product.price))
 
+    # delivery_fee mijoz (bot) tomonidan Yandex narx-taklifidan keladi. Schema uni
+    # manfiy bo'lishdan saqlaydi; bu yerda mantiqsiz katta qiymatni ham cheklaymiz
+    # (audit H7 — mijoz boshqaradigan dastavka narxini suiiste'mol qilmaslik uchun).
+    MAX_DELIVERY_FEE = 1_000_000.0  # so'm
     if data.delivery_fee is not None:
-        delivery_fee = data.delivery_fee
+        delivery_fee = min(max(float(data.delivery_fee), 0.0), MAX_DELIVERY_FEE)
     else:
         delivery_fee = 0.0
 
@@ -262,6 +275,7 @@ async def get_user_orders(
     telegram_id: str,
     restaurant_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
+    _bot: bool = Depends(_require_bot_secret),
 ):
     """Foydalanuvchi buyurtmalari — SaaS izolatsiya: faqat shu restoran bot'idan."""
     result = await db.execute(select(User).where(User.telegram_id == telegram_id))
@@ -286,7 +300,7 @@ async def get_user_orders(
 
 
 @router.get("/{order_id}", response_model=OrderOut)
-async def get_order(order_id: int, db: AsyncSession = Depends(get_db)):
+async def get_order(order_id: int, db: AsyncSession = Depends(get_db), _bot: bool = Depends(_require_bot_secret)):
     result = await db.execute(
         select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
     )
@@ -297,7 +311,7 @@ async def get_order(order_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{order_id}/payment-status")
-async def get_payment_status(order_id: int, db: AsyncSession = Depends(get_db)):
+async def get_payment_status(order_id: int, db: AsyncSession = Depends(get_db), _bot: bool = Depends(_require_bot_secret)):
     """Real-time to'lov holati (bot polling, web app status)."""
     result = await db.execute(select(Order).where(Order.id == order_id))
     o = result.scalar_one_or_none()
@@ -313,7 +327,7 @@ async def get_payment_status(order_id: int, db: AsyncSession = Depends(get_db)):
         "total_price": float(o.total_price or 0),
         "is_prepayment": bool(o.is_prepayment),
         "prepayment_percent": o.prepayment_percent,
-        "payment_charge_id": o.payment_charge_id,
+        # payment_charge_id olib tashlandi (provider-ichki ID, mijozga kerak emas — audit C2)
         # Faza 6: fiskal va VAT
         "vat_amount_tiyin": o.vat_amount_tiyin or 0,
         "fiscal_qr": o.fiscal_qr,
@@ -323,7 +337,7 @@ async def get_payment_status(order_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/{order_id}/cancel-unpaid")
-async def cancel_unpaid_order(order_id: int, db: AsyncSession = Depends(get_db)):
+async def cancel_unpaid_order(order_id: int, db: AsyncSession = Depends(get_db), _bot: bool = Depends(_require_bot_secret)):
     """To'lanmagan buyurtmani bekor qilish.
 
     Faqat `payment_status != 'paid'` bo'lgan zakazlarni bekor qilish mumkin.
@@ -333,6 +347,9 @@ async def cancel_unpaid_order(order_id: int, db: AsyncSession = Depends(get_db))
         raise HTTPException(404, "Zakaz topilmadi")
     if order.payment_status == "paid":
         raise HTTPException(400, "To'langan buyurtmani bekor qilib bo'lmaydi (refund kerak)")
+    # Faqat hali yetkazilmagan/jarayonsiz buyurtmalar (audit L3 — yetkazilayotganni bekor qilmaslik)
+    if order.status not in (OrderStatus.pending, OrderStatus.confirmed):
+        raise HTTPException(400, "Bu buyurtmani bekor qilib bo'lmaydi")
     order.status = OrderStatus.cancelled
     order.payment_status = "cancelled"
     await db.commit()
@@ -340,7 +357,7 @@ async def cancel_unpaid_order(order_id: int, db: AsyncSession = Depends(get_db))
 
 
 @router.get("/{order_id}/pay-options")
-async def get_pay_options(order_id: int, db: AsyncSession = Depends(get_db)):
+async def get_pay_options(order_id: int, db: AsyncSession = Depends(get_db), _bot: bool = Depends(_require_bot_secret)):
     """Mijoz uchun mavjud to'lov usullari va URL'lari.
 
     Bot foydalanadi: foydalanuvchiga 3 ta direct app link (Click/Payme/Uzum)
@@ -483,7 +500,8 @@ async def _notify_couriers_new_order(db: AsyncSession, order: Order, order_items
     """Barcha faol kuryerlarga yangi zakaz haqida xabar yuborish (kuryer bot orqali)."""
     courier_token = os.getenv("COURIER_BOT_TOKEN", "")
     print(f"[Courier] _notify_couriers_new_order called for order #{order.id}")
-    print(f"[Courier] COURIER_BOT_TOKEN: {'set (' + courier_token[:10] + '...)' if courier_token else 'NOT SET!'}")
+    # Token prefiksini loglamaymiz (audit H2) — faqat o'rnatilgan/yo'qligini
+    print(f"[Courier] COURIER_BOT_TOKEN: {'set' if courier_token else 'NOT SET!'}")
     if not courier_token:
         return
 
@@ -495,20 +513,23 @@ async def _notify_couriers_new_order(db: AsyncSession, order: Order, order_items
         print("[Courier] No active couriers found")
         return
 
-    # Mahsulotlar ro'yxati
+    # Mahsulotlar ro'yxati (parse_mode=HTML — barcha user/DB matnlari escape qilinadi)
     items_text = ""
     if order_items:
-        items_text = "\n".join(f"  • {p.name_uz} x{q}" for p, q, _ in order_items)
+        items_text = "\n".join(f"  • {html.escape(p.name_uz)} x{q}" for p, q, _ in order_items)
 
     # Mijoz ma'lumotlari
     user_info = ""
     if user:
-        user_info = f"👤 Mijoz: {user.full_name}\n📞 Tel: {user.phone}\n"
+        user_info = (
+            f"👤 Mijoz: {html.escape(user.full_name or '')}\n"
+            f"📞 Tel: {html.escape(user.phone or '')}\n"
+        )
 
     text = (
         f"🔔 <b>Yangi zakaz #{order.id}</b>\n\n"
         f"{user_info}"
-        f"📍 Manzil: {order.address or '—'}\n"
+        f"📍 Manzil: {html.escape(order.address) if order.address else '—'}\n"
         f"💰 Summa: {order.total_price:,.0f} so'm\n"
     )
     text += "💳 To'lov: 💵 Naqd\n"
@@ -517,7 +538,7 @@ async def _notify_couriers_new_order(db: AsyncSession, order: Order, order_items
     if items_text:
         text += f"\n🛒 <b>Mahsulotlar:</b>\n{items_text}\n"
     if order.comment:
-        text += f"\n💬 Izoh: {order.comment}\n"
+        text += f"\n💬 Izoh: {html.escape(order.comment)}\n"
     text += "\nQabul qilasizmi?"
 
     api_url = f"https://api.telegram.org/bot{courier_token}"

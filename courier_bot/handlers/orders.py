@@ -6,6 +6,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 router = Router()
 
 API_URL = os.getenv("API_URL", "http://localhost:8000")
+_BOT_HEADERS = {"X-Bot-Secret": os.getenv("BOT_API_SECRET", "")}
 
 
 def accept_kb(order_id: int):
@@ -28,7 +29,7 @@ async def active_orders(message: Message):
     tg_id = str(message.from_user.id)
     try:
         async with httpx.AsyncClient() as client:
-            r = await client.get(f"{API_URL}/couriers/{tg_id}/orders")
+            r = await client.get(f"{API_URL}/couriers/{tg_id}/orders", headers=_BOT_HEADERS)
             if r.status_code == 200:
                 orders = r.json()
                 if not orders:
@@ -56,7 +57,7 @@ async def my_stats(message: Message):
     tg_id = str(message.from_user.id)
     try:
         async with httpx.AsyncClient() as client:
-            r = await client.get(f"{API_URL}/couriers/{tg_id}/stats")
+            r = await client.get(f"{API_URL}/couriers/{tg_id}/stats", headers=_BOT_HEADERS)
             if r.status_code == 200:
                 data = r.json()
                 await message.answer(
@@ -79,7 +80,8 @@ async def accept_order(callback: CallbackQuery):
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.post(
-                f"{API_URL}/couriers/{tg_id}/accept/{order_id}"
+                f"{API_URL}/couriers/{tg_id}/accept/{order_id}",
+                headers=_BOT_HEADERS,
             )
             print(f"[CourierBot] Accept order #{order_id}: {r.status_code} {r.text[:200]}")
             if r.status_code == 200:
@@ -135,7 +137,8 @@ async def mark_delivered(callback: CallbackQuery):
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(
-                f"{API_URL}/couriers/{tg_id}/delivered/{order_id}"
+                f"{API_URL}/couriers/{tg_id}/delivered/{order_id}",
+                headers=_BOT_HEADERS,
             )
             if r.status_code == 200:
                 await callback.answer("✅ Yetkazildi deb belgilandi!")

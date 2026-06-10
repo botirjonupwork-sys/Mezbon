@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from database.models import Restaurant, Plan, Payment
+from api.services.order_payments import build_payme_url
 
 def _load_click_allowed_ips() -> set[str]:
     """Env'dan CLICK_ALLOWED_IPS ni yuklash (vergul bilan ajratilgan)."""
@@ -174,11 +175,12 @@ async def create_payment_record(
             merchant_trans_id=merchant_trans_id,
         )
     else:  # payme
-        # Payme hosted page (oddiy variant). Real flow: server-side checkout API
-        cashbox = rest.payme_merchant_id
-        url = (
-            f"https://checkout.paycom.uz/"
-            f"?m={cashbox}&ac.merchant_trans_id={merchant_trans_id}&a={amount_tiyin}"
+        # Rasmiy base64 checkout formati (yagona quruvchi bilan).
+        # Account maydoni `merchant_trans_id` — webhook obunani shu bo'yicha topadi.
+        url = build_payme_url(
+            merchant_id=rest.payme_merchant_id,
+            amount_tiyin=amount_tiyin,
+            account={"merchant_trans_id": merchant_trans_id},
         )
 
     payment = Payment(

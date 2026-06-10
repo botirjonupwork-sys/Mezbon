@@ -16,12 +16,18 @@ _DEFAULT = {
     "maintenance_mode": False,
     "maintenance_message": "Texnik tanaffus. Tez orada qaytamiz.",
     # AI Call Operator — mezbon platforma boshqaradi (barcha restoranlar uchun yagona)
-    "ai_llm_provider": "openai",          # 'openai' | (kelajakda: 'anthropic', 'deepseek')
-    "ai_llm_model": "gpt-4o-mini",        # 'gpt-4o-mini' | 'gpt-4o'
-    "ai_llm_api_key": "",                 # master OpenAI kalit (sk-...)
-    "ai_tts_provider": "openai",          # 'openai' | (kelajakda: 'elevenlabs')
-    "ai_tts_api_key": "",                 # bo'sh bo'lsa ai_llm_api_key ishlatiladi
+    "ai_llm_provider": "openai",          # 'openai' | 'groq' | 'anthropic' | 'gemini'
+    "ai_llm_model": "gpt-4o-mini",        # provayder model ID
+    "ai_llm_api_keys": {},                # {"openai": "sk-...", "groq": "gsk_...", "anthropic": "sk-ant-...", "gemini": "AIza..."}
+    "ai_llm_api_key": "",                 # DEPRECATED — backward compat (faqat openai); endi ai_llm_api_keys ishlatiladi
+    "ai_stt_provider": "openai",          # 'openai' (Whisper) | 'groq' (Groq Whisper — bepul)
+    "ai_tts_provider": "openai",          # 'openai' | 'none' (matn-only rejim)
     "ai_voice_gateway": "telegram",       # 'telegram' | 'vapi' | 'twilio'
+    # Payme Subscribe — restoran obunalarini avtomatik undirish (PLATFORMA kassasi).
+    # Bu credential'lar platforma yuridik shaxsi (Mezbon) kassasiga tegishli — restoranniki emas.
+    "payme_subscribe_merchant_id": "",    # Subscribe kassa ID (X-Auth)
+    "payme_subscribe_key": "",            # Subscribe kassa kaliti (receipts uchun X-Auth: id:key)
+    "payme_subscribe_test_mode": True,    # True → checkout.test.paycom.uz/api (sandbox)
 }
 
 _cache: dict[str, Any] | None = None

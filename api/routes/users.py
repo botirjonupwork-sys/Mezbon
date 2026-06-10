@@ -33,6 +33,8 @@ async def restaurant_public_info(restaurant_id: int, db: AsyncSession = Depends(
     rest = result.scalar_one_or_none()
     if not rest:
         raise HTTPException(404, "Restoran topilmadi")
+    from api.services.subscription import service_block_state
+    svc = service_block_state(rest)
     return {
         "id": rest.id,
         "name": rest.name,
@@ -44,6 +46,10 @@ async def restaurant_public_info(restaurant_id: int, db: AsyncSession = Depends(
         "min_order": rest.min_order,
         "restaurant_lat": rest.restaurant_lat,
         "restaurant_lon": rest.restaurant_lon,
+        # Bot xizmat holati — blocked bo'lsa bot xizmat ko'rsatmaydi
+        "service_blocked": svc["blocked"],
+        "service_block_reason": svc["reason"],
+        "service_message": svc["message"],
     }
 
 

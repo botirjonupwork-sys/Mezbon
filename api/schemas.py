@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 from database.models import OrderStatus, DeliveryType
@@ -72,7 +72,8 @@ class ProductOut(BaseModel):
 # ── Order ─────────────────────────────────────────────
 class OrderItemCreate(BaseModel):
     product_id: int
-    quantity: int
+    # gt=0: manfiy/nol miqdor manfiy umumiy summa beradi (audit H7)
+    quantity: int = Field(gt=0, le=1000)
 
 
 class OrderCreate(BaseModel):
@@ -82,7 +83,7 @@ class OrderCreate(BaseModel):
     payment_method: str = "cash"
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    delivery_fee: Optional[float] = None
+    delivery_fee: Optional[float] = Field(default=None, ge=0)
     branch_id: Optional[int] = None
     items: List[OrderItemCreate]
     # Faza 10: Dastavka vaqti — "now" yoki "HH:MM" (masalan "15:30")

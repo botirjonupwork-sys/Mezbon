@@ -9,7 +9,9 @@ import {
 } from '@ant-design/icons'
 import {
   getAdminBranches, createAdminBranch, getBranchSettings, updateBranchSettings,
+  getMyPlan,
 } from '../api'
+import { useAuthStore } from '../store/auth'
 
 const { Title, Text } = Typography
 
@@ -18,8 +20,10 @@ export default function Branches() {
   const [loading, setLoading] = useState(false)
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState(null)
+  const [planInfo, setPlanInfo] = useState(null)
   const [createForm] = Form.useForm()
   const [editForm] = Form.useForm()
+  const restaurantId = useAuthStore((s) => s.currentRestaurantId)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -34,6 +38,13 @@ export default function Branches() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    const params = restaurantId ? { restaurant_id: restaurantId } : {}
+    getMyPlan(params)
+      .then((r) => setPlanInfo(r.data || null))
+      .catch(() => setPlanInfo(null))
+  }, [restaurantId])
 
   const onCreate = async () => {
     try {
@@ -148,9 +159,42 @@ export default function Branches() {
         </Space>
       </Space>
 
-      <Alert type="info" showIcon style={{ marginBottom: 16 }}
-        message="Tarif chegarasi"
-        description="Free tarif: 1 filial · Basic: 3 · Pro: 10. Ko'paytirish uchun tarifni ko'taring." />
+      {(() => {
+        const plan = planInfo?.plan
+        const maxLimit = plan ? Number(plan.max_branches_limit ?? 1) : 1
+        const used = branches.length
+        const isUnlimited = maxLimit === 0
+        const isTopTier = (plan?.slug || '').toLowerCase() === 'pro' || isUnlimited
+        const atLimit = !isUnlimited && used >= maxLimit
+        const planName = plan?.name || '—'
+
+        const usageText = isUnlimited
+          ? `Filiallar: ${used} (limitsiz)`
+          : `Filiallar: ${used}/${maxLimit}`
+
+        let description
+        let alertType = 'info'
+        if (isUnlimited) {
+          description = "Joriy tarifda istalgancha filial qo'shishingiz mumkin."
+        } else if (atLimit) {
+          alertType = 'warning'
+          description = isTopTier
+            ? "Joriy tarifda maksimal limitga yetdingiz."
+            : "Limitga yetdingiz. Yana filial qo'shish uchun tarifni ko'taring."
+        } else {
+          description = `Yana ${maxLimit - used} ta filial qo'shishingiz mumkin.`
+        }
+
+        return (
+          <Alert
+            type={alertType}
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={`Joriy tarif: ${planName} · ${usageText}`}
+            description={description}
+          />
+        )
+      })()}
 
       <Card>
         <Table

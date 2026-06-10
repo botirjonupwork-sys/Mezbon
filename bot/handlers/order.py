@@ -13,8 +13,9 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from bot.states import OrderFlow
-from bot.api_client import get_user, create_order, get_addresses, get_branch
+from bot.api_client import get_user, create_order, get_addresses, get_branch, quote_delivery_price
 from bot import api_client
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from bot.handlers.cart import get_cart, save_cart
 from bot.handlers.notifications import notify_admin
 from bot.keyboards.order import (
@@ -303,6 +304,113 @@ async def _ask_comment(message: Message, state: FSMContext, *, pickup: bool = Fa
     await state.set_state(OrderFlow.entering_comment)
 
 
+async def _quote_and_proceed(message: Message, state: FSMContext) -> None:
+    """Manzil koordinatasi olingach Yandex'dan haqiqiy narx so'rash.
+
+    - Yandex 'ok' qaytarsa: delivery_fee ni state'ga yozadi va _ask_comment ga o'tadi
+    - Yandex coverage tashqarisi bo'lsa: mijozga Saboy variantini taklif qiladi
+    - Yandex tarmoq xatosi yoki provider != yandex: jim o'tib (delivery_fee=0), _ask_comment
+    """
+    data = await state.get_data()
+    lat = data.get("latitude")
+    lon = data.get("longitude")
+    branch_id = data.get("branch_id")
+
+    # Koord yo'q yoki dastavka emas — Yandex chaqirilmaydi
+    if lat is None or lon is None or data.get("delivery_type") != "delivery":
+        await state.update_data(delivery_fee=0)
+        await _ask_comment(message, state)
+        return
+
+    try:
+        quote = await quote_delivery_price(
+            dropoff_lat=float(lat),
+            dropoff_lon=float(lon),
+            branch_id=int(branch_id) if branch_id else None,
+            weight_kg=1.0,
+        )
+    except Exception as e:
+        log.warning("Yandex quote failed: %s", e)
+        await state.update_data(delivery_fee=0)
+        await _ask_comment(message, state)
+        return
+
+    if quote.get("ok"):
+        price = float(quote.get("price") or 0)
+        await state.update_data(delivery_fee=price)
+        eta = quote.get("eta_minutes")
+        eta_text = f" · ⏱ ~{eta} daq" if eta else ""
+        await message.answer(
+            f"🚗 <b>Dastavka narxi (Yandex):</b> {price:,.0f} so'm{eta_text}",
+            parse_mode="HTML",
+        )
+        await _ask_comment(message, state)
+        return
+
+    code = quote.get("code", "")
+
+    # Provider Yandex emas → mahalliy hisoblashga qaytish
+    if code == "provider_not_yandex":
+        await state.update_data(delivery_fee=0)
+        await _ask_comment(message, state)
+        return
+
+    # Coverage tashqarisi → Saboy taklif
+    if code in ("no_coverage", "no_offer"):
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏪 Saboy olib ketaman", callback_data="switch_pickup")],
+            [InlineKeyboardButton(text="🔄 Boshqa manzil yuborish", callback_data="retry_address")],
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_order")],
+        ])
+        await message.answer(
+            "⚠️ <b>Bu manzilga hozir Yandex kuryeri yo'q</b>\n\n"
+            "Nima qilamiz?",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+        # state'da entering_address holatida qoldiramiz — mijoz tugma bossin
+        return
+
+    # Boshqa xato — jim o'tib, fallback
+    log.warning("Yandex quote returned error: %s", quote)
+    await state.update_data(delivery_fee=0)
+    await _ask_comment(message, state)
+
+
+@router.callback_query(OrderFlow.entering_address, F.data == "switch_pickup")
+async def switch_to_pickup(callback: CallbackQuery, state: FSMContext):
+    """Coverage tashqarisi — mijoz Saboy variantiga o'tdi."""
+    await state.update_data(
+        delivery_type="pickup",
+        address="Saboy olib ketish",
+        delivery_time_slot="now",
+        delivery_fee=0,
+    )
+    await callback.answer("🏪 Saboy tanlandi")
+    await _ask_comment(callback.message, state, pickup=True)
+
+
+@router.callback_query(OrderFlow.entering_address, F.data == "retry_address")
+async def retry_address(callback: CallbackQuery, state: FSMContext):
+    """Coverage tashqarisi — mijoz boshqa manzil yubormoqchi."""
+    await callback.answer()
+    await callback.message.answer(
+        "📍 Iltimos, boshqa manzilni yuboring:",
+        reply_markup=location_request_kb(),
+    )
+
+
+@router.callback_query(OrderFlow.entering_address, F.data == "cancel_order")
+async def cancel_order_from_address(callback: CallbackQuery, state: FSMContext):
+    """Coverage tashqarisi — mijoz zakazni bekor qildi."""
+    await state.clear()
+    await callback.answer("❌ Bekor qilindi")
+    await callback.message.answer(
+        "Zakaz bekor qilindi. Yana zakaz berishni xohlasangiz menyudan boshlang.",
+        reply_markup=main_menu_kb(),
+    )
+
+
 # ── Saqlangan manzilni tanlash ────────────────────────
 @router.callback_query(OrderFlow.entering_address, F.data.startswith("addr:"))
 async def select_saved_address(callback: CallbackQuery, state: FSMContext):
@@ -327,7 +435,7 @@ async def enter_location(message: Message, state: FSMContext):
         f"✅ Manzil aniqlandi!\n📍 {addr_name}",
         reply_markup=ReplyKeyboardRemove(),
     )
-    await _ask_comment(message, state)
+    await _quote_and_proceed(message, state)
 
 
 # ── WebApp dan kelgan ma'lumot ────────────────────────
@@ -343,7 +451,7 @@ async def enter_map_location(message: Message, state: FSMContext):
             f"✅ Manzil aniqlandi!\n📍 {addr_name}",
             reply_markup=ReplyKeyboardRemove(),
         )
-        await _ask_comment(message, state)
+        await _quote_and_proceed(message, state)
     except Exception:
         await message.answer(
             "⚠️ Xaritadan ma'lumot olishda xato. Qaytadan urinib ko'ring.",
@@ -397,11 +505,14 @@ async def _process_comment(message: Message, state: FSMContext, *, comment_text:
     items_total = sum(v["price"] * v["quantity"] for v in cart.values())
     is_delivery = data["delivery_type"] == "delivery"
 
-    delivery_fee = 0
+    # Dastavka narxi avval _quote_and_proceed da state'ga yozilgan (Yandex haqiqiy narxi)
+    delivery_fee = float(data.get("delivery_fee") or 0)
     delivery_text = ""
     if is_delivery:
-        delivery_text = "\n🚗 Dastavka: kuryer bilan yetkazib berish narxi kelishiladi"
-    await state.update_data(delivery_fee=delivery_fee)
+        if delivery_fee > 0:
+            delivery_text = f"\n🚗 Dastavka (Yandex): <b>{delivery_fee:,.0f} so'm</b>"
+        else:
+            delivery_text = "\n🚗 Dastavka: kuryer bilan yetkazib berish narxi kelishiladi"
 
     # QQS — restaurant.is_vat_payer bo'lsa ko'rsatamiz
     vat_text = ""
@@ -417,14 +528,22 @@ async def _process_comment(message: Message, state: FSMContext, *, comment_text:
     except Exception:
         pass
 
+    grand_total = items_total + (delivery_fee if is_delivery and delivery_fee > 0 else 0)
+    grand_total_line = (
+        f"\n\n💰 <b>Jami to'lov: {grand_total:,.0f} so'm</b>"
+        if is_delivery and delivery_fee > 0
+        else f"\n\n💰 Jami: <b>{items_total:,.0f} so'm</b>"
+    )
+
     text = (
         "📋 <b>Buyurtma ma'lumotlari</b>\n\n"
         + _format_progress(data)
         + "\n\n<b>Mahsulotlar:</b>\n"
         + "\n".join(lines)
-        + f"\n\n💰 Jami: <b>{items_total:,.0f} so'm</b>"
-        + vat_text
+        + (f"\n\nMahsulotlar: {items_total:,.0f} so'm" if is_delivery and delivery_fee > 0 else "")
         + delivery_text
+        + vat_text
+        + grand_total_line
         + "\n\n💳 To'lov: tasdiqlagandan keyin Click/Payme/Uzum tanlanadi"
         + "\n\nTasdiqlaysizmi?"
     )

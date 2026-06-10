@@ -9,6 +9,7 @@ Vazifasi:
 BOT_TOKEN: CATERING_BOT_TOKEN .env dan olinadi
 """
 import asyncio
+import html
 import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -29,6 +30,15 @@ load_dotenv()
 
 UZ_TZ = ZoneInfo("Asia/Tashkent")
 
+# Multi-tenant izolyatsiya: bu catering bot QAYSI restoranga tegishli.
+# Buyurtmalar ham, obunachilar ham FAQAT shu restoran bo'yicha filtrlanadi —
+# aks holda bir restoran buyurtmalari (mijoz ismi/telefoni) boshqa restoran
+# obunachilariga oqib ketadi. Bot manager BOT_RESTAURANT_ID ni o'rnatadi;
+# standalone deploy uchun CATERING_RESTAURANT_ID, default 1.
+CATERING_RESTAURANT_ID = int(
+    os.getenv("CATERING_RESTAURANT_ID") or os.getenv("BOT_RESTAURANT_ID") or "1"
+)
+
 
 def build_dispatcher(bot: Bot) -> Dispatcher:
     """Dispatcher va handler'larni bitta joyda ishga tushirish."""
@@ -45,6 +55,7 @@ def build_dispatcher(bot: Bot) -> Dispatcher:
                 sub.is_active = True
             else:
                 sub = CateringSubscriber(
+                    restaurant_id=CATERING_RESTAURANT_ID,
                     chat_id=str(message.chat.id),
                     chat_type=message.chat.type,
                     title=message.chat.title or message.from_user.full_name,
@@ -91,6 +102,7 @@ def build_dispatcher(bot: Bot) -> Dispatcher:
                 sub = result.scalar_one_or_none()
                 if not sub:
                     sub = CateringSubscriber(
+                        restaurant_id=CATERING_RESTAURANT_ID,
                         chat_id=str(event.chat.id),
                         chat_type=event.chat.type,
                         title=event.chat.title,
@@ -124,6 +136,7 @@ async def send_daily_orders(bot: Bot, target_chat_id: str = None):
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(Order).where(
+                Order.restaurant_id == CATERING_RESTAURANT_ID,
                 Order.order_kind == "catering",
                 Order.schedule_date == tomorrow,
                 Order.status != OrderStatus.cancelled,
@@ -143,7 +156,10 @@ async def send_daily_orders(bot: Bot, target_chat_id: str = None):
             subs_ids = [target_chat_id]
         else:
             subs_result = await db.execute(
-                select(CateringSubscriber).where(CateringSubscriber.is_active == True)
+                select(CateringSubscriber).where(
+                    CateringSubscriber.is_active == True,
+                    CateringSubscriber.restaurant_id == CATERING_RESTAURANT_ID,
+                )
             )
             subs = subs_result.scalars().all()
             subs_ids = [s.chat_id for s in subs]
@@ -208,9 +224,12 @@ async def _send_orders_to_chat(bot: Bot, db, chat_id: str, orders, date_str: str
             f"🚗 Turi: {DELIVERY_LABELS.get(order.delivery_subtype, order.delivery_subtype)}\n"
         )
         if user:
-            text += f"👤 Mijoz: <b>{user.full_name}</b>\n📞 Tel: <code>{user.phone}</code>\n"
+            text += (
+                f"👤 Mijoz: <b>{html.escape(user.full_name or '')}</b>\n"
+                f"📞 Tel: <code>{html.escape(user.phone or '')}</code>\n"
+            )
         if order.address:
-            text += f"📍 Manzil: {order.address}\n"
+            text += f"📍 Manzil: {html.escape(order.address)}\n"
         if order.total_price_usd:
             text += f"\n💰 Narx: <b>{order.total_price:,.0f} so'm</b> (${order.total_price_usd:.2f})\n"
         else:
@@ -220,7 +239,7 @@ async def _send_orders_to_chat(bot: Bot, db, chat_id: str, orders, date_str: str
             f"({TIME_LABELS.get(order.payment_timing, '—')})\n"
         )
         if order.comment:
-            text += f"\n💬 Izoh: {order.comment}"
+            text += f"\n💬 Izoh: {html.escape(order.comment)}"
 
         try:
             await bot.send_message(chat_id, text)
@@ -266,11 +285,12 @@ async def scheduler_loop(bot: Bot):
 
 
 async def main():
+    bot_token = os.getenv("CATERING_BOT_TOKEN", "").strip()
     if not bot_token:
         raise SystemExit("CATERING_BOT_TOKEN .env faylida yo'q!")
     bot = Bot(token=bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = build_dispatcher(bot)
-    print(f"[catering_bot] Starting with token {bot_token[:10]}...")
+    print(f"[catering_bot] Starting (restaurant_id={CATERING_RESTAURANT_ID})...")
     asyncio.create_task(scheduler_loop(bot))
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 

@@ -68,20 +68,8 @@ def _parse_token(raw: str) -> Optional[AuthContext]:
             )
         return None
 
-    # 3. Legacy super: bare SECRET_KEY
-    if token == settings.SECRET_KEY:
-        return AuthContext(is_super=True, restaurant_id=None, token_type="legacy")
-
-    # 4. Legacy restaurant: SECRET_KEY:rid
-    if ":" in token:
-        secret, rid = token.rsplit(":", 1)
-        if secret == settings.SECRET_KEY:
-            try:
-                return AuthContext(
-                    is_super=False, restaurant_id=int(rid), token_type="legacy",
-                )
-            except ValueError:
-                return None
+    # Legacy `SECRET_KEY` / `SECRET_KEY:rid` tokenlari O'CHIRILDI (audit Critical C1) —
+    # ular master kalitni oshkor qilardi. Endi faqat JWT va super-HMAC qabul qilinadi.
     return None
 
 

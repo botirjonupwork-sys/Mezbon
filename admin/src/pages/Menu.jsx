@@ -13,7 +13,7 @@ import {
   getCategories, getProducts, toggleStop,
   createProduct, updateProduct, deleteProduct,
   createCategory, updateCategory, deleteCategory, uploadImage, deleteImage,
-  getSettings, updateSettings, getMyPlan,
+  getMyPlan,
 } from '../api'
 import { useBranchStore } from '../store/branch'
 import { useAuthStore } from '../store/auth'
@@ -172,13 +172,6 @@ export default function Menu() {
   const [editingCatering, setEditingCatering] = useState(null)
   const [cateringForm] = Form.useForm()
   const [cateringFilterGroup, setCateringFilterGroup] = useState('all') // all | somsa | nan
-  const [cateringSettings, setCateringSettings] = useState({
-    catering_somsa_min: 100, catering_somsa_step: 1,
-    catering_nan_min: 40, catering_nan_step: 40,
-    catering_delivery_per_km_uzs: 5000,
-  })
-  const [settingsForm] = Form.useForm()
-  const [savingSettings, setSavingSettings] = useState(false)
 
   // Kategoriya CRUD state
   const [catModalOpen, setCatModalOpen] = useState(false)
@@ -194,44 +187,18 @@ export default function Menu() {
       const prodParams = { ...params, product_type: 'regular' }
       if (filterCategoryId) prodParams.category_id = filterCategoryId
       const cateringParams = { ...params, product_type: 'catering' }
-      const [catRes, prodRes, cateringRes, settingsRes] = await Promise.all([
+      const [catRes, prodRes, cateringRes] = await Promise.all([
         getCategories(params),
         getProducts(prodParams),
         getProducts(cateringParams),
-        restaurantId ? getSettings({ restaurant_id: restaurantId }) : Promise.resolve({ data: {} }),
       ])
       setCategories(catRes.data || [])
       setProducts(prodRes.data || [])
       setCateringProducts(cateringRes.data || [])
-      const s = settingsRes.data || {}
-      const settingsData = {
-        catering_somsa_min: s.catering_somsa_min || 100,
-        catering_somsa_step: s.catering_somsa_step || 1,
-        catering_nan_min: s.catering_nan_min || 40,
-        catering_nan_step: s.catering_nan_step || 40,
-        catering_delivery_per_km_uzs: s.catering_delivery_per_km_uzs || 5000,
-      }
-      setCateringSettings(settingsData)
-      settingsForm.setFieldsValue(settingsData)
     } catch {
       message.error('Malumotlarni yuklashda xato')
     } finally {
       setLoading(false)
-    }
-  }
-
-  const handleSaveCateringSettings = async () => {
-    setSavingSettings(true)
-    try {
-      const values = await settingsForm.validateFields()
-      const qParams = restaurantId ? { restaurant_id: restaurantId } : {}
-      await updateSettings(values, qParams)
-      message.success('Catering sozlamalari saqlandi')
-      setCateringSettings(values)
-    } catch (err) {
-      if (!err?.errorFields) message.error('Sozlamalarni saqlashda xato')
-    } finally {
-      setSavingSettings(false)
     }
   }
 
@@ -646,85 +613,6 @@ export default function Menu() {
             label: <span>🎉 Catering</span>,
             children: (
               <div>
-                {/* Sozlamalar kartasi */}
-                <Card
-                  title="⚙️ Catering sozlamalari"
-                  size="small"
-                  style={{ marginBottom: 16 }}
-                  extra={
-                    <Button
-                      type="primary"
-                      loading={savingSettings}
-                      onClick={handleSaveCateringSettings}
-                      style={{ background: '#fa8c16', borderColor: '#fa8c16' }}
-                    >
-                      Sozlamalarni saqlash
-                    </Button>
-                  }
-                >
-                  <Form form={settingsForm} layout="vertical" initialValues={cateringSettings}>
-                    <Row gutter={16}>
-                      <Col xs={24} md={6}>
-                        <Form.Item
-                          name="catering_somsa_min"
-                          label="🥟 Somsa — minimal miqdor"
-                          rules={[{ required: true }]}
-                          extra="Kamida necha dona zakaz beriladi"
-                        >
-                          <InputNumber min={1} style={{ width: '100%' }} placeholder="100" />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} md={6}>
-                        <Form.Item
-                          name="catering_somsa_step"
-                          label="🥟 Somsa — qo'shish qadami"
-                          rules={[{ required: true }]}
-                          extra="Miqdor shu songa karrali bolishi kerak"
-                        >
-                          <InputNumber min={1} style={{ width: '100%' }} placeholder="1" />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} md={6}>
-                        <Form.Item
-                          name="catering_nan_min"
-                          label="🍞 Non — minimal miqdor"
-                          rules={[{ required: true }]}
-                          extra="Masalan: 40"
-                        >
-                          <InputNumber min={1} style={{ width: '100%' }} placeholder="40" />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={24} md={6}>
-                        <Form.Item
-                          name="catering_nan_step"
-                          label="🍞 Non — qo'shish qadami"
-                          rules={[{ required: true }]}
-                          extra="Masalan: 40 (tandir bo'yicha)"
-                        >
-                          <InputNumber min={1} style={{ width: '100%' }} placeholder="40" />
-                        </Form.Item>
-                      </Col>
-                    </Row>
-                    <Row gutter={16}>
-                      <Col xs={24} md={12}>
-                        <Form.Item
-                          name="catering_delivery_per_km_uzs"
-                          label="🚗 Dastavka narxi — har km uchun (so'm)"
-                          extra="Yandex ulanmasa, 1 km uchun olinadigan narx"
-                        >
-                          <InputNumber
-                            min={0}
-                            style={{ width: '100%' }}
-                            step={1000}
-                            formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-                            parser={(v) => v.replace(/,/g, '')}
-                          />
-                        </Form.Item>
-                      </Col>
-                    </Row>
-                  </Form>
-                </Card>
-
                 {/* Mahsulotlar jadvali */}
                 <Card
                   title="🍽 Catering mahsulotlari"

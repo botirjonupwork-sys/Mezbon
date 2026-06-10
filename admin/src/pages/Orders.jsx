@@ -37,6 +37,55 @@ const deliverySubtypeText = {
 const paymentMethodText = { cash: '💵 Naqd', card: '💳 Karta', click: '💳 Click', payme: '💳 Payme' }
 const paymentTimingText = { now: '⚡ Hozir', later: '⏱ Buyurtma olganda' }
 
+function getOrderFlowType(order) {
+  if (order?.order_kind === 'catering' && order.delivery_subtype) return order.delivery_subtype
+  return order?.delivery_type === 'delivery' ? 'delivery' : 'pickup'
+}
+
+function getOrderTypeLabel(order) {
+  const type = getOrderFlowType(order)
+  return deliverySubtypeText[type] || (type === 'pickup' ? '🏪 Saboy olib ketish' : '🚗 Dastavka')
+}
+
+function getOrderTypeColor(order) {
+  return { delivery: 'blue', pickup: 'green', onsite: 'purple' }[getOrderFlowType(order)] || 'default'
+}
+
+function getStatusLabel(order, status = order?.status) {
+  const type = getOrderFlowType(order)
+  if (type === 'delivery' && status === 'delivering') return '🚗 Kuryerga berildi'
+  if (type === 'pickup' && status === 'ready') return '📦 Zakaz tayyor'
+  if (type === 'onsite' && status === 'confirmed') return '✅ Zakaz qabul qilindi'
+  return statusText[status] || status
+}
+
+function getNextAction(order) {
+  const status = order?.status
+  const type = getOrderFlowType(order)
+  if (status === 'delivered' || status === 'cancelled') return null
+
+  if (type === 'onsite') {
+    if (status === 'pending') return { next: 'confirmed', label: 'Zakaz qabul qilindi', confirm: 'Borib yopib berish zakazi qabul qilinsinmi?' }
+    return null
+  }
+
+  if (type === 'pickup') {
+    if (['pending', 'confirmed', 'preparing'].includes(status)) return { next: 'ready', label: 'Zakaz tayyor', confirm: 'Saboy zakaz tayyormi?' }
+    if (status === 'ready') return { next: 'delivered', label: 'Mijozga berildi', confirm: 'Zakaz mijozga berildimi?' }
+    return null
+  }
+
+  if (type === 'delivery') {
+    if (status === 'pending') return { next: 'confirmed', label: 'Qabul qilish', confirm: 'Dastavka zakazi qabul qilinsinmi?' }
+    if (status === 'confirmed') return { next: 'preparing', label: 'Tayyorlashni boshlash', confirm: 'Tayyorlash boshlansinmi?' }
+    if (status === 'preparing') return { next: 'ready', label: 'Zakaz tayyor', confirm: 'Zakaz tayyormi?' }
+    if (status === 'ready') return { next: 'delivering', label: 'Kuryerga berildi', confirm: 'Zakaz kuryerga berildimi?' }
+    if (status === 'delivering') return { next: 'delivered', label: 'Yetkazildi', confirm: 'Zakaz yetkazildimi?' }
+  }
+
+  return null
+}
+
 function playNotificationSound() {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)()
@@ -72,18 +121,19 @@ function OrderDetailModal({ order, open, onClose, onStatusChange, onRefund }) {
 
   const renderActions = () => {
     const { status } = order
+    const nextAction = getNextAction(order)
     if (status === 'delivered' || status === 'cancelled') return null
     return (
       <Space wrap>
-        {status === 'pending' && (
-          <Popconfirm title="Buyurtmani qabul qilish?" onConfirm={() => onStatusChange(order.id, 'confirmed')}>
-            <Button type="primary" icon={<CheckCircleOutlined />} size="large">Qabul qilish</Button>
-          </Popconfirm>
-        )}
-        {['confirmed', 'preparing', 'ready', 'delivering'].includes(status) && (
-          <Popconfirm title="Yetkazildimi?" onConfirm={() => onStatusChange(order.id, 'delivered')}>
-            <Button icon={<CarOutlined />} size="large" style={{ background: '#52c41a', borderColor: '#52c41a', color: '#fff' }}>
-              Yetkazildi
+        {nextAction && (
+          <Popconfirm title={nextAction.confirm} onConfirm={() => onStatusChange(order.id, nextAction.next)}>
+            <Button
+              type="primary"
+              icon={nextAction.next === 'delivering' || nextAction.next === 'delivered' ? <CarOutlined /> : <CheckCircleOutlined />}
+              size="large"
+              style={nextAction.next === 'delivered' ? { background: '#52c41a', borderColor: '#52c41a', color: '#fff' } : undefined}
+            >
+              {nextAction.label}
             </Button>
           </Popconfirm>
         )}
@@ -120,7 +170,7 @@ function OrderDetailModal({ order, open, onClose, onStatusChange, onRefund }) {
       title={
         <Space>
           <Text strong style={{ fontSize: 18 }}>Buyurtma #{order.id}</Text>
-          <Tag color={statusColor[order.status]}>{statusText[order.status]}</Tag>
+          <Tag color={statusColor[order.status]}>{getStatusLabel(order)}</Tag>
           {isCatering && <Tag color="purple"><GiftOutlined /> Catering</Tag>}
         </Space>
       }
@@ -142,9 +192,15 @@ function OrderDetailModal({ order, open, onClose, onStatusChange, onRefund }) {
             {fmtTashkent(order.created_at)}
           </div>
           <div>
-            <Text type="secondary">Yetkazish:</Text>{' '}
-            {order.delivery_type === 'delivery' ? '🚗 Dastavka' : '🏪 Saboy olib ketish'}
+            <Text type="secondary">Zakaz turi:</Text>{' '}
+            <Tag color={getOrderTypeColor(order)}>{getOrderTypeLabel(order)}</Tag>
           </div>
+          {order.order_kind === 'catering' && (
+            <div style={{ marginTop: 6 }}>
+              <Text type="secondary">Tadbir vaqti:</Text>{' '}
+              <Text strong>{order.schedule_date || '—'} {order.schedule_time || ''}</Text>
+            </div>
+          )}
         </Card>
       </div>
 
@@ -402,13 +458,15 @@ export default function Orders() {
     },
     {
       title: 'Tur', dataIndex: 'delivery_type', width: 70, align: 'center',
-      render: (v) => v === 'delivery'
-        ? <Tooltip title="Dastavka"><Tag color="blue" style={{ margin: 0 }}>🚗</Tag></Tooltip>
-        : <Tooltip title="Saboy"><Tag color="green" style={{ margin: 0 }}>🏪</Tag></Tooltip>
+      render: (_, r) => {
+        const type = getOrderFlowType(r)
+        const icon = type === 'delivery' ? '🚗' : type === 'onsite' ? '🏠' : '🏪'
+        return <Tooltip title={getOrderTypeLabel(r)}><Tag color={getOrderTypeColor(r)} style={{ margin: 0 }}>{icon}</Tag></Tooltip>
+      }
     },
     {
       title: 'Holat', dataIndex: 'status', width: 130,
-      render: (s) => <Tag color={statusColor[s]} style={{ margin: 0 }}>{statusText[s]}</Tag>
+      render: (s, r) => <Tag color={statusColor[s]} style={{ margin: 0 }}>{getStatusLabel(r, s)}</Tag>
     },
     {
       title: 'Vaqt', dataIndex: 'created_at', width: 95,
@@ -422,19 +480,14 @@ export default function Orders() {
       title: 'Amallar', width: 110, fixed: 'right', align: 'center',
       render: (_, record) => {
         const { status } = record
+        const nextAction = getNextAction(record)
         if (status === 'delivered') return <Tag color="green" style={{ margin: 0 }}>✅</Tag>
         if (status === 'cancelled') return <Tag color="red" style={{ margin: 0 }}>❌</Tag>
         return (
           <Space size={4} onClick={(e) => e.stopPropagation()}>
-            {status === 'pending' && (
-              <Popconfirm title="Qabul qilish?" onConfirm={() => handleStatusChange(record.id, 'confirmed')}>
+            {nextAction && (
+              <Popconfirm title={nextAction.confirm} onConfirm={() => handleStatusChange(record.id, nextAction.next)}>
                 <Button type="primary" size="small" icon={<CheckCircleOutlined />} />
-              </Popconfirm>
-            )}
-            {['confirmed', 'preparing', 'ready', 'delivering'].includes(status) && (
-              <Popconfirm title="Yetkazildimi?" onConfirm={() => handleStatusChange(record.id, 'delivered')}>
-                <Button size="small" icon={<CarOutlined />}
-                  style={{ background: '#52c41a', borderColor: '#52c41a', color: '#fff' }} />
               </Popconfirm>
             )}
             <Popconfirm title="Bekor qilish?" onConfirm={() => handleStatusChange(record.id, 'cancelled')}>

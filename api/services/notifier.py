@@ -98,6 +98,19 @@ async def notify_restaurant_admin(
     )
 
 
+async def notify_restaurant_owner(rest, text: str) -> bool:
+    """Restoran egasiga uning bot tokeni + notifier chat orqali xabar (best-effort).
+
+    Hozircha owner kanali sifatida `catering_notifier_chat_id` ishlatiladi
+    (alohida billing chat maydoni qo'shilsa, shu yerda almashtiriladi).
+    """
+    return await notify_restaurant_admin(
+        restaurant_bot_token=getattr(rest, "bot_token", None),
+        admin_chat_id=getattr(rest, "catering_notifier_chat_id", None),
+        text=text,
+    )
+
+
 # ── Yuqori darajadagi xabar shablonlari ─────────────────
 
 def expiry_warning_text(rest, days_left: int) -> str:
@@ -129,6 +142,18 @@ def suspended_text(rest) -> str:
         f"❌ Imtiyozli davr (10 kun) tugadi va to'lov qilinmadi.\n"
         f"Bot va admin panel hozirgi vaqtda ishlamaydi.\n\n"
         f"Tiklanish: tarif uchun to'lov qilish kifoya."
+    )
+
+
+def admin_block_text(rest) -> str:
+    """Super-admin restoranni qo'lda bloklaganda egasiga xabar."""
+    return (
+        f"🔴 <b>Restoran vaqtincha bloklandi</b>\n\n"
+        f"🏪 Restoran: <b>{rest.name}</b>\n"
+        f"Administrator tomonidan xizmat to'xtatildi.\n\n"
+        f"🔓 Qayta ochish uchun:\n"
+        f"💳 To'lov — admin panel → Tariflar bo'limi\n"
+        f"📞 Yoki platforma qo'llab-quvvatlash xizmatiga murojaat qiling."
     )
 
 
@@ -178,6 +203,41 @@ def webhook_security_text(category: str, error: str, details: dict) -> str:
     ]
     for k, v in (details or {}).items():
         parts.append(f"  • <code>{k}</code>: {str(v)[:80]}")
+    return "\n".join(parts)
+
+
+def yandex_balance_text(rest, previous_status: str | None = None) -> str:
+    """Yandex balans monitoringi uchun restoran/platforma xabari."""
+    status = rest.yandex_balance_status or "unknown"
+    amount = rest.yandex_balance_amount
+    currency = rest.yandex_balance_currency or "UZS"
+    low = float(rest.yandex_balance_low_threshold or 300000)
+    critical = float(rest.yandex_balance_critical_threshold or 100000)
+    amount_text = "noma'lum" if amount is None else f"{float(amount):,.0f} {currency}"
+
+    title = {
+        "critical": "🔴 Yandex balans KRITIK darajada",
+        "low": "🟡 Yandex balans kamaydi",
+        "ok": "✅ Yandex balans tiklandi",
+        "unknown": "⚠️ Yandex balansni aniqlab bo'lmadi",
+    }.get(status, "⚠️ Yandex balans holati")
+
+    parts = [
+        f"{title}",
+        "",
+        f"🏪 Restoran: <b>{rest.name}</b>",
+        f"💰 Balans: <b>{amount_text}</b>",
+        f"📉 Ogohlantirish: {low:,.0f} {currency}",
+        f"🚨 Kritik: {critical:,.0f} {currency}",
+    ]
+    if previous_status and previous_status != status:
+        parts.append(f"Holat o'zgardi: <code>{previous_status}</code> → <code>{status}</code>")
+    if status == "critical":
+        parts.append("\nYandex yetkazib berish to'xtab qolmasligi uchun hisobni zudlik bilan to'ldiring.")
+    elif status == "low":
+        parts.append("\nHisobni oldindan to'ldirib qo'ying, aks holda yangi delivery claimlarda muammo bo'lishi mumkin.")
+    elif status == "unknown":
+        parts.append("\nBalans qiymati kiritilmagan yoki tekshiruvda xato bo'ldi.")
     return "\n".join(parts)
 
 

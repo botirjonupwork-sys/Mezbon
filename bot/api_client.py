@@ -1,10 +1,12 @@
 import httpx
 import os
+from typing import Optional
 
 BASE_URL = os.getenv("API_URL", "http://localhost:8000")
-# Bot↔API ichki autentifikatsiya. Avval BOT_API_SECRET'ni ishlatamiz (alohida
-# secret), bo'lmasa SECRET_KEY'ga qaytamiz (eski deploy'lar uchun fallback).
-BOT_SECRET = os.getenv("BOT_API_SECRET", "") or os.getenv("SECRET_KEY", "")
+# Bot↔API ichki autentifikatsiya — FAQAT BOT_API_SECRET.
+# SECRET_KEY (JWT imzo kaliti)ga fallback QILINMAYDI: uni header'da yuborish
+# master kalitni tashqariga oshkor qilardi va API tomonda ham qabul qilinmaydi.
+BOT_SECRET = os.getenv("BOT_API_SECRET", "")
 _BOT_HEADERS = {"X-Bot-Secret": BOT_SECRET} if BOT_SECRET else {}
 
 # ── Multi-restaurant auth state ──────────────────────
@@ -112,6 +114,7 @@ async def get_user_orders(telegram_id: str):
         r = await client.get(
             f"{BASE_URL}/orders/user/{telegram_id}",
             params={"restaurant_id": _restaurant_id},  # SaaS izolatsiya
+            headers=_BOT_HEADERS,
         )
         if r.status_code == 200:
             return r.json()
@@ -172,15 +175,33 @@ async def get_settings() -> dict:
     return {}
 
 
+async def get_service_state() -> dict:
+    """Restoran xizmat holati — blocked bo'lsa bot xizmat ko'rsatmaydi.
+
+    Qaytaradi: {"blocked": bool, "reason": str|None, "message": str}
+    Xato bo'lsa exception ko'taradi (middleware fail-open qiladi).
+    """
+    async with httpx.AsyncClient(timeout=4.0) as client:
+        r = await client.get(f"{BASE_URL}/restaurants/{_restaurant_id}/info")
+        r.raise_for_status()
+        d = r.json()
+        return {
+            "blocked": bool(d.get("service_blocked")),
+            "reason": d.get("service_block_reason"),
+            "message": d.get("service_message") or "",
+        }
+
+
 async def create_review(telegram_id: str, rating: int, comment: str = ""):
     async with httpx.AsyncClient() as client:
         r = await client.post(
-            f"{BASE_URL}/reviews/",
+            f"{BASE_URL}/reviews",
             params={
                 "telegram_id": telegram_id,
                 "restaurant_id": _restaurant_id,  # SaaS izolatsiya
             },
             json={"rating": rating, "comment": comment},
+            headers=_BOT_HEADERS,
         )
         return r.json()
 
@@ -335,6 +356,47 @@ async def cancel_unpaid_order(order_id: int) -> dict:
         )
         r.raise_for_status()
         return r.json()
+
+
+async def quote_delivery_price(
+    *,
+    dropoff_lat: float,
+    dropoff_lon: float,
+    branch_id: Optional[int] = None,
+    weight_kg: float = 1.0,
+) -> dict:
+    """Yandex'dan haqiqiy dastavka narxini olish (claim YARATMAYDI, pul KETMAYDI).
+
+    Qaytaradi:
+      success: {"ok": True, "price": 18200.0, "currency": "UZS", "eta_minutes": 25}
+      no coverage: {"ok": False, "code": "no_coverage", "message": "..."}
+      provider != yandex: {"ok": False, "code": "provider_not_yandex"}
+      tarmoq xatosi: {"ok": False, "code": "network_error", "message": "..."}
+    """
+    payload = {
+        "restaurant_id": _restaurant_id,
+        "dropoff_lat": float(dropoff_lat),
+        "dropoff_lon": float(dropoff_lon),
+        "weight_kg": float(weight_kg),
+    }
+    if branch_id:
+        payload["branch_id"] = int(branch_id)
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            r = await client.post(
+                f"{BASE_URL}/delivery/quote",
+                headers=_BOT_HEADERS,
+                json=payload,
+            )
+        if r.status_code == 200:
+            return r.json()
+        return {
+            "ok": False,
+            "code": "http_error",
+            "message": f"HTTP {r.status_code}: {r.text[:200]}",
+        }
+    except Exception as e:
+        return {"ok": False, "code": "network_error", "message": str(e)}
 
 
 # ── AI Voice Agent ───────────────────────────────────────────────────────

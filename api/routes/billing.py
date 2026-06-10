@@ -684,17 +684,24 @@ class PaymeRPCRequest(BaseModel):
 
 
 def _check_payme_basic_auth(authorization: Optional[str], merchant_key: str) -> bool:
-    """Payme Basic auth — login `Paycom`, parol = merchant key."""
-    if not authorization or not authorization.startswith("Basic "):
+    """Payme Basic auth — login doim `Paycom`, parol = kassa kaliti.
+
+    Xavfsizlik: parolni constant-time solishtiramiz (hmac.compare_digest) —
+    oddiy `==` timing-attack'ga ochiq bo'lardi.
+    """
+    if not authorization or not authorization.startswith("Basic ") or not merchant_key:
         return False
     try:
         encoded = authorization.split(" ", 1)[1]
         decoded = base64.b64decode(encoded).decode()
         login, password = decoded.split(":", 1)
-        # Payme docs: login = "Paycom"
-        return password == merchant_key
     except Exception:
         return False
+    import hmac
+    # Payme hujjati: login har doim "Paycom"
+    login_ok = hmac.compare_digest(login, "Paycom")
+    pass_ok = hmac.compare_digest(password, merchant_key)
+    return login_ok and pass_ok
 
 
 def _payme_error(code: int, message: str, request_id: Optional[int] = None) -> dict:
@@ -787,7 +794,14 @@ async def payme_webhook(
     if method == "CreateTransaction":
         if payment.status == "success":
             return _payme_error(-31008, "Already paid", rid)
-        payment.external_id = params.get("id")
+        # Summa tekshiruvi (audit C5) — Check'da bo'lgani kabi
+        if params.get("amount") != payment.amount_tiyin:
+            return _payme_error(-31001, "Wrong amount", rid)
+        payme_tx = params.get("id")
+        # Idempotency: boshqa tranzaksiya allaqachon bog'langan bo'lsa rad etamiz
+        if payment.external_id and payment.external_id != payme_tx:
+            return _payme_error(-31008, "Another transaction in progress", rid)
+        payment.external_id = payme_tx
         await db.commit()
         return {
             "jsonrpc": "2.0", "id": rid,
@@ -799,7 +813,26 @@ async def payme_webhook(
         }
 
     if method == "PerformTransaction":
-        await mark_payment_success(payment, external_id=params.get("id"), db=db)
+        payme_tx = params.get("id")
+        # tx-id bog'lanishini tekshirish (audit C5) — CreateTransaction'dagi external_id bilan mos
+        if not payment.external_id or payment.external_id != payme_tx:
+            return _payme_error(-31003, "Transaction not found", rid)
+        # Idempotent: allaqachon to'langan bo'lsa qayta uzaytirmaymiz
+        if payment.status == "success":
+            return {
+                "jsonrpc": "2.0", "id": rid,
+                "result": {
+                    "transaction": str(payment.id),
+                    "perform_time": int((payment.paid_at.timestamp() * 1000)) if payment.paid_at else int(__import__("time").time() * 1000),
+                    "state": 2,
+                },
+            }
+        # Faqat pending holatdan perform; summa yana bir bor tekshiriladi
+        if payment.status != "pending":
+            return _payme_error(-31008, "Operation not allowed", rid)
+        if params.get("amount") is not None and params.get("amount") != payment.amount_tiyin:
+            return _payme_error(-31001, "Wrong amount", rid)
+        await mark_payment_success(payment, external_id=payme_tx, db=db)
         return {
             "jsonrpc": "2.0", "id": rid,
             "result": {
@@ -811,6 +844,9 @@ async def payme_webhook(
 
     if method == "CancelTransaction":
         reason = params.get("reason", "user_cancelled")
+        # tx-id bog'lanishini tekshirish (audit C5/C3) — ixtiyoriy tranzaksiyani bekor qilmaslik
+        if payment.external_id and params.get("id") and payment.external_id != params.get("id"):
+            return _payme_error(-31003, "Transaction not found", rid)
         # Idempotent — agar allaqachon bekor qilingan bo'lsa, ayni javobni qaytaramiz
         if payment.status in ("failed", "refunded"):
             return {

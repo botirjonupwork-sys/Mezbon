@@ -43,7 +43,9 @@ IS_POSTGRES = "postgres" in DATABASE_URL
 
 # ── Engine ────────────────────────────────────────────────
 
-_engine_kwargs: dict = {"echo": settings.DEBUG}
+# SQL echo DEBUG'dan AJRATILDI (audit H1) — DEBUG=True bo'lsa ham SQL+parametrlar
+# (parol hash, telefon, summa, tokenlar) logga tushmasin. Faqat SQL_ECHO=True bo'lsa yoqiladi.
+_engine_kwargs: dict = {"echo": settings.SQL_ECHO}
 
 if IS_SQLITE:
     # SQLite same-thread cheklovini async uchun olib tashlaymiz

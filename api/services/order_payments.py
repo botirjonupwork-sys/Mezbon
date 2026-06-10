@@ -46,6 +46,19 @@ def parse_order_id(merchant_trans_id: str) -> Optional[int]:
         return None
 
 
+# ── Yakuniy to'lov summasi (yagona manba) ──────────────────────────
+
+def order_amount_uzs(order: Order) -> float:
+    """Mijoz to'laydigan yakuniy summa (so'm) = mahsulotlar + dastavka."""
+    return float(order.total_price or 0) + float(order.delivery_fee or 0)
+
+
+def order_amount_tiyin(order: Order) -> int:
+    """Yakuniy summa tiyin'da. To'lov URL va webhook tekshiruvi AYNAN shu
+    funksiyani ishlatishi shart — aks holda summa mos kelmaydi (Payme -31001)."""
+    return int(round(order_amount_uzs(order) * 100))
+
+
 # ── Click ───────────────────────────────────────────────────────────
 
 def build_click_url(
@@ -77,28 +90,38 @@ def build_click_url(
 def build_payme_url(
     *,
     merchant_id: str,
-    order_id: int,
     amount_tiyin: int,
+    account: Optional[dict] = None,
+    order_id: Optional[int] = None,
     return_url: Optional[str] = None,
     lang: str = "uz",
 ) -> str:
-    """Payme checkout URL — yangi format (base64 encoded).
+    """Payme checkout URL — rasmiy base64 format (yagona quruvchi).
 
-    Format: https://checkout.paycom.uz/<base64(m=X;ac.order_id=Y;a=Z;c=URL;ct=15000;l=uz)>
+    Rasmiy hujjat (developer.help.paycom.uz/initsializatsiya-platezhey):
+      https://checkout.paycom.uz/<base64(m=X;ac.<field>=Y;a=Z;c=URL;ct=15000;l=uz)>
+    Ajratuvchi — `;`. Summa — tiyin'da (1 UZS = 100 tiyin).
 
-    Amount tiyin'da (1 UZS = 100 tiyin).
+    `account` — Payme kassasiga sozlangan account maydonlari, masalan:
+        {"order_id": 42}             → mijoz buyurtmasi
+        {"merchant_trans_id": "r-…"} → obuna (subscription) to'lovi
+    `order_id` — orqaga moslik uchun qisqa yo'l (account={"order_id": ...}).
     """
-    parts = [
-        f"m={merchant_id}",
-        f"ac.order_id={order_id}",
-        f"a={amount_tiyin}",
-    ]
+    if account is None:
+        if order_id is None:
+            raise ValueError("account yoki order_id berilishi shart")
+        account = {"order_id": order_id}
+
+    parts = [f"m={merchant_id}"]
+    for field, value in account.items():
+        parts.append(f"ac.{field}={value}")
+    parts.append(f"a={amount_tiyin}")
     if return_url:
         parts.append(f"c={return_url}")
         parts.append("ct=15000")
     parts.append(f"l={lang}")
     blob = ";".join(parts).encode()
-    # URL-safe base64, padding olib tashlanadi
+    # base64, padding olib tashlanadi (Payme checkout shu ko'rinishni kutadi)
     encoded = base64.b64encode(blob).decode().rstrip("=")
     return f"https://checkout.paycom.uz/{encoded}"
 
@@ -154,8 +177,9 @@ def generate_payment_url(
     return_url: bot'ga qaytarish uchun (https://t.me/<bot>?start=...).
     """
     merchant_trans_id = order.merchant_trans_id or make_order_trans_id(order.id)
-    amount_uzs = float(order.total_price or 0)
-    amount_tiyin = int(round(amount_uzs * 100))
+    # Mijoz to'laydigan summa = mahsulotlar + dastavka (yagona manba)
+    amount_uzs = order_amount_uzs(order)
+    amount_tiyin = order_amount_tiyin(order)
 
     if provider == "click":
         url = build_click_url(
