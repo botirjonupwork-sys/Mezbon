@@ -3,6 +3,7 @@ import { Table, Tag, Card, Typography, Space, Button, DatePicker, message, Popco
 import { ReloadOutlined, CheckCircleOutlined, CarOutlined, CloseCircleOutlined, SoundOutlined, EnvironmentOutlined, PhoneOutlined, MessageOutlined, ShopOutlined, ClockCircleOutlined, GiftOutlined, CreditCardOutlined, UserOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { getOrders, updateOrderStatus, refundOrder } from '../api'
+import { playNotification } from '../audio/soundGate'
 import { fmtTashkent } from '../utils/datetime'
 import { useBranchStore } from '../store/branch'
 import { useAuthStore } from '../store/auth'
@@ -86,25 +87,8 @@ function getNextAction(order) {
   return null
 }
 
-function playNotificationSound() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)()
-    const play = (freq, startTime, duration) => {
-      const osc = ctx.createOscillator()
-      const gain = ctx.createGain()
-      osc.connect(gain); gain.connect(ctx.destination)
-      osc.type = 'sine'
-      osc.frequency.setValueAtTime(freq, ctx.currentTime + startTime)
-      gain.gain.setValueAtTime(0.3, ctx.currentTime + startTime)
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + startTime + duration)
-      osc.start(ctx.currentTime + startTime)
-      osc.stop(ctx.currentTime + startTime + duration)
-    }
-    play(880, 0, 0.3); play(660, 0.35, 0.3); play(880, 0.7, 0.4)
-    play(988, 1.2, 0.3); play(784, 1.55, 0.3); play(988, 1.9, 0.5)
-    setTimeout(() => ctx.close(), 3000)
-  } catch (e) { console.warn('Audio play failed:', e) }
-}
+// Buyurtma ovozi umumiy engine orqali chalinadi (SoundGate uni ochib qo'ygan).
+// Lokal AudioContext yaratmaymiz — aks holda u "suspended" bo'lib jim qolardi.
 
 const POLL_INTERVAL = 10000
 
@@ -350,7 +334,7 @@ export default function Orders() {
         const prevIds = prevOrderIdsRef.current
         const freshOrders = newIds.filter(id => !prevIds.has(id))
         if (freshOrders.length > 0) {
-          if (soundEnabled) playNotificationSound()
+          if (soundEnabled) playNotification()
           message.info({ content: `🔔 ${freshOrders.length} ta yangi zakaz tushdi!`, duration: 5 })
           setNewOrderFlash(true)
           setTimeout(() => setNewOrderFlash(false), 3000)

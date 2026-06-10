@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from './store/auth'
 import AdminLayout from './components/Layout'
+import SoundGate from './components/SoundGate'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Orders from './pages/Orders'
@@ -39,7 +40,9 @@ export default function App() {
           path="/"
           element={
             <PrivateRoute>
-              <AdminLayout />
+              <SoundGate>
+                <AdminLayout />
+              </SoundGate>
             </PrivateRoute>
           }
         >
