@@ -85,6 +85,8 @@ async def uzum_webhook(
         log.error("Uzum webhook reddi: restaurant_id=%s webhook credentials o'rnatilmagan", rest.id)
         return {"status": "ERROR", "errorCode": 7, "errorMessage": "Auth not configured"}
     if not _check_uzum_basic_auth(authorization, rest.uzum_webhook_user, rest.uzum_webhook_pass):
+        from api.services.detectors import webhook_auth_failed
+        webhook_auth_failed("uzum", request.client.host if request.client else None)
         return {"status": "ERROR", "errorCode": 7, "errorMessage": "Auth failed"}
 
     return await handle_uzum_order_webhook(action, payload, db)

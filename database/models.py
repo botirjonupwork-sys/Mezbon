@@ -757,3 +757,52 @@ class AICallLog(Base):
     transcript = Column(Text)                       # JSON serialized
     order_id = Column(Integer, ForeignKey("orders.id"), nullable=True)
     ended_reason = Column(String)                   # confirmed | transferred | time_limit | outside_hours | user_hangup | error
+
+
+# ── Xavfsizlik AI bildirishnoma tizimi ──────────────────
+
+class AlertChannel(Base):
+    """Bildirishnoma kanali sozlamasi (hozir faqat Telegram, kelajakda email/webhook/sms).
+
+    config_enc — JSON satr, Fernet bilan shifrlangan (field_encryption.encrypt_field).
+    Telegram uchun: {"bot_token": "...", "chat_ids": ["123", "@kanal"]}
+    """
+    __tablename__ = "alert_channels"
+
+    id = Column(Integer, primary_key=True)
+    type = Column(String, nullable=False, default="telegram")  # telegram | email | webhook | sms
+    name = Column(String)                                       # UI uchun ixtiyoriy nom
+    enabled = Column(Boolean, default=True, nullable=False)
+    config_enc = Column(Text)                                   # shifrlangan JSON
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AlertRule(Base):
+    """Qaysi hodisa turi qaysi minimal darajadan boshlab xabar qilinadi.
+
+    event_category: 'payment' | 'auth' | 'security' | 'database' | 'yandex' | '*' (barchasi)
+    min_severity:   info | warning | critical
+    """
+    __tablename__ = "alert_rules"
+
+    id = Column(Integer, primary_key=True)
+    event_category = Column(String, nullable=False, default="*")
+    min_severity = Column(String, nullable=False, default="warning")
+    enabled = Column(Boolean, default=True, nullable=False)
+
+
+class AlertHistory(Base):
+    """Yuborilgan (yoki yuborilmagan) bildirishnomalar tarixi."""
+    __tablename__ = "alert_history"
+
+    id = Column(Integer, primary_key=True)
+    severity = Column(String, index=True)        # info | warning | critical
+    category = Column(String, index=True)        # payment | auth | ...
+    summary = Column(Text)                        # AI/inson o'qiy oladigan xulosa
+    raw_message = Column(Text)                     # asl xom xabar
+    channel_type = Column(String)                 # telegram | ...
+    status = Column(String, index=True)           # sent | failed | skipped
+    error = Column(Text, nullable=True)
+    ai_used = Column(Boolean, default=False)      # LLM tahlil ishlatildimi
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)

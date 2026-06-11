@@ -166,6 +166,8 @@ async def login(request: Request, response: Response, data: LoginRequest, db: As
             ip_address=client_ip, user_agent=user_agent, success=False,
             details={"reason": "user_not_found"},
         )
+        from api.services.detectors import failed_login
+        failed_login(data.username, client_ip)
         raise HTTPException(401, "Login yoki parol noto'g'ri")
 
     if not verify_password(data.password, restaurant.admin_password_hash):
@@ -176,6 +178,8 @@ async def login(request: Request, response: Response, data: LoginRequest, db: As
             user_agent=user_agent, success=False,
             details={"reason": "wrong_password", "failures": failures},
         )
+        from api.services.detectors import failed_login
+        failed_login(data.username, client_ip)
         if lock_secs:
             raise HTTPException(
                 429,
@@ -337,4 +341,6 @@ async def super_login(request: Request, response: Response, data: SuperLoginRequ
         token = make_access_token(restaurant_id=None, is_super=True, username=data.username)
         _set_auth_cookie(response, token)
         return SuperLoginResponse(token=token, name="Super Admin")
+    from api.services.detectors import failed_login
+    failed_login(data.username, request.client.host if request.client else None, is_super=True)
     raise HTTPException(401, "Login yoki parol noto'g'ri")

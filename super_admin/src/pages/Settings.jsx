@@ -6,8 +6,9 @@ import {
 import {
   UserOutlined, LockOutlined, GlobalOutlined, PhoneOutlined,
   MailOutlined, SaveOutlined, RobotOutlined, KeyOutlined,
-  CreditCardOutlined,
+  CreditCardOutlined, SafetyOutlined,
 } from '@ant-design/icons'
+import SecurityAlerts from './SecurityAlerts'
 import { useAuthStore } from '../store/auth'
 import {
   getSuperProfile, updateSuperProfile,
@@ -559,6 +560,11 @@ export default function Settings() {
           </Form>
         </Card>
       ),
+    },
+    {
+      key: 'security_alerts',
+      label: <span><SafetyOutlined /> Xavfsizlik</span>,
+      children: <SecurityAlerts />,
     },
   ]
 

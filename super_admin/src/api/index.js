@@ -58,6 +58,12 @@ export const updateSuperProfile = (data) => api.put('/super/profile', data)
 export const getPlatformSettings = () => api.get('/super/platform-settings')
 export const updatePlatformSettings = (data) => api.put('/super/platform-settings', data)
 
+// Xavfsizlik AI bildirishnoma
+export const getAlertConfig = () => api.get('/super-admin/alerts/config')
+export const updateAlertConfig = (data) => api.put('/super-admin/alerts/config', data)
+export const testAlert = () => api.post('/super-admin/alerts/test')
+export const getAlertHistory = (params) => api.get('/super-admin/alerts/history', { params })
+
 // Commission
 export const getCommissionSummary = () => api.get('/super/commission/summary')
 export const getRestaurantCommission = (id) => api.get(`/super/commission/${id}`)
