@@ -139,14 +139,19 @@ async def add_address(telegram_id: str, title: str, address: str):
         return r.json()
 
 
-async def get_catering_booked(branch_id: int = None) -> dict:
+async def get_catering_booked(branch_id: int = None, delivery_subtype: str = None) -> dict:
     """Catering uchun band qilingan kun va vaqtlar.
+
+    delivery_subtype berilsa: pickup/delivery uchun {} (cheksiz), onsite uchun
+    restoran bo'yicha to'lgan slotlar qaytadi.
 
     Returns: {"YYYY-MM-DD": ["HH:MM", ...], ...}
     """
     params = {"restaurant_id": _restaurant_id}
     if branch_id:
         params["branch_id"] = branch_id
+    if delivery_subtype:
+        params["delivery_subtype"] = delivery_subtype
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
             r = await client.get(f"{BASE_URL}/catering/booked-dates", params=params)

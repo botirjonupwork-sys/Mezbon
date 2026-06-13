@@ -215,6 +215,36 @@ export default function CateringSettings() {
           </Form.Item>
         </Card>
 
+        {/* Onsite sig'imi (borib yopib berish limiti) */}
+        <Card style={cardStyle} styles={{ body: cardBody }}>
+          <span style={sectionLabel}>Borib yopib berish — sig'im</span>
+          <Alert
+            type="info" showIcon style={{ marginBottom: 16 }}
+            message="Faqat 'borib yopib berish' cheklanadi"
+            description="Saboy va dastavka cheksiz. Bu yerda ishchilaringiz soniga qarab, belgilangan vaqt oynasida nechta 'borib yopib berish' buyurtmasi qabul qilinishini sozlang."
+          />
+          <Row gutter={16}>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="catering_onsite_max"
+                label="Maksimal buyurtma"
+                extra="Bir vaqt oynasida nechta onsite buyurtma"
+              >
+                <InputNumber min={1} max={1000} style={{ width: '100%' }} placeholder="8" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} sm={12}>
+              <Form.Item
+                name="catering_onsite_window_hours"
+                label="Vaqt oynasi (soat)"
+                extra="Necha soatlik oraliqda hisoblanadi"
+              >
+                <InputNumber min={0.5} max={24} step={0.5} style={{ width: '100%' }} placeholder="2" />
+              </Form.Item>
+            </Col>
+          </Row>
+        </Card>
+
         {/* Service Fee */}
         <Card style={cardStyle} styles={{ body: cardBody }}>
           <span style={sectionLabel}>Xizmat haqi</span>

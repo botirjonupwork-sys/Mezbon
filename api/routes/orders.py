@@ -32,7 +32,7 @@ STATUS_MSG = {
     "preparing":  "👨‍🍳 Zakazingiz tayyorlanmoqda...",
     "ready":      "📦 Zakazingiz tayyor! Kuryer tez orada jo'naydi.",
     "delivering": "🚗 Kuryeringiz yo'lda! Tez orada yetib keladi.",
-    "delivered":  "✅ Zakazingiz yetkazildi! Ishtahangiz chog' bo'lsin! 🥟\n\n⭐ Bizni baholashni unutmang: /review",
+    "delivered":  "✅ Zakazingiz yetkazildi! Ishtahangiz chog' bo'lsin! 🥟\n\n⭐ Buyurtmani baholang:",
     "cancelled":  "❌ Afsuski zakazingiz bekor qilindi. Boshqa savollarga javob berishga tayyormiz.",
 }
 
@@ -54,15 +54,27 @@ async def _notify_user_status(telegram_id: str, order_id: int, status: str, rest
             pass
     if not bot_token:
         return
+    payload = {
+        "chat_id": telegram_id,
+        "text": f"📦 <b>Zakaz #{order_id}</b>\n\n{msg}",
+        "parse_mode": "HTML",
+    }
+    # Yetkazilganda — avtomatik baholash tugmalari (1–5 yulduz)
+    if status == "delivered":
+        payload["reply_markup"] = {
+            "inline_keyboard": [[
+                {"text": "⭐", "callback_data": f"rate_order:{order_id}:1"},
+                {"text": "⭐⭐", "callback_data": f"rate_order:{order_id}:2"},
+                {"text": "⭐⭐⭐", "callback_data": f"rate_order:{order_id}:3"},
+                {"text": "⭐⭐⭐⭐", "callback_data": f"rate_order:{order_id}:4"},
+                {"text": "⭐⭐⭐⭐⭐", "callback_data": f"rate_order:{order_id}:5"},
+            ]]
+        }
     try:
         async with httpx.AsyncClient() as client:
             await client.post(
                 f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                json={
-                    "chat_id": telegram_id,
-                    "text": f"📦 <b>Zakaz #{order_id}</b>\n\n{msg}",
-                    "parse_mode": "HTML",
-                },
+                json=payload,
                 timeout=5.0,
             )
     except Exception:

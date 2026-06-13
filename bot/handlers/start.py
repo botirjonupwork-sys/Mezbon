@@ -5,6 +5,7 @@ from aiogram.fsm.context import FSMContext
 from bot.states import Registration
 from bot.api_client import get_user, create_user, get_nearest_branches, get_branch, get_restaurant_branches, set_user_branch, get_restaurant_id
 from bot.keyboards.main import main_menu_kb, phone_kb, branch_location_kb, branches_kb
+from bot.validators import normalize_uz_phone
 
 router = Router()
 
@@ -271,14 +272,20 @@ async def _finish_registration(message: Message, state: FSMContext, phone: str):
 
 @router.message(Registration.phone, F.contact)
 async def reg_phone_contact(message: Message, state: FSMContext):
-    phone = message.contact.phone_number
+    phone = normalize_uz_phone(message.contact.phone_number)
+    if not phone:
+        await message.answer(
+            "❌ Telefon raqami to'liq emas. Iltimos, to'liq raqam yuboring "
+            "(masalan +998901234567)."
+        )
+        return
     await _finish_registration(message, state, phone)
 
 
 @router.message(Registration.phone, F.text)
 async def reg_phone_text(message: Message, state: FSMContext):
-    phone = message.text.strip()
-    if not phone.startswith("+") or len(phone) < 10:
-        await message.answer("❌ Noto'g'ri format. Masalan: +998901234567")
+    phone = normalize_uz_phone(message.text)
+    if not phone:
+        await message.answer("❌ To'liq raqam kiriting. Masalan: +998901234567")
         return
     await _finish_registration(message, state, phone)

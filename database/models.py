@@ -132,6 +132,13 @@ class Restaurant(Base):
     # Dastavka km narxi (har restaurant uchun)
     catering_delivery_per_km_uzs = Column(Float, default=5000.0)
 
+    # ── Catering "borib yopib berish" (onsite) sig'imi ──────
+    # Faqat onsite cheklanadi: xizmat vaqti bo'yicha `window_hours` soatlik oynada
+    # restoran bo'yicha eng ko'pi `onsite_max` ta buyurtma. Admin ishchilar soniga
+    # qarab o'zgartiradi. pickup/delivery/oddiy — cheksiz (limit yo'q).
+    catering_onsite_max = Column(Integer, default=8, nullable=False)
+    catering_onsite_window_hours = Column(Float, default=2.0, nullable=False)
+
     # Click merchant API
     click_merchant_id = Column(String)
     click_service_id = Column(String)

@@ -287,51 +287,48 @@ def _validate_group_order(group: str, total: int, rest: Restaurant) -> None:
 async def booked_dates(
     restaurant_id: int,
     branch_id: Optional[int] = None,
+    delivery_subtype: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """Kelajakdagi catering uchun TO'LIQ band (sana, vaqt) juftliklari.
+    """Catering uchun band (sana, vaqt) juftliklari.
 
-    Mantiq (faza 3+): har (date, time) slot uchun nechta order bor — agar
-    `count >= filial_car_count` bo'lsa, slot "to'liq band" deb hisoblanadi.
-    Aks holda mashina hali bo'sh (yana zakaz qabul qilish mumkin).
-
-    Misol: 5 ta mashinali filial → 10:00 ga 4 ta order tushgan → slot HALI ham
-    `available` (1 ta mashina bo'sh). 5-chi order tushganda → `booked`.
+    Yangi model:
+      - pickup/delivery (saboy/dastavka) — CHEKSIZ, hech qachon band emas → {}.
+      - onsite (borib yopib berish) — restoran bo'yicha xizmat vaqti slotida
+        `catering_onsite_max` ta to'lsa, shu slot band. (Asosiy himoya — buyurtma
+        yaratishdagi 2 soatlik oyna tekshiruvi; bu faqat ko'rsatish uchun.)
     """
-    from database.models import Branch
     await _ensure_catering_enabled(restaurant_id, db)
-    today = datetime.now().date().isoformat()
 
-    q = select(Order.schedule_date, Order.schedule_time, Order.branch_id).where(
+    # pickup/delivery — limit yo'q
+    if delivery_subtype and delivery_subtype != "onsite":
+        return {"booked": {}}
+
+    rest = (await db.execute(
+        select(Restaurant).where(Restaurant.id == restaurant_id)
+    )).scalar_one_or_none()
+    max_n = (rest.catering_onsite_max if rest else 8) or 8
+
+    today = datetime.now().date().isoformat()
+    # Onsite buyurtmalar — restoran bo'yicha (limit restoran darajasida)
+    q = select(Order.schedule_date, Order.schedule_time).where(
+        Order.restaurant_id == restaurant_id,
         Order.order_kind == "catering",
+        Order.delivery_subtype == "onsite",
         Order.schedule_date >= today,
         Order.status.notin_([OrderStatus.cancelled, OrderStatus.delivered]),
     )
-    if branch_id is not None:
-        q = q.where(Order.branch_id == branch_id)
-    else:
-        q = q.where(Order.restaurant_id == restaurant_id)
     rows = (await db.execute(q)).all()
 
-    # Filial → car_count map
-    branch_q = select(Branch.id, Branch.delivery_car_count).where(
-        Branch.restaurant_id == restaurant_id
-    )
-    branch_caps = dict((await db.execute(branch_q)).all())
-
-    # (branch_id, date, time) bo'yicha hisoblagich
     counts: dict[tuple, int] = {}
-    for d, t, bid in rows:
+    for d, t in rows:
         if not d or not t:
             continue
-        key = (bid, d, t)
-        counts[key] = counts.get(key, 0) + 1
+        counts[(d, t)] = counts.get((d, t), 0) + 1
 
-    # Faqat to'liq band'larni qaytarish
     by_date: dict[str, list[str]] = {}
-    for (bid, d, t), cnt in counts.items():
-        cap = max(1, int(branch_caps.get(bid, 5) or 5))
-        if cnt >= cap:
+    for (d, t), cnt in counts.items():
+        if cnt >= max_n:
             by_date.setdefault(d, []).append(t)
 
     return {"booked": by_date}
@@ -484,36 +481,66 @@ async def create_catering_order(
     total = sum(it.quantity for it in data.items if it.quantity > 0)
     _validate_group_order(data.group, total, rest)
 
-    # Sana — kamida 24 soat oldin
+    # Lead-time: onsite (borib yopib berish) = 3 soat, dastavka/saboy = 2 soat oldin
     try:
         schedule_dt = datetime.strptime(f"{data.schedule_date} {data.schedule_time}", "%Y-%m-%d %H:%M")
     except ValueError:
         raise HTTPException(400, "Sana/vaqt noto'g'ri formatda")
-    min_allowed = datetime.now() + timedelta(hours=24)
+    lead_hours = 3 if data.delivery_subtype == "onsite" else 2
+    min_allowed = datetime.now() + timedelta(hours=lead_hours)
     if schedule_dt < min_allowed:
         raise HTTPException(
             400,
-            "Catering buyurtmalari kamida 24 soat oldin qabul qilinadi. "
+            f"Bu xizmat turi kamida {lead_hours} soat oldin qabul qilinadi. "
             "Tezkor buyurtmalar uchun: +998 98 000 06 04"
         )
 
-    # Slot konflikti — bir filialda bitta sana/vaqtga faqat bitta catering
-    busy_q = select(Order).where(
-        Order.order_kind == "catering",
-        Order.schedule_date == data.schedule_date,
-        Order.schedule_time == data.schedule_time,
-        Order.status.notin_([OrderStatus.cancelled, OrderStatus.delivered]),
-    )
-    if branch_id is not None:
-        busy_q = busy_q.where(Order.branch_id == branch_id)
-    else:
-        busy_q = busy_q.where(Order.restaurant_id == restaurant_id)
-    busy = (await db.execute(busy_q)).scalar_one_or_none()
-    if busy:
+    # Sig'im cheklovi — FAQAT onsite (borib yopib berish) uchun.
+    # pickup/delivery va oddiy buyurtmalar cheksiz.
+    # Xizmat vaqti bo'yicha `window_hours` soatlik oynada (birinchi buyurtma vaqtidan
+    # boshlab) restoran bo'yicha eng ko'pi `onsite_max` ta.
+    if data.delivery_subtype == "onsite":
+        max_n = rest.catering_onsite_max or 8
+        window_h = rest.catering_onsite_window_hours or 2.0
+        rows = (await db.execute(select(Order).where(
+            Order.restaurant_id == restaurant_id,
+            Order.order_kind == "catering",
+            Order.delivery_subtype == "onsite",
+            Order.status.notin_([OrderStatus.cancelled]),
+        ))).scalars().all()
+        existing = []
+        for o in rows:
+            try:
+                existing.append(datetime.strptime(f"{o.schedule_date} {o.schedule_time}", "%Y-%m-%d %H:%M"))
+            except (ValueError, TypeError):
+                continue
+        # Yangi buyurtma vaqtini qo'shib, greedy 2h oynalarga ajratamiz (birinchiga anchored)
+        all_times = sorted(existing + [schedule_dt])
+        window = timedelta(hours=window_h)
+        groups, anchor, cur = [], None, []
+        for t in all_times:
+            if anchor is None:
+                anchor, cur = t, [t]
+            elif t - anchor <= window:
+                cur.append(t)
+            else:
+                groups.append(cur); anchor, cur = t, [t]
+        if cur:
+            groups.append(cur)
+        for g in groups:
+            if schedule_dt in g and len(g) > max_n:
+                raise HTTPException(
+                    409,
+                    f"Bu vaqt oralig'i to'la — har {window_h:.0f} soatga {max_n} ta "
+                    f"'borib yopib berish' qabul qilinadi. Boshqa vaqt tanlang yoki: "
+                    f"+998 98 000 06 04"
+                )
+
+    # Naqd taqiq — dastavka va onsite faqat onlayn to'lov (server tomon himoya)
+    if data.delivery_subtype in ("delivery", "onsite") and (data.payment_method or "").lower() == "cash":
         raise HTTPException(
-            409,
-            f"Bu vaqt ({data.schedule_date} {data.schedule_time}) band qilingan. "
-            f"Iltimos, boshqa vaqt yoki sana tanlang."
+            400,
+            "Bu xizmat turi faqat onlayn to'lov bilan qabul qilinadi (naqd emas)."
         )
 
     # Narx

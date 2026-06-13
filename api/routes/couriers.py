@@ -218,12 +218,19 @@ async def mark_delivered(telegram_id: str, order_id: int, db: AsyncSession = Dep
     order.status = OrderStatus.delivered
     await db.commit()
 
-    # Mijozga xabar
+    # Mijozga xabar + avtomatik baholash tugmalari
     await _notify_user(
         order,
         f"📦 <b>Zakaz #{order.id}</b>\n\n"
         f"✅ Zakazingiz yetkazildi! Ishtahangiz chog' bo'lsin! 🥟\n\n"
-        f"⭐ Bizni baholashni unutmang: /review",
+        f"⭐ Buyurtmani baholang:",
+        reply_markup={"inline_keyboard": [[
+            {"text": "⭐", "callback_data": f"rate_order:{order.id}:1"},
+            {"text": "⭐⭐", "callback_data": f"rate_order:{order.id}:2"},
+            {"text": "⭐⭐⭐", "callback_data": f"rate_order:{order.id}:3"},
+            {"text": "⭐⭐⭐⭐", "callback_data": f"rate_order:{order.id}:4"},
+            {"text": "⭐⭐⭐⭐⭐", "callback_data": f"rate_order:{order.id}:5"},
+        ]]},
     )
 
     return {"status": "ok"}
@@ -357,22 +364,25 @@ async def update_courier_status(
     return {"status": "ok"}
 
 
-async def _notify_user(order, text: str):
+async def _notify_user(order, text: str, reply_markup: dict = None):
     """Mijozga Telegram orqali xabar yuborish."""
     bot_token = os.getenv("BOT_TOKEN", "")
     print(f"[Couriers] _notify_user: bot_token={'set' if bot_token else 'NOT SET'}, user={getattr(order, 'user', None)}")
     if not bot_token or not order.user:
         print(f"[Couriers] _notify_user skipped: token={bool(bot_token)}, user={bool(order.user)}")
         return
+    payload = {
+        "chat_id": order.user.telegram_id,
+        "text": text,
+        "parse_mode": "HTML",
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     try:
         async with httpx.AsyncClient() as client:
             r = await client.post(
                 f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                json={
-                    "chat_id": order.user.telegram_id,
-                    "text": text,
-                    "parse_mode": "HTML",
-                },
+                json=payload,
                 timeout=5.0,
             )
             print(f"[Couriers] _notify_user to {order.user.telegram_id}: {r.status_code}")

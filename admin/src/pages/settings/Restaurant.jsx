@@ -124,12 +124,26 @@ export default function RestaurantSettings() {
       .finally(() => setLoading(false))
   }, [selectedBranchId, restaurantId])
 
+  // Koordinatadan manzilni avtomatik aniqlash (reverse geocoding, Nominatim)
+  const reverseGeocode = useCallback(async (lat, lon) => {
+    try {
+      const r = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&accept-language=uz,ru`
+      )
+      const d = await r.json()
+      if (d && d.display_name) {
+        form.setFieldsValue({ address: d.display_name })
+      }
+    } catch { /* manzil avtomatik aniqlanmadi — koordinata baribir saqlanadi */ }
+  }, [form])
+
   const handleMapChange = useCallback((lat, lon) => {
     const r = (v) => Math.round(v * 10000) / 10000
     setMapLat(r(lat))
     setMapLon(r(lon))
     form.setFieldsValue({ restaurant_lat: r(lat), restaurant_lon: r(lon) })
-  }, [form])
+    reverseGeocode(r(lat), r(lon))
+  }, [form, reverseGeocode])
 
   const handleSave = async () => {
     setSaving(true)
@@ -226,27 +240,32 @@ export default function RestaurantSettings() {
             </Col>
           </Row>
 
-          <Form.Item
-            name="address"
-            label="Manzil"
-            rules={[{ required: true, message: 'Manzil kiriting' }]}
-          >
-            <Input
-              prefix={<EnvironmentOutlined style={{ color: '#bfbfbf' }} />}
-              placeholder="Toshkent sh., Chilonzor tumani, 7-mavze"
-              size="large"
-            />
-          </Form.Item>
         </Card>
 
         {/* Map */}
         <Card style={cardStyle} styles={{ body: cardBody }}>
           <span style={sectionLabel}>Joylashuv</span>
           <Text type="secondary" style={{ display: 'block', marginBottom: 16, marginTop: -8, fontSize: 13 }}>
-            Markerni surib aniq joyni belgilang
+            Markerni surib aniq joyni belgilang — manzil xaritadan avtomatik aniqlanadi
           </Text>
 
           <YandexMap lat={mapLat} lon={mapLon} onChange={handleMapChange} />
+
+          {/* Manzil — qo'lda kiritilmaydi, faqat xaritadan (read-only). Mijozlarga
+              shu manzil ko'rsatiladi. */}
+          <Form.Item
+            name="address"
+            label="Manzil (xaritadan avtomatik)"
+            style={{ marginTop: 16, marginBottom: 0 }}
+            rules={[{ required: true, message: 'Xaritadan joyni belgilang' }]}
+          >
+            <Input
+              prefix={<EnvironmentOutlined style={{ color: '#bfbfbf' }} />}
+              placeholder="Xaritadan joyni tanlang — manzil shu yerda chiqadi"
+              size="large"
+              readOnly
+            />
+          </Form.Item>
 
           <Row gutter={16} style={{ marginTop: 16 }}>
             <Col xs={12}>

@@ -121,9 +121,10 @@ ALL_TIME_SLOTS = [
 
 
 def date_kb(booked=None) -> InlineKeyboardMarkup:
-    """30 kunlik sana — kamida 24 soat oldin. To'liq band kunlar 🔒 bilan."""
+    """30 kunlik sana — BUGUNdan boshlab (lead-time vaqt tanlashda tekshiriladi).
+    To'liq band kunlar 🔒 bilan."""
     booked = booked or {}
-    tomorrow = datetime.now().date() + timedelta(days=1)
+    today = datetime.now().date()
 
     def label_for(d) -> tuple[str, str]:
         """(text, callback_data) qaytaradi."""
@@ -137,12 +138,14 @@ def date_kb(booked=None) -> InlineKeyboardMarkup:
         return text, cb
 
     rows = []
-    text, cb = label_for(tomorrow)
+    text, cb = label_for(today)
+    rows.append([InlineKeyboardButton(text=f"📅 Bugun — {text}", callback_data=cb)])
+    text, cb = label_for(today + timedelta(days=1))
     rows.append([InlineKeyboardButton(text=f"📅 Erta — {text}", callback_data=cb)])
 
     row = []
     for i in range(2, 30):
-        d = tomorrow + timedelta(days=i - 1)
+        d = today + timedelta(days=i)
         text, cb = label_for(d)
         row.append(InlineKeyboardButton(text=text, callback_data=cb))
         if len(row) == 2:
@@ -158,13 +161,20 @@ def date_kb(booked=None) -> InlineKeyboardMarkup:
 
 # ── Vaqt tanlash ─────────────────────────────────────
 
-def time_kb(busy_times=None) -> InlineKeyboardMarkup:
-    """08:00–22:00 oralig'ida 30 daqiqa qadam. Band vaqtlar 🔒 bilan."""
+def time_kb(busy_times=None, min_time=None) -> InlineKeyboardMarkup:
+    """08:00–22:00 oralig'ida 30 daqiqa qadam. Band vaqtlar 🔒 bilan.
+
+    min_time ("HH:MM") berilsa (bugungi sana uchun, lead-time bo'yicha) — undan
+    oldingi slotlar ⏳ bilan bloklanadi (juda erta).
+    """
     busy_set = set(busy_times or [])
     rows = []
     row = []
     for time_str in ALL_TIME_SLOTS:
-        if time_str in busy_set:
+        if min_time and time_str < min_time:
+            text = f"⏳ {time_str}"
+            cb = "cat_too_soon"
+        elif time_str in busy_set:
             text = f"🔒 {time_str}"
             cb = f"cat_busy_time:{time_str}"
         else:

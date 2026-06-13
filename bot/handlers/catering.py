@@ -12,6 +12,8 @@ Yangi oqim:
 9. To'lov
 10. Tasdiqlash
 """
+from __future__ import annotations
+
 from datetime import datetime, timedelta
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
@@ -29,6 +31,7 @@ from bot.keyboards.catering import (
 )
 from bot.keyboards.main import main_menu_kb
 from bot.utils import clear_state_preserve_branch
+from bot.validators import normalize_uz_phone
 
 router = Router()
 
@@ -291,7 +294,7 @@ async def delivery_selected(callback: CallbackQuery, state: FSMContext):
         "delivery": "🚗 Dastavka",
     }
     data = await state.get_data()
-    booked = await get_catering_booked(data.get("branch_id"))
+    booked = await get_catering_booked(data.get("branch_id"), subtype)
     await state.update_data(catering_booked=booked)
     await callback.message.edit_text(
         f"✅ {labels.get(subtype, subtype)}\n\n📅 Qaysi sanaga kerak?\n"
@@ -314,6 +317,34 @@ async def busy_time_clicked(callback: CallbackQuery):
     await callback.answer("🔒 Bu vaqt allaqachon band qilingan. Boshqa vaqt tanlang.", show_alert=True)
 
 
+@router.callback_query(F.data == "cat_too_soon")
+async def too_soon_clicked(callback: CallbackQuery):
+    await callback.answer(
+        "⏳ Bu vaqt juda yaqin. Dastavka/saboy kamida 2 soat, borib yopib berish "
+        "3 soat oldin qabul qilinadi. Keyinroq vaqt tanlang.",
+        show_alert=True,
+    )
+
+
+def _lead_min_time(date_str: str, delivery_subtype: str) -> str | None:
+    """Bugungi sana uchun eng erta ruxsat etilgan vaqt (HH:MM), aks holda None."""
+    today = datetime.now().date()
+    try:
+        d = datetime.fromisoformat(date_str).date()
+    except (ValueError, TypeError):
+        return None
+    if d != today:
+        return None
+    lead = 3 if delivery_subtype == "onsite" else 2
+    cutoff = datetime.now() + timedelta(hours=lead)
+    # 30 daqiqaga yaxlitlash (yuqoriga)
+    if cutoff.minute > 30:
+        cutoff = cutoff.replace(minute=0) + timedelta(hours=1)
+    elif cutoff.minute > 0:
+        cutoff = cutoff.replace(minute=30)
+    return cutoff.strftime("%H:%M")
+
+
 @router.callback_query(F.data.startswith("cat_date:"))
 async def date_selected(callback: CallbackQuery, state: FSMContext):
     date_str = callback.data.split(":", 1)[1]
@@ -323,14 +354,15 @@ async def date_selected(callback: CallbackQuery, state: FSMContext):
 
     # Real-time band vaqtlarni olish
     data = await state.get_data()
-    booked = data.get("catering_booked") or await get_catering_booked(data.get("branch_id"))
+    booked = data.get("catering_booked") or await get_catering_booked(data.get("branch_id"), data.get("delivery_subtype"))
     busy_times = booked.get(date_str, [])
+    min_time = _lead_min_time(date_str, data.get("delivery_subtype"))
 
     await callback.message.edit_text(
         f"✅ Sana: <b>{format_date_uz(d)}</b>\n\n"
         f"⏰ Qaysi vaqtga tayyor bo'lsin?\n"
-        f"<i>🔒 — band vaqtlar</i>",
-        reply_markup=time_kb(busy_times),
+        f"<i>🔒 — band, ⏳ — juda erta</i>",
+        reply_markup=time_kb(busy_times, min_time),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -358,15 +390,15 @@ async def date_custom_input(message: Message, state: FSMContext):
         await message.answer("❌ Format noto'g'ri. Masalan: 28.04.2026")
         return
 
-    tomorrow = datetime.now().date() + timedelta(days=1)
-    if d < tomorrow:
+    today = datetime.now().date()
+    if d < today:
         await message.answer(
-            "❌ Catering buyurtmalari kamida 24 soat oldin qabul qilinadi.\n\n"
+            "❌ O'tgan sanaga buyurtma berib bo'lmaydi.\n\n"
             "Tezkor buyurtma uchun qo'ng'iroq qiling: <b>+998 98 000 06 04</b>",
             parse_mode="HTML",
         )
         return
-    if (d - tomorrow).days > 60:
+    if (d - today).days > 60:
         await message.answer("❌ Eng ko'pi bilan 60 kun oldinga yozilsin")
         return
 
@@ -375,14 +407,15 @@ async def date_custom_input(message: Message, state: FSMContext):
     await state.set_state(CateringFlow.choosing_time)
 
     data = await state.get_data()
-    booked = data.get("catering_booked") or await get_catering_booked(data.get("branch_id"))
+    booked = data.get("catering_booked") or await get_catering_booked(data.get("branch_id"), data.get("delivery_subtype"))
     busy_times = booked.get(date_str, [])
+    min_time = _lead_min_time(date_str, data.get("delivery_subtype"))
 
     await message.answer(
         f"✅ Sana: <b>{format_date_uz(d)}</b>\n\n"
         f"⏰ Qaysi vaqtga tayyor bo'lsin?\n"
-        f"<i>🔒 — band vaqtlar</i>",
-        reply_markup=time_kb(busy_times),
+        f"<i>🔒 — band, ⏳ — juda erta</i>",
+        reply_markup=time_kb(busy_times, min_time),
         parse_mode="HTML",
     )
 
@@ -426,6 +459,21 @@ async def time_custom_input(message: Message, state: FSMContext):
             await message.answer("❌ Format noto'g'ri. Masalan: 14:30")
             return
     time_str = t.strftime("%H:%M")
+    # Lead-time tekshiruvi (dastavka/saboy 2 soat, onsite 3 soat)
+    data = await state.get_data()
+    subtype = data.get("delivery_subtype")
+    date_str = data.get("schedule_date")
+    try:
+        sched_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+        lead = 3 if subtype == "onsite" else 2
+        if sched_dt < datetime.now() + timedelta(hours=lead):
+            await message.answer(
+                f"⏳ Bu vaqt juda yaqin. Bu xizmat turi kamida {lead} soat oldin "
+                f"qabul qilinadi. Keyinroq vaqt kiriting.",
+            )
+            return
+    except (ValueError, TypeError):
+        pass
     await state.update_data(schedule_time=time_str)
     await state.set_state(CateringFlow.entering_phone)
     await message.answer(
@@ -439,14 +487,21 @@ async def time_custom_input(message: Message, state: FSMContext):
 
 @router.message(CateringFlow.entering_phone, F.contact)
 async def phone_contact(message: Message, state: FSMContext):
-    await _save_phone(message, state, message.contact.phone_number)
+    phone = normalize_uz_phone(message.contact.phone_number)
+    if not phone:
+        await message.answer(
+            "❌ Telefon raqami to'liq emas yoki noto'g'ri. "
+            "Iltimos, to'liq raqam yuboring (masalan +998901234567)."
+        )
+        return
+    await _save_phone(message, state, phone)
 
 
 @router.message(CateringFlow.entering_phone, F.text)
 async def phone_typed(message: Message, state: FSMContext):
-    phone = message.text.strip()
-    if not phone.startswith("+") or len(phone) < 10:
-        await message.answer("❌ Noto'g'ri format. Masalan: +998901234567")
+    phone = normalize_uz_phone(message.text)
+    if not phone:
+        await message.answer("❌ To'liq raqam kiriting. Masalan: +998901234567")
         return
     await _save_phone(message, state, phone)
 
@@ -512,15 +567,16 @@ async def address_text(message: Message, state: FSMContext):
 async def _ask_payment_method(message: Message, state: FSMContext):
     """Restoran sozlamalariga qarab faqat ruxsat etilgan to'lov usullarini ko'rsatamiz."""
     data = await state.get_data()
-    settings = await get_settings()
     delivery_subtype = data.get("delivery_subtype")
 
-    # Yetkazib berishda oldindan to'lov majburiy bo'lsa, naqd taqiqlanadi
-    force_card = False
+    # Catering dastavka va "borib yopib berish" (onsite) — NAQD TAQIQLANADI:
+    # faqat onlayn to'lov, va buyurtma faqat to'lovdan keyin qabul bo'ladi.
+    # Saboy (pickup) — naqd ham mumkin.
+    force_card = delivery_subtype in ("delivery", "onsite")
     reason = None
-    if settings.get("enforce_prepayment_for_delivery") and delivery_subtype == "delivery":
-        force_card = True
-        reason = "Yetkazib berishlarda oldindan to'lov majburiy."
+    if force_card:
+        label = "Dastavka" if delivery_subtype == "delivery" else "Borib yopib berish"
+        reason = f"{label} faqat onlayn to'lov bilan — to'lov amalga oshgach buyurtma qabul qilinadi."
 
     await state.set_state(CateringFlow.choosing_payment_method)
     body = "💳 To'lov usulini tanlang:"
@@ -686,18 +742,17 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
         err = result.get("error") if result else "Noma'lum xato"
         status_code = result.get("status_code") if result else None
 
-        # Slot konflikti — sana tanlashga qaytaramiz, FSM saqlaymiz
-        if status_code == 409:
-            booked = await get_catering_booked(branch_id)
+        # Slot to'la (409) yoki vaqt juda yaqin (400) — sana tanlashga qaytaramiz
+        if status_code in (409, 400):
+            booked = await get_catering_booked(branch_id, data.get("delivery_subtype"))
             await state.update_data(catering_booked=booked)
             await state.set_state(CateringFlow.choosing_date)
             await callback.message.answer(
-                f"⚠️ <b>Bu vaqt allaqachon band qilingan!</b>\n\n{err}\n\n"
-                f"📅 Iltimos, boshqa sana yoki vaqt tanlang:",
+                f"⚠️ <b>{err}</b>\n\n📅 Iltimos, boshqa sana yoki vaqt tanlang:",
                 reply_markup=date_kb(booked),
                 parse_mode="HTML",
             )
-            await callback.answer("Slot band", show_alert=True)
+            await callback.answer("Boshqa vaqt tanlang", show_alert=True)
             return
 
         await callback.message.answer(

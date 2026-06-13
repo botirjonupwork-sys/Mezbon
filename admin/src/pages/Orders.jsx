@@ -324,7 +324,9 @@ export default function Orders() {
       }
       if (restaurantId) params.restaurant_id = restaurantId
       if (selectedBranchId) params.branch_id = selectedBranchId
-      if (orderKind !== 'all') params.order_kind = orderKind
+      // Server filtri YO'Q — barcha turlarni olamiz (ovoz HAR qanday yangi
+      // buyurtmaga chalsin, segment qaysiligidan qat'i nazar). Segment faqat
+      // ko'rsatishda (client-side) qo'llanadi.
       const res = await getOrders(params)
       const newOrders = res.data || []
       setOrders(newOrders)
@@ -353,13 +355,15 @@ export default function Orders() {
     } finally {
       if (!silent) setLoading(false)
     }
-  }, [dateRange, soundEnabled, selectedBranchId, orderKind, restaurantId, selectedOrder])
+  }, [dateRange, soundEnabled, selectedBranchId, restaurantId, selectedOrder])
 
   useEffect(() => {
+    // Faqat filial o'zgarganda qayta yuklash (segment client-side filtrlanadi,
+    // shuning uchun ovoz baseline'i segment almashishida tushib qolmaydi)
     isFirstLoadRef.current = true
     fetchOrders(dateRange)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedBranchId, orderKind])
+  }, [selectedBranchId])
 
   useEffect(() => {
     pollTimerRef.current = setInterval(() => fetchOrders(dateRange, true), POLL_INTERVAL)
@@ -394,7 +398,11 @@ export default function Orders() {
     }
   }
 
-  const pendingCount = orders.filter(o => o.status === 'pending').length
+  // Segment (Hammasi/Katering) faqat ko'rsatishda — client-side filtr
+  const displayOrders = orderKind === 'all'
+    ? orders
+    : orders.filter(o => (o.order_kind || 'regular') === orderKind)
+  const pendingCount = displayOrders.filter(o => o.status === 'pending').length
 
   // Compact columns
   const columns = [
@@ -513,7 +521,7 @@ export default function Orders() {
         </Space>
 
         <Table
-          dataSource={orders}
+          dataSource={displayOrders}
           columns={columns}
           rowKey="id"
           loading={loading}

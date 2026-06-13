@@ -123,6 +123,9 @@ class SettingsUpdate(BaseModel):
     catering_nan_min: Optional[int] = None
     catering_nan_step: Optional[int] = None
     catering_delivery_per_km_uzs: Optional[float] = None
+    # Catering "borib yopib berish" (onsite) sig'imi — admin ishchilarga qarab o'zgartiradi
+    catering_onsite_max: Optional[int] = None
+    catering_onsite_window_hours: Optional[float] = None
     # To'lov gateway'lar
     click_merchant_id: Optional[str] = None
     click_service_id: Optional[str] = None
@@ -939,6 +942,9 @@ async def get_settings(
         "catering_nan_min": rest.catering_nan_min or 40,
         "catering_nan_step": rest.catering_nan_step or 40,
         "catering_delivery_per_km_uzs": rest.catering_delivery_per_km_uzs or 5000,
+        # Catering onsite sig'imi
+        "catering_onsite_max": rest.catering_onsite_max or 8,
+        "catering_onsite_window_hours": rest.catering_onsite_window_hours or 2,
         # To'lov gateway'lar (maxfiy maydonlar maskalanadi — oxirgi 4 belgi)
         "click_merchant_id": _mask_secret(rest.click_merchant_id),
         "click_service_id": _mask_secret(rest.click_service_id),

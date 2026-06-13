@@ -12,6 +12,7 @@ import {
   getMyPlan,
 } from '../api'
 import { useAuthStore } from '../store/auth'
+import LocationPicker from '../components/LocationPicker'
 
 const { Title, Text } = Typography
 
@@ -24,6 +25,14 @@ export default function Branches() {
   const [createForm] = Form.useForm()
   const [editForm] = Form.useForm()
   const restaurantId = useAuthStore((s) => s.currentRestaurantId)
+
+  // Xarita uchun joriy qiymatlar (qo'lda manzil yo'q — faqat xaritadan)
+  const cLat = Form.useWatch('latitude', createForm)
+  const cLon = Form.useWatch('longitude', createForm)
+  const cAddr = Form.useWatch('address', createForm)
+  const eLat = Form.useWatch('latitude', editForm)
+  const eLon = Form.useWatch('longitude', editForm)
+  const eAddr = Form.useWatch('address', editForm)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -226,20 +235,19 @@ export default function Branches() {
           <Form.Item name="name" label="Filial nomi" rules={[{ required: true }]}>
             <Input placeholder="Chilonzor filiali" />
           </Form.Item>
-          <Form.Item name="address" label="Manzil">
-            <Input.TextArea rows={2} placeholder="Toshkent, Chilonzor 7-mavze, ..." />
-          </Form.Item>
           <Form.Item name="phone" label="Telefon">
             <Input placeholder="+998901234567" />
           </Form.Item>
-          <Space style={{ width: '100%' }} size="large">
-            <Form.Item name="latitude" label="Kenglik (lat)" style={{ flex: 1, minWidth: 180 }}>
-              <InputNumber style={{ width: '100%' }} placeholder="41.299" step={0.0001} />
-            </Form.Item>
-            <Form.Item name="longitude" label="Uzunlik (lon)" style={{ flex: 1, minWidth: 180 }}>
-              <InputNumber style={{ width: '100%' }} placeholder="69.240" step={0.0001} />
-            </Form.Item>
-          </Space>
+          <Form.Item label="Joylashuv (xaritadan)" required>
+            <LocationPicker
+              lat={cLat} lon={cLon} address={cAddr}
+              onChange={({ lat, lon, address }) =>
+                createForm.setFieldsValue({ latitude: lat, longitude: lon, address })}
+            />
+          </Form.Item>
+          <Form.Item name="address" hidden><Input /></Form.Item>
+          <Form.Item name="latitude" hidden><InputNumber /></Form.Item>
+          <Form.Item name="longitude" hidden><InputNumber /></Form.Item>
           <Space style={{ width: '100%' }} size="large">
             <Form.Item name="work_hours_from" label="Ish vaqti (boshlanish)" style={{ flex: 1, minWidth: 180 }}>
               <Input placeholder="09:00" />
@@ -277,12 +285,19 @@ export default function Branches() {
           <Form.Item name="name" label="Filial nomi" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="address" label="Manzil">
-            <Input.TextArea rows={2} />
-          </Form.Item>
           <Form.Item name="phone" label="Telefon">
             <Input />
           </Form.Item>
+          <Form.Item label="Joylashuv (xaritadan)">
+            <LocationPicker
+              lat={eLat} lon={eLon} address={eAddr}
+              onChange={({ lat, lon, address }) =>
+                editForm.setFieldsValue({ latitude: lat, longitude: lon, address })}
+            />
+          </Form.Item>
+          <Form.Item name="address" hidden><Input /></Form.Item>
+          <Form.Item name="latitude" hidden><InputNumber /></Form.Item>
+          <Form.Item name="longitude" hidden><InputNumber /></Form.Item>
           <Space style={{ width: '100%' }} size="large">
             <Form.Item name="work_hours_from" label="Ish (boshlanish)" style={{ flex: 1, minWidth: 180 }}>
               <Input />
