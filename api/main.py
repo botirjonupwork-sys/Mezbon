@@ -16,7 +16,7 @@ from api.routes import (
     users, menu, orders, reviews, admin, auth, couriers, branches,
     catering, billing, ai, health, super_admin, super_legacy, pos,
     registration, yandex_webhook, uzum_webhook, delivery_quote, autopay,
-    alerts_admin,
+    alerts_admin, ai_test,
 )
 
 # Logging — eng birinchi sozlanishi shart (boshqa modullar import paytida ham log yozishi mumkin)
@@ -270,6 +270,7 @@ app.include_router(ai.router)
 app.include_router(health.router)
 app.include_router(super_admin.router)
 app.include_router(alerts_admin.router)
+app.include_router(ai_test.router)
 app.include_router(super_legacy.router)
 app.include_router(pos.router)
 app.include_router(registration.router)

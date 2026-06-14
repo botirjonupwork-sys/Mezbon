@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Card, Table, Tag, Typography, Alert, Statistic, Row, Col, Spin } from 'antd'
+import { Card, Table, Tag, Typography, Alert, Statistic, Row, Col, Spin, Tabs } from 'antd'
 import {
   PhoneOutlined, RobotOutlined, DollarOutlined, ClockCircleOutlined,
 } from '@ant-design/icons'
 import { getRestaurants, getAiAggregateStats } from '../api'
+import AiTestConsole from './AiTestConsole'
 
 const { Title, Text } = Typography
 
@@ -75,9 +76,22 @@ export default function AiAgent() {
         AI Telefon Operator
       </Title>
       <Text type="secondary" style={{ display: 'block', marginBottom: 24 }}>
-        Restoranlarning AI Operator sozlamalari va foydalanish statistikasi
+        AI Operatorni telefonsiz sinash va foydalanish statistikasi
       </Text>
 
+      <Tabs
+        defaultActiveKey="test"
+        items={[
+          {
+            key: 'test',
+            label: <span><PhoneOutlined /> Sinov qo'ng'iroq</span>,
+            children: <AiTestConsole restaurants={restaurants} />,
+          },
+          {
+            key: 'stats',
+            label: <span><RobotOutlined /> Statistika</span>,
+            children: (
+      <>
       <Alert
         type="info"
         showIcon
@@ -157,6 +171,11 @@ export default function AiAgent() {
           />
         )}
       </Card>
+      </>
+            ),
+          },
+        ]}
+      />
     </div>
   )
 }

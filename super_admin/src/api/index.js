@@ -64,6 +64,12 @@ export const updateAlertConfig = (data) => api.put('/super-admin/alerts/config',
 export const testAlert = () => api.post('/super-admin/alerts/test')
 export const getAlertHistory = (params) => api.get('/super-admin/alerts/history', { params })
 
+// AI operator sinov konsoli (telefonsiz)
+export const aiTestText = (data) => api.post('/super-admin/ai-test/text', data)
+export const aiTestReset = (call_id) => api.post('/super-admin/ai-test/reset', { call_id })
+export const aiTestVoice = (formData) =>
+  api.post('/super-admin/ai-test/voice', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
+
 // Commission
 export const getCommissionSummary = () => api.get('/super/commission/summary')
 export const getRestaurantCommission = (id) => api.get(`/super/commission/${id}`)
