@@ -25,6 +25,7 @@ OPENAI_STT_URL = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_TTS_URL = "https://api.openai.com/v1/audio/speech"
 GROQ_STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 AISHA_STT_URL = "https://back.aisha.group/api/v1/stt/post/"
+AISHA_TTS_URL = "https://back.aisha.group/api/v1/tts/post/"
 
 # OpenAI TTS voice ID'lari — biz "male"/"female"'ni shu yerga moslaymiz.
 # Mavjud OpenAI ovozlari: alloy, echo, fable, onyx, nova, shimmer
@@ -250,11 +251,45 @@ async def _transcribe_aisha(
         return r.text.strip()
 
 
+def tts_mime() -> str:
+    """Joriy TTS provayderi qaytaradigan audio MIME turi."""
+    return "audio/wav" if _tts_provider_name() == "aisha" else "audio/ogg"
+
+
+def _tts_provider_name() -> str:
+    return (platform.get("ai_tts_provider") or "openai").lower()
+
+
+async def _synthesize_aisha(text: str) -> bytes:
+    """Aisha TTS — o'zbek tili. POST transcript → {audio_path: url} → WAV yuklab olish."""
+    from api.services.llm.registry import get_provider_api_key
+    api_key = get_provider_api_key("aisha")
+    if not api_key:
+        raise RuntimeError("Aisha kaliti kiritilmagan")
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.post(
+            AISHA_TTS_URL,
+            headers={"X-Api-Key": api_key},
+            files={"transcript": (None, text[:2000])},   # multipart form-field
+        )
+        if r.status_code >= 400:
+            raise RuntimeError(f"Aisha TTS xatosi ({r.status_code}): {r.text[:300]}")
+        data = r.json()
+        url = data.get("audio_path") or data.get("audio") or data.get("url")
+        if not url:
+            raise RuntimeError(f"Aisha TTS: audio_path yo'q ({data})")
+        a = await client.get(url)
+        a.raise_for_status()
+        return a.content
+
+
 async def synthesize(text: str, voice: str = DEFAULT_VOICE) -> bytes:
-    """Matn → audio (mp3 bytes). Telegram .ogg voice sifatida yuborish uchun
-    keyinroq konvertatsiya kerak bo'lishi mumkin, lekin Telegram .mp3'ni ham
-    qabul qiladi (sendAudio yoki sendVoice OPUS bilan).
+    """Matn → audio bytes. Provayder platform sozlamasidan: 'aisha' (o'zbek WAV)
+    yoki 'openai' (mp3/opus).
     """
+    if _tts_provider_name() == "aisha":
+        return await _synthesize_aisha(text)
+
     api_key = _tts_api_key()
     if not api_key:
         raise RuntimeError("AI TTS kalit kiritilmagan")

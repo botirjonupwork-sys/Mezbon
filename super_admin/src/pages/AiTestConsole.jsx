@@ -117,7 +117,7 @@ export default function AiTestConsole({ restaurants = [] }) {
   // ── Audio chiqarish (AI javob) ──
   const speak = (m, onDone) => {
     if (m.audio) {
-      const a = new Audio(`data:audio/mpeg;base64,${m.audio}`)
+      const a = new Audio(`data:${m.mime || 'audio/wav'};base64,${m.audio}`)
       aiAudioRef.current = a
       a.onended = () => { aiAudioRef.current = null; onDone?.() }
       a.play().catch(() => onDone?.())
@@ -144,7 +144,7 @@ export default function AiTestConsole({ restaurants = [] }) {
     setMessages(prev => [
       ...prev,
       { role: 'user', text: userText || data.transcript || '(ovoz)' },
-      { role: 'ai', text: data.reply_text, audio: data.reply_audio_b64,
+      { role: 'ai', text: data.reply_text, audio: data.reply_audio_b64, mime: data.reply_audio_mime,
         confirmed: data.confirmed, ended: data.ended_reason },
     ])
   }
@@ -154,8 +154,8 @@ export default function AiTestConsole({ restaurants = [] }) {
     const t = text.trim(); if (!t || !restaurantId) return
     setText(''); setLoading(true)
     try {
-      const { data } = await aiTestText({ restaurant_id: restaurantId, call_id: callId, text: t })
-      pushMessages(t, data); speak({ text: data.reply_text, audio: data.reply_audio_b64 })
+      const { data } = await aiTestText({ restaurant_id: restaurantId, call_id: callId, text: t, want_audio: true })
+      pushMessages(t, data); speak({ text: data.reply_text, audio: data.reply_audio_b64, mime: data.reply_audio_mime })
     } catch (e) { message.error(e.response?.data?.detail || 'Xato') }
     finally { setLoading(false) }
   }
@@ -171,7 +171,13 @@ export default function AiTestConsole({ restaurants = [] }) {
       mr.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data)
       mr.onstop = async () => {
         stream.getTracks().forEach(t => t.stop())
-        await sendVoiceBlob(new Blob(chunksRef.current, { type: mr.mimeType || 'audio/webm' }))
+        try {
+          const data = await sendVoiceBlob(new Blob(chunksRef.current, { type: mr.mimeType || 'audio/webm' }))
+          if (data && (data.reply_text || data.transcript)) {
+            pushMessages(data.transcript, data)
+            speak({ text: data.reply_text, audio: data.reply_audio_b64, mime: data.reply_audio_mime })
+          }
+        } catch (e) { message.error(e.response?.data?.detail || 'Ovoz xatosi') }
       }
       recRef.current = mr; mr.start(); setRecording(true)
     } catch { message.error('Mikrofonga ruxsat berilmadi') }
@@ -252,7 +258,7 @@ export default function AiTestConsole({ restaurants = [] }) {
       if (data && (data.reply_text || data.transcript)) {
         pushMessages(data.transcript, data)
         setStatus('speaking')
-        speak({ text: data.reply_text, audio: data.reply_audio_b64 }, () => {
+        speak({ text: data.reply_text, audio: data.reply_audio_b64, mime: data.reply_audio_mime }, () => {
           busyRef.current = false
           if (callActiveRef()) setStatus('listening')
         })

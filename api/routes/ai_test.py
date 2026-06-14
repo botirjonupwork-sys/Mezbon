@@ -57,6 +57,7 @@ def _result_payload(transcript: str, result: dict, audio_b64: Optional[str]) -> 
         "transcript": transcript,
         "reply_text": (result.get("reply") or "").strip(),
         "reply_audio_b64": audio_b64,
+        "reply_audio_mime": voice_svc.tts_mime() if audio_b64 else None,
         "cart": result.get("cart", []),
         "address": result.get("address"),
         "confirmed": bool(result.get("confirmed")),
