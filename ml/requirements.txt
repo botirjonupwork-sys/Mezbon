@@ -1,0 +1,32 @@
+# O'zbek STT/TTS training — talab qilinadigan paketlar.
+# DIQQAT: bular asosiy loyiha requirements.txt'dan ALOHIDA — training muhiti uchun
+# (GPU mashinada o'rnatiladi). Production server'da faqat inference paketlari kerak
+# (faster-whisper, piper-tts) — pastdagi "INFERENCE" bo'limiga qarang.
+
+# ── Umumiy data tayyorlash ──
+datasets>=2.18.0
+huggingface_hub>=0.23.0
+soundfile>=0.12.1
+librosa>=0.10.1
+pandas>=2.0.0
+tqdm>=4.66.0
+
+# ── STT training (Whisper fine-tune) ──
+torch>=2.2.0
+transformers>=4.40.0
+accelerate>=0.30.0
+evaluate>=0.4.1
+jiwer>=3.0.3            # WER hisoblash
+tensorboard>=2.16.0
+
+# ── STT eksport (CPU inference) ──
+ctranslate2>=4.0.0
+faster-whisper>=1.0.0
+
+# ── TTS training (Piper/VITS) alohida muhitda ──
+# Piper o'z repo'sida o'rnatiladi: github.com/rhasspy/piper (piper-train)
+# espeak-ng (fonemalashtirish) tizimда: apt-get install espeak-ng
+
+# ── INFERENCE (production server, CPU, BEPUL) ──
+# faster-whisper>=1.0.0
+# piper-tts>=1.2.0
