@@ -374,12 +374,18 @@ async def voice_turn(
         await ai_agent.finalize_session(db, call_id, ended_reason="transferred")
     # Tasdiqlangan buyurtma
     elif result.get("confirmed") and result.get("cart"):
+        order_id = None
         try:
-            order_id = await _create_ai_order(
+            created = await _create_ai_order(
                 db=db, restaurant_id=restaurant.id, phone=user_phone,
                 user_name=user_name, cart=result["cart"], address=result.get("address"),
             )
-            actions.append({"type": "create_order", "order_id": order_id})
+            order_id = created["order_id"]
+            actions.append({
+                "type": "create_order", "order_id": order_id,
+                "payment_url": created.get("payment_url"),
+                "payment_provider": created.get("provider"),
+            })
         except Exception as e:
             actions.append({"type": "error", "message": f"Order yaratishda xato: {e}"})
         await ai_agent.finalize_session(db, call_id, ended_reason="confirmed", order_id=order_id)
@@ -438,15 +444,32 @@ async def _create_ai_order(
     total = sum(float(i["price"]) * int(i["quantity"]) for i in cart)
     delivery_type = DeliveryType.delivery if address else DeliveryType.pickup
 
+    # Manzilni geokodlash (ovozdan matn keladi → koordinata)
+    lat = lon = None
+    if address:
+        try:
+            from api.services.geocode import geocode_address
+            res = await geocode_address(address)
+            if res:
+                lat, lon = res
+        except Exception:
+            pass
+
+    # AI telefon zakazi — KARTA (oldindan to'lov, link yuboriladi)
     order = Order(
         user_id=user.id,
         restaurant_id=restaurant_id,
         delivery_type=delivery_type,
         address=address,
+        latitude=lat,
+        longitude=lon,
         total_price=total,
         delivery_fee=0.0,
         status=OrderStatus.pending,
         order_kind="regular",
+        payment_method="card",
+        payment_timing="now",
+        payment_status="pending",
     )
     db.add(order)
     await db.flush()
@@ -459,5 +482,20 @@ async def _create_ai_order(
             price=float(item["price"]),
         ))
 
+    # Karta to'lov linki — yoqilgan birinchi provayder bo'yicha
+    payment_url = None
+    payment_provider = None
+    try:
+        from api.services.order_payments import get_enabled_providers, generate_payment_url, make_order_trans_id
+        providers = get_enabled_providers(restaurant) if (restaurant := await db.get(Restaurant, restaurant_id)) else []
+        if providers:
+            order.merchant_trans_id = make_order_trans_id(order.id)
+            payment_url, _ = generate_payment_url(restaurant, order, providers[0])
+            payment_provider = providers[0]
+    except Exception as e:
+        from api.logging_config import log_critical
+        log_critical("ai_agent", "AI order to'lov link xato", error=str(e), order_id=order.id)
+
     await db.commit()
-    return order.id
+    return {"order_id": order.id, "payment_url": payment_url, "provider": payment_provider,
+            "lat": lat, "lon": lon}
