@@ -14,6 +14,39 @@ const { Text } = Typography
 const SILENCE_MS = 800       // shu qadar jimlikdan keyin "gap tugadi"
 const MIN_SPEECH_MS = 300    // bundan qisqa shovqin — e'tiborsiz
 
+// Brauzerdagi audio blob (webm/ogg/opus) → 16kHz mono WAV (Aisha/Whisper uchun universal)
+async function blobToWav(blob, targetSr = 16000) {
+  const ab = await blob.arrayBuffer()
+  const Ctx = window.AudioContext || window.webkitAudioContext
+  const ctx = new Ctx()
+  const decoded = await ctx.decodeAudioData(ab)
+  ctx.close()
+  const ch = decoded.numberOfChannels, len = decoded.length
+  const mono = new Float32Array(len)
+  for (let c = 0; c < ch; c++) {
+    const d = decoded.getChannelData(c)
+    for (let i = 0; i < len; i++) mono[i] += d[i] / ch
+  }
+  const ratio = decoded.sampleRate / targetSr
+  const outLen = Math.max(1, Math.floor(len / ratio))
+  const out = new Float32Array(outLen)
+  for (let i = 0; i < outLen; i++) out[i] = mono[Math.floor(i * ratio)] || 0
+  const buf = new ArrayBuffer(44 + outLen * 2)
+  const view = new DataView(buf)
+  const wr = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)) }
+  wr(0, 'RIFF'); view.setUint32(4, 36 + outLen * 2, true); wr(8, 'WAVE'); wr(12, 'fmt ')
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true)
+  view.setUint32(24, targetSr, true); view.setUint32(28, targetSr * 2, true)
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true); wr(36, 'data')
+  view.setUint32(40, outLen * 2, true)
+  let off = 44
+  for (let i = 0; i < outLen; i++) {
+    const s = Math.max(-1, Math.min(1, out[i]))
+    view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true); off += 2
+  }
+  return new Blob([view], { type: 'audio/wav' })
+}
+
 const STATUS_LABEL = {
   idle: { text: 'Qo\'ng\'iroq yo\'q', color: 'default' },
   listening: { text: '👂 Tinglayapman...', color: 'blue' },
@@ -152,11 +185,17 @@ export default function AiTestConsole({ restaurants = [] }) {
   const sendVoiceBlob = async (blob, { silent = false } = {}) => {
     if (!silent) setLoading(true)
     try {
-      const ext = blob.type.includes('ogg') ? 'ogg' : 'webm'
+      // webm/opus'ni Aisha qabul qilmaydi → brauzerda WAV'ga aylantiramiz (universal)
+      let sendBlob = blob, name = 'voice.wav'
+      try {
+        sendBlob = await blobToWav(blob)
+      } catch {
+        name = blob.type.includes('ogg') ? 'voice.ogg' : 'voice.webm'  // fallback
+      }
       const fd = new FormData()
       fd.append('restaurant_id', restIdRef.current)
       fd.append('call_id', callIdRef.current)
-      fd.append('audio', blob, `voice.${ext}`)
+      fd.append('audio', sendBlob, name)
       const { data } = await aiTestVoice(fd)
       return data
     } finally { if (!silent) setLoading(false) }
