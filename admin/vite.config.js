@@ -7,14 +7,15 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
-    base: mode === 'production' ? '/admin/' : '/',
+    // restaurant.tursunboyev.com — alohida domen, root'dan serve qilinadi (/admin/ emas)
+    base: '/',
     server: {
       port: 3000,
       proxy: {
         '/api': {
           target: apiTarget,
           changeOrigin: true,
-          secure: true,
+          secure: false,
           // Backend /api prefiksisiz ishlaydi — prod'da nginx tomonidan strip qilinadi
           rewrite: (path) => path.replace(/^\/api/, ''),
         },

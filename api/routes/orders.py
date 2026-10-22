@@ -260,6 +260,24 @@ async def create_order(
         except Exception:
             pass  # Alice POS xatosi butun zakazni to'xtatmasin
 
+        # Hybrid POS / LAN printer — naqd (to'lov kutmasdan) zakaz
+        # Saboy admin oqimida `confirmed` bo'lmaydi, shuning uchun shu yerda chop.
+        try:
+            oid = order.id
+
+            async def _pos_bg(order_id: int):
+                from api.database import AsyncSessionLocal
+                async with AsyncSessionLocal() as bg_db:
+                    fresh = (await bg_db.execute(
+                        select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
+                    )).scalar_one_or_none()
+                    if fresh:
+                        await pos_adapter.dispatch_order(bg_db, fresh)
+
+            asyncio.create_task(_pos_bg(oid))
+        except Exception:
+            pass
+
         # Dastavka provider — restaurant sozlamasiga qarab yuborish
         if data.delivery_type.value == "delivery":
             rest_res = await db.execute(select(Restaurant).where(Restaurant.id == order_restaurant_id))
@@ -337,6 +355,8 @@ async def get_payment_status(order_id: int, db: AsyncSession = Depends(get_db), 
         "payment_provider": o.payment_provider,
         "paid_amount_tiyin": o.paid_amount_tiyin or 0,
         "total_price": float(o.total_price or 0),
+        "delivery_fee": float(o.delivery_fee or 0),
+        "amount_uzs": float(o.total_price or 0) + float(o.delivery_fee or 0),
         "is_prepayment": bool(o.is_prepayment),
         "prepayment_percent": o.prepayment_percent,
         # payment_charge_id olib tashlandi (provider-ichki ID, mijozga kerak emas — audit C2)
@@ -412,6 +432,8 @@ async def get_pay_options(order_id: int, db: AsyncSession = Depends(get_db), _bo
     return {
         "order_id": order.id,
         "total_price": float(order.total_price or 0),
+        "delivery_fee": float(order.delivery_fee or 0),
+        "amount_uzs": float(order.total_price or 0) + float(order.delivery_fee or 0),
         "options": options,
     }
 
@@ -488,22 +510,10 @@ async def update_order_status(
         print(f"[Orders] Re-notifying couriers: order #{order_id} is ready")
         await _notify_couriers_new_order(db, order)
 
-    # ── POS dispatch — buyurtma tasdiqlangan zahoti chek/kassaga yuboriladi ──
-    # Fire-and-forget: tashqi POS API yiqilsa ham bu chaqiruv asosiy oqimni
-    # bloklamaydi yoki javobini buzib turmaydi.
-    if status == OrderStatus.confirmed and prev_status != OrderStatus.confirmed:
-        async def _pos_dispatch_bg(oid: int):
-            from api.database import AsyncSessionLocal
-            async with AsyncSessionLocal() as bg_db:
-                fresh = (await bg_db.execute(
-                    select(Order).options(selectinload(Order.items)).where(Order.id == oid)
-                )).scalar_one_or_none()
-                if fresh:
-                    await pos_adapter.dispatch_order(bg_db, fresh)
-        try:
-            asyncio.create_task(_pos_dispatch_bg(order_id))
-        except Exception:
-            pass  # asyncio loop yo'q bo'lsa — sokin
+    # POS print asosiy joylari:
+    #  - naqd: create_order (awaiting_payment=False)
+    #  - karta: order_webhook._mark_order_paid
+    # Saboy oqimida status `confirmed` bo'lmaydi (pending→preparing/ready).
 
     return {"success": True, "status": status}
 

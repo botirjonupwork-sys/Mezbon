@@ -81,6 +81,7 @@ class YandexDeliveryClient:
         taxi_class: str = "courier",
         cost_currency: str = "UZS",
         request_id: Optional[str] = None,
+        due: Optional[str] = None,
     ) -> dict:
         """Yandex'ga dastavka so'rovi (claim) yaratish.
 
@@ -88,6 +89,9 @@ class YandexDeliveryClient:
         callback_url: webhook olish manzili — `?token=...` bilan bo'lishi shart.
         emergency_phone: muammo bo'lganda bog'lanish raqami.
         request_id: idempotency UUID; takroriy yuborilsa Yandex bir xil claim qaytaradi.
+        due: ISO 8601 — kuryerning A nuqtaga (pickup) kelish vaqti.
+             Bo'sh bo'lsa — eng yaqin vaqtga qidiriladi.
+             Vaqtli zakaz uchun majburiy (masalan '2026-07-14T12:30:00+05:00').
 
         Qaytaradi:
           {id, status, version, offer_id, price, request_id}
@@ -153,6 +157,10 @@ class YandexDeliveryClient:
             "skip_door_to_door": False,
             "comment": (comment or "")[:7000],
         }
+
+        # Vaqtli zakaz — kuryer A nuqtaga shu vaqtda keladi
+        if due:
+            payload["due"] = due
 
         # Webhook URL — Yandex query parametrlarni append qiladi, `?` bo'lishi shart
         if callback_url:
@@ -324,8 +332,14 @@ class YandexDeliveryClient:
         dropoff_lat: float,
         dropoff_lon: float,
         weight_kg: float = 1.0,
+        taxi_class: str = "courier",
+        due: Optional[str] = None,
     ) -> dict:
         """Faqat narx hisoblash — claim YARATMAYDI, restoran balansidan pul KETMAYDI.
+
+        taxi_class: claim yaratish bilan BIR XIL bo'lishi kerak (default 'courier').
+        'express' sezilarli qimmatroq — quote'da ishlatilmasin.
+        due: ISO 8601 — vaqtli yetkazish uchun (ixtiyoriy).
 
         Qaytaradi:
           {"ok": True, "price": 18200.0, "currency": "UZS", "eta_minutes": 25}
@@ -334,6 +348,15 @@ class YandexDeliveryClient:
         """
         if self.mock_mode:
             return {"ok": True, "price": 18000.0, "currency": "UZS", "eta_minutes": 20, "mock": True}
+
+        # Faqat Yandex qabul qiladigan klasslar
+        tc = (taxi_class or "courier").strip().lower()
+        if tc not in ("courier", "express", "cargo"):
+            tc = "courier"
+
+        requirements: dict = {"taxi_class": tc}
+        if due:
+            requirements["due"] = due
 
         payload = {
             "items": [{
@@ -346,7 +369,7 @@ class YandexDeliveryClient:
                 {"coordinates": [float(dropoff_lon), float(dropoff_lat)]},
             ],
             "skip_door_to_door": False,
-            "requirements": {"taxi_class": "express"},
+            "requirements": requirements,
         }
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:

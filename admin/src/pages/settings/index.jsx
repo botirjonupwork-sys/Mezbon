@@ -4,7 +4,7 @@ import {
   ShopOutlined, CreditCardOutlined, CarOutlined,
   RobotOutlined, GiftOutlined, UserOutlined,
   RightOutlined, LockOutlined, PhoneOutlined,
-  HistoryOutlined,
+  HistoryOutlined, PrinterOutlined,
 } from '@ant-design/icons'
 import { useAuthStore } from '../../store/auth'
 import { useBranchStore } from '../../store/branch'
@@ -72,6 +72,14 @@ const settingsCards = [
     description: "Suhbat transkripti, xarajat, buyurtmalar",
     color: '#a855f7',
     feature: 'ai_agent',
+  },
+  {
+    key: 'printer',
+    path: '/settings/printer',
+    icon: <PrinterOutlined style={{ fontSize: 28 }} />,
+    title: 'Chek printeri',
+    description: "Xprinter / LAN chek printeri, test chek",
+    color: '#374151',
   },
   {
     key: 'profile',

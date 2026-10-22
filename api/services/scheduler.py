@@ -436,6 +436,71 @@ async def _job_yandex_balance_monitoring() -> None:
         )
 
 
+# ── Job: Vaqtli Yandex zakazlarni yuborish — har 2 daqiqa ─────
+
+async def _job_dispatch_scheduled_yandex() -> None:
+    """To'langan, scheduled_for yaqinlashgan, hali claim yo'q zakazlarni Yandex'ga yuborish."""
+    try:
+        from api.database import AsyncSessionLocal
+        from api.services.delivery import dispatch_due_scheduled_yandex_orders
+
+        async with AsyncSessionLocal() as db:
+            stats = await dispatch_due_scheduled_yandex_orders(db)
+        if stats.get("checked"):
+            log.info("Scheduled Yandex dispatch: %s", stats)
+    except Exception as e:
+        log_critical(
+            "scheduler", "Scheduled Yandex dispatch FAILED",
+            error=str(e), error_type=type(e).__name__,
+        )
+
+
+# ── Job: Yandex dastavka holatini poll qilish — har 2 daqiqa (webhook zaxirasi) ─────
+
+async def _job_yandex_poll_active_claims() -> None:
+    """Faol Yandex dastavka buyurtmalarining holatini davriy yangilab turadi.
+
+    Webhook (push) — asosiy, darhol ishlaydigan yo'l. Bu poller esa ZAXIRA:
+    agar Yandex ping'ni o'tkazib yuborsa yoki webhook sozlanmagan bo'lsa ham,
+    status (kuryer topildi → keldi → yo'lda → yetkazildi) dinamik yangilanadi.
+    Faqat tugamagan (delivered/cancelled emas) va claim_id bor, so'nggi 24 soatdagi
+    orderlarni tekshiradi. Apply idempotent — takror xabar yuborilmaydi.
+    """
+    try:
+        from datetime import datetime, timedelta
+
+        from sqlalchemy import select
+
+        from api.database import AsyncSessionLocal
+        from api.routes.yandex_webhook import sync_order_status
+        from database.models import Order, OrderStatus
+
+        cutoff = datetime.utcnow() - timedelta(hours=24)
+        async with AsyncSessionLocal() as db:
+            res = await db.execute(
+                select(Order).where(
+                    Order.yandex_claim_id.isnot(None),
+                    Order.status.notin_([OrderStatus.delivered, OrderStatus.cancelled]),
+                    Order.created_at >= cutoff,
+                )
+            )
+            orders = res.scalars().all()
+            checked = 0
+            for o in orders:
+                try:
+                    await sync_order_status(db, o)
+                    checked += 1
+                except Exception as e:
+                    log.warning("Yandex poll order #%s xato: %s", o.id, e)
+        if orders:
+            log.info("Yandex poll: %d ta faol dastavka holati tekshirildi", checked)
+    except Exception as e:
+        log_critical(
+            "scheduler", "Yandex claim polling FAILED",
+            error=str(e), error_type=type(e).__name__,
+        )
+
+
 # ── Public API ───────────────────────────────────────────
 
 def start_scheduler() -> None:
@@ -502,10 +567,29 @@ def start_scheduler() -> None:
         replace_existing=True,
     )
 
+    # Har 2 daqiqada — Yandex dastavka holatini poll (webhook zaxirasi)
+    sched.add_job(
+        _job_yandex_poll_active_claims,
+        trigger=CronTrigger(minute="*/2", timezone=TZ),
+        id="yandex_poll_active_claims",
+        name="Yandex delivery status poll (every 2 minutes)",
+        replace_existing=True,
+    )
+
+    # Har 2 daqiqada — vaqtli Yandex zakazlarni yuborish
+    sched.add_job(
+        _job_dispatch_scheduled_yandex,
+        trigger=CronTrigger(minute="*/2", timezone=TZ),
+        id="yandex_dispatch_scheduled",
+        name="Yandex scheduled order dispatch (every 2 minutes)",
+        replace_existing=True,
+    )
+
     sched.start()
     log.info(
-        "Scheduler started — 6 jobs: subscription@10:00, auto-cancel/5min, "
-        "anomaly/15min, monthly@1d-09:00, catering@20:00, yandex-balance/30min (TZ=%s)",
+        "Scheduler started — 8 jobs: subscription@10:00, auto-cancel/5min, "
+        "anomaly/15min, monthly@1d-09:00, catering@20:00, yandex-balance/30min, "
+        "yandex-poll/2min, yandex-scheduled/2min (TZ=%s)",
         TZ,
     )
 

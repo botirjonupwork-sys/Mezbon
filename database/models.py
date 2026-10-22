@@ -197,6 +197,8 @@ class Restaurant(Base):
     ai_agent_max_call_minutes = Column(Integer, default=10)    # Max suhbat davomiyligi
     ai_agent_fallback_phone = Column(String)    # AI tushunmasa shu raqamga uzatadi
     ai_agent_language = Column(String, default="uz")  # 'uz' | 'ru' | 'auto'
+    # Qo'shimcha AI sozlamalari (offline xabar, SMS matn, upsell, prompt override, ...)
+    ai_agent_config = Column(JSON, default=dict)
 
     # POS / Printer integratsiyasi (Hybrid Connect)
     # 'NONE' | 'NEONALISA' | 'GENERIC_ANDROID' | 'BLUETOOTH_PRINTER'
@@ -407,6 +409,7 @@ class Order(Base):
     payment_paid_at = Column(DateTime)            # webhook orqali tasdiqlangan vaqt
     provider_tx_id = Column(String, index=True)   # provayder tomonidan tranzaksiya ID
     click_prepare_id = Column(Integer)            # faqat Click — prepare bosqichida qaytariladi
+    location_token = Column(String, index=True)   # SMS pin-havola uchun (mijoz aniq lat/lon yuboradi)
     is_prepayment = Column(Boolean, default=False)
     prepayment_percent = Column(Integer)         # to'lov paytidagi snapshot (audit uchun)
     # Faza 6: Soliq va huquqiy

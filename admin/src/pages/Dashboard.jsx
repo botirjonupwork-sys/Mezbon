@@ -51,14 +51,15 @@ const URGENCY_GREEN  = 10
 const URGENCY_YELLOW = 25
 
 function getUrgencyColor(createdAt) {
-  const m = dayjs().diff(dayjs(createdAt), 'minute')
+  // created_at UTC (Z yoki naive) — local deb o'qimaslik
+  const m = dayjs().diff(dayjs.utc(createdAt), 'minute')
   if (m <= URGENCY_GREEN)  return '#52c41a'  // yashil — yangi
   if (m <= URGENCY_YELLOW) return '#faad14'  // sariq — diqqat
   return '#f5222d'                            // qizil — shoshilinch
 }
 
 function formatElapsed(createdAt) {
-  const m = dayjs().diff(dayjs(createdAt), 'minute')
+  const m = dayjs().diff(dayjs.utc(createdAt), 'minute')
   if (m < 1)  return 'hozir'
   if (m < 60) return `${m} daq`
   const h = Math.floor(m / 60)
@@ -96,7 +97,7 @@ function operationalSortValue(order) {
   if (order?.order_kind === 'catering' && order.schedule_date) {
     return dayjs(`${order.schedule_date} ${order.schedule_time || '00:00'}`, 'YYYY-MM-DD HH:mm').valueOf()
   }
-  return dayjs(order.created_at).valueOf()
+  return dayjs.utc(order.created_at).valueOf()
 }
 
 export default function Dashboard() {
@@ -170,7 +171,7 @@ export default function Dashboard() {
   // Shoshilinch (25+ daqiqa) zakazlar soni
   const urgentCount = useMemo(() => {
     return activeQueue.filter(
-      (o) => dayjs().diff(dayjs(o.created_at), 'minute') > URGENCY_YELLOW
+      (o) => dayjs().diff(dayjs.utc(o.created_at), 'minute') > URGENCY_YELLOW
     ).length
   }, [activeQueue, tick])
 

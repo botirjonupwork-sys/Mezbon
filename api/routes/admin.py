@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, or_
 from datetime import datetime, date
-from typing import Optional
+from typing import Any, Dict, Optional
 from pydantic import BaseModel
 import shutil
 import os
@@ -13,6 +13,7 @@ from api.database import get_db
 from api.schemas import CategoryOut
 from api.config import settings
 from api.auth_deps import get_branch_context, get_restaurant_context, require_restaurant_admin, require_super_admin
+from api.utils.time import iso_utc, parse_yyyy_mm_dd, uz_day_bounds_utc, uz_now
 from database.models import (
     Product, Category, Order, OrderItem, User, Review, OrderStatus, Courier, Branch, Admin, Plan
 )
@@ -165,6 +166,7 @@ class SettingsUpdate(BaseModel):
     ai_agent_max_call_minutes: Optional[int] = None
     ai_agent_fallback_phone: Optional[str] = None
     ai_agent_language: Optional[str] = None
+    ai_agent_config: Optional[Dict[str, Any]] = None
 
 
 class AdminCreate(BaseModel):
@@ -286,21 +288,16 @@ async def get_stats(
     restaurant_id: Optional[int] = Depends(require_restaurant_admin),
     db: AsyncSession = Depends(get_db)
 ):
-    if date_from:
-        try:
-            d_from = datetime.strptime(date_from, "%Y-%m-%d").date()
-        except ValueError:
-            d_from = date.today()
-    else:
-        d_from = date.today()
-
-    if date_to:
-        try:
-            d_to = datetime.strptime(date_to, "%Y-%m-%d").date()
-        except ValueError:
-            d_to = date.today()
-    else:
-        d_to = date.today()
+    # Kalendar kunlari — Asia/Tashkent (server boshqa TZ da bo'lsa ham)
+    today_uz = uz_now().date()
+    d_from = parse_yyyy_mm_dd(date_from) if date_from else today_uz
+    d_to = parse_yyyy_mm_dd(date_to) if date_to else today_uz
+    if d_from is None:
+        d_from = today_uz
+    if d_to is None:
+        d_to = today_uz
+    start_utc, _ = uz_day_bounds_utc(d_from)
+    _, end_utc = uz_day_bounds_utc(d_to)
 
     # SaaS izolatsiya: restoran context majburiy
     if restaurant_id is None:
@@ -322,8 +319,8 @@ async def get_stats(
         order_date_filter = or_(
             and_(
                 Order.order_kind != "catering",
-                func.date(Order.created_at) >= d_from,
-                func.date(Order.created_at) <= d_to,
+                Order.created_at >= start_utc,
+                Order.created_at < end_utc,
             ),
             and_(
                 Order.order_kind == "catering",
@@ -333,8 +330,8 @@ async def get_stats(
         )
     else:
         order_date_filter = and_(
-            func.date(Order.created_at) >= d_from,
-            func.date(Order.created_at) <= d_to,
+            Order.created_at >= start_utc,
+            Order.created_at < end_utc,
         )
 
     order_filters = [order_date_filter, rest_filter]
@@ -439,31 +436,30 @@ async def get_all_orders(
         except ValueError:
             raise HTTPException(400, f"Noto'g'ri status: {status}")
 
+    # Sana filtri — Tashkent kalendar kuni → UTC oralig'i
     if date_from:
-        try:
-            d_from = datetime.strptime(date_from, "%Y-%m-%d").date()
+        d_from = parse_yyyy_mm_dd(date_from)
+        if d_from:
+            start_utc, _ = uz_day_bounds_utc(d_from)
             if operational_date:
                 query = query.where(or_(
-                    and_(Order.order_kind != "catering", func.date(Order.created_at) >= d_from),
+                    and_(Order.order_kind != "catering", Order.created_at >= start_utc),
                     and_(Order.order_kind == "catering", Order.schedule_date >= d_from.isoformat()),
                 ))
             else:
-                query = query.where(func.date(Order.created_at) >= d_from)
-        except ValueError:
-            pass
+                query = query.where(Order.created_at >= start_utc)
 
     if date_to:
-        try:
-            d_to = datetime.strptime(date_to, "%Y-%m-%d").date()
+        d_to = parse_yyyy_mm_dd(date_to)
+        if d_to:
+            _, end_utc = uz_day_bounds_utc(d_to)
             if operational_date:
                 query = query.where(or_(
-                    and_(Order.order_kind != "catering", func.date(Order.created_at) <= d_to),
+                    and_(Order.order_kind != "catering", Order.created_at < end_utc),
                     and_(Order.order_kind == "catering", Order.schedule_date <= d_to.isoformat()),
                 ))
             else:
-                query = query.where(func.date(Order.created_at) <= d_to)
-        except ValueError:
-            pass
+                query = query.where(Order.created_at < end_utc)
 
     query = query.limit(limit).offset(offset)
     result = await db.execute(query)
@@ -501,7 +497,7 @@ async def get_all_orders(
             "comment": order.comment,
             "total_price": order.total_price,
             "delivery_fee": order.delivery_fee,
-            "created_at": order.created_at.isoformat() if order.created_at else None,
+            "created_at": iso_utc(order.created_at),
             "user": {"full_name": user.full_name, "phone": user.phone} if user else None,
             "items": items_with_names,
             # Catering maydonlari
@@ -854,7 +850,7 @@ async def get_user_orders(
             "status": order.status.value,
             "delivery_type": order.delivery_type.value,
             "total_price": order.total_price,
-            "created_at": order.created_at.isoformat() if order.created_at else None,
+            "created_at": iso_utc(order.created_at),
             "items": items_with_names,
         })
     return output
@@ -980,7 +976,13 @@ async def get_settings(
         "ai_agent_max_call_minutes": int(rest.ai_agent_max_call_minutes or 10),
         "ai_agent_fallback_phone": rest.ai_agent_fallback_phone or "",
         "ai_agent_language": rest.ai_agent_language or "uz",
+        "ai_agent_config": _ai_agent_config_out(rest),
     }
+
+
+def _ai_agent_config_out(rest: Restaurant) -> dict:
+    from api.services.ai_agent import get_ai_config
+    return get_ai_config(rest)
 
 
 @router.put("/settings")
@@ -1069,6 +1071,15 @@ async def update_settings(
             if isinstance(val, str) and (val == "" or SECRET_MASK_CHAR in val):
                 continue
         setattr(rest, db_key, val)
+
+    if data.ai_agent_config is not None and isinstance(data.ai_agent_config, dict):
+        from api.services.ai_agent import AI_CONFIG_DEFAULTS
+        prev = rest.ai_agent_config if isinstance(rest.ai_agent_config, dict) else {}
+        merged = dict(prev)
+        for k in AI_CONFIG_DEFAULTS:
+            if k in data.ai_agent_config:
+                merged[k] = data.ai_agent_config[k]
+        rest.ai_agent_config = merged
 
     await db.commit()
     return {"success": True}

@@ -10,6 +10,16 @@ from aiogram.types import (
 UZ_TZ = ZoneInfo("Asia/Tashkent")
 
 
+def _nav_row(*, back: bool = True, cancel: bool = True) -> list[InlineKeyboardButton]:
+    """Orqaga / Bekor qilish qatori (inline)."""
+    row: list[InlineKeyboardButton] = []
+    if back:
+        row.append(InlineKeyboardButton(text="⬅️ Orqaga", callback_data="order_back"))
+    if cancel:
+        row.append(InlineKeyboardButton(text="❌ Bekor qilish", callback_data="order_cancel"))
+    return row
+
+
 def time_slots_kb(work_from: str = "09:00", work_until: str = "22:00") -> InlineKeyboardMarkup:
     """Dastavka vaqti tanlash klaviaturasi.
 
@@ -66,7 +76,7 @@ def time_slots_kb(work_from: str = "09:00", work_until: str = "22:00") -> Inline
         # Xato bo'lsa hech bo'lmaganda "Hozir" tugmasi qoladi
         pass
 
-    buttons.append([InlineKeyboardButton(text="⬅️ Orqaga", callback_data="time:back")])
+    buttons.append(_nav_row(back=True, cancel=True))
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -74,28 +84,39 @@ def delivery_type_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🚗 Dastavka", callback_data="delivery")],
         [InlineKeyboardButton(text="🏪 Saboy olib ketish", callback_data="pickup")],
+        [InlineKeyboardButton(text="⬅️ Savatga", callback_data="order_back")],
+        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="order_cancel")],
     ])
 
 
 def location_request_kb() -> ReplyKeyboardMarkup:
-    """Joylashuvni yuborish uchun ReplyKeyboard."""
+    """Joylashuvni yuborish uchun ReplyKeyboard (+ orqaga/bekor)."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📍 Joylashuvni yuborish", request_location=True)],
+            [KeyboardButton(text="⬅️ Orqaga"), KeyboardButton(text="❌ Bekor qilish")],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
     )
 
 
+def address_nav_kb() -> InlineKeyboardMarkup:
+    """Manzil bosqichi uchun inline orqaga/bekor (saqlangan manzillar bilan birga)."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        _nav_row(back=True, cancel=True),
+    ])
+
+
 def saved_addresses_kb(addresses: list) -> InlineKeyboardMarkup:
-    """Saqlangan manzillar (inline)."""
+    """Saqlangan manzillar (inline) + navigatsiya."""
     buttons = []
     for addr in addresses:
         buttons.append([InlineKeyboardButton(
             text=f"📍 {addr['title']} — {addr['address']}",
             callback_data=f"addr:{addr['address']}"
         )])
+    buttons.append(_nav_row(back=True, cancel=True))
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -108,18 +129,20 @@ def payment_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Click orqali to'lov", callback_data="pay:click")],
         [InlineKeyboardButton(text="💳 Payme orqali to'lov", callback_data="pay:payme")],
+        _nav_row(back=True, cancel=True),
     ])
 
 
 def confirm_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Tasdiqlash", callback_data="confirm_order")],
-        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_order")],
+        _nav_row(back=True, cancel=True),
     ])
 
 
 def comment_skip_kb() -> InlineKeyboardMarkup:
-    """Izoh maydoni uchun — bitta 'O'tkazib yuborish' tugma."""
+    """Izoh maydoni uchun — skip + orqaga/bekor."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏭ O'tkazib yuborish", callback_data="skip_comment")],
+        _nav_row(back=True, cancel=True),
     ])

@@ -97,6 +97,7 @@ async def create_tables() -> None:
         # SQLite ni eski develop muhitlari uchun idempotent fallback
         for stmt in (
             "ALTER TABLE users ADD COLUMN selected_branch_id INTEGER REFERENCES branches(id)",
+            "ALTER TABLE restaurants ADD COLUMN ai_agent_config TEXT",
         ):
             try:
                 await conn.execute(text(stmt))

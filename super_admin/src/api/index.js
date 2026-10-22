@@ -66,6 +66,7 @@ export const getAlertHistory = (params) => api.get('/super-admin/alerts/history'
 
 // AI operator sinov konsoli (telefonsiz)
 export const aiTestText = (data) => api.post('/super-admin/ai-test/text', data)
+export const aiTestCallStart = (data) => api.post('/super-admin/ai-test/call-start', data)
 export const aiTestReset = (call_id) => api.post('/super-admin/ai-test/reset', { call_id })
 export const aiTestVoice = (formData) =>
   api.post('/super-admin/ai-test/voice', formData, { headers: { 'Content-Type': 'multipart/form-data' } })

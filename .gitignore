@@ -14,10 +14,11 @@ env/
 SECRETS.local.md
 *.local.md
 admins.json
+tools/agent_config.json
 *.docx
 .omnichat
 oracle_arm_grabber.py
-arm_retry.pid
+*.pid
 arm_retry.log
 
 # Database

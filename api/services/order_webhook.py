@@ -45,9 +45,19 @@ async def _notify_customer(
         return
 
     if success:
+        # Vaqtli zakaz matni
+        when = ""
+        if order.scheduled_for and (order.delivery_time_slot or "") not in ("", "now"):
+            try:
+                from datetime import timezone as _tz
+                from zoneinfo import ZoneInfo
+                local = order.scheduled_for.replace(tzinfo=_tz.utc).astimezone(ZoneInfo("Asia/Tashkent"))
+                when = f"\n🕐 Yetkazish vaqti: <b>{local.strftime('%H:%M')}</b> ({local.strftime('%d.%m.%Y')})"
+            except Exception:
+                when = f"\n🕐 Yetkazish vaqti: <b>{order.delivery_time_slot}</b>"
         text = (
             f"✅ <b>To'lov qabul qilindi</b>\n"
-            f"Buyurtma #{order.id}\n\n"
+            f"Buyurtma #{order.id}{when}\n\n"
             f"Buyurtmangiz tayyorlanmoqda 🍽"
         )
     else:
@@ -93,6 +103,28 @@ async def _mark_order_paid(
     if order.status == OrderStatus.pending:
         order.status = OrderStatus.preparing
     await db.commit()
+
+    # To'lov tasdiqlandi → chek printeriga yuborish (Saboy/pickup confirmed'ga
+    # o'tmaydi — shuning uchun print shu yerda majburiy).
+    try:
+        import asyncio
+        from sqlalchemy.orm import selectinload
+        from api.services.pos_adapter import adapter as pos_adapter
+
+        oid = order.id
+
+        async def _pos_bg(order_id: int):
+            from api.database import AsyncSessionLocal
+            async with AsyncSessionLocal() as bg_db:
+                fresh = (await bg_db.execute(
+                    select(Order).options(selectinload(Order.items)).where(Order.id == order_id)
+                )).scalar_one_or_none()
+                if fresh:
+                    await pos_adapter.dispatch_order(bg_db, fresh)
+
+        asyncio.create_task(_pos_bg(oid))
+    except Exception as e:
+        log.warning("POS print schedule xato (to'lov OK): %s", e)
 
     # To'lov tasdiqlandi → endi Yandex Delivery'ga dispatch qilamiz
     try:

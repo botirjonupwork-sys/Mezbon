@@ -4,6 +4,9 @@ from aiogram.types import (
     KeyboardButton, ReplyKeyboardMarkup
 )
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+UZ_TZ = ZoneInfo("Asia/Tashkent")
 
 
 # ── Guruh tanlash ────────────────────────────────────
@@ -124,7 +127,7 @@ def date_kb(booked=None) -> InlineKeyboardMarkup:
     """30 kunlik sana — BUGUNdan boshlab (lead-time vaqt tanlashda tekshiriladi).
     To'liq band kunlar 🔒 bilan."""
     booked = booked or {}
-    today = datetime.now().date()
+    today = datetime.now(UZ_TZ).date()
 
     def label_for(d) -> tuple[str, str]:
         """(text, callback_data) qaytaradi."""

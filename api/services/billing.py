@@ -320,11 +320,15 @@ async def handle_click_webhook(payload: dict, client_ip: Optional[str], db: Asyn
     except (KeyError, ValueError):
         return {"error": -8, "error_note": "Invalid request"}
 
-    # Replay window — sign_time ±5 daqiqa
+    # Replay window — sign_time ±5 daqiqa.
+    # Click sign_time'ni O'zbekiston (Toshkent) mahalliy vaqtida yuboradi, shuning uchun
+    # UTC (utcnow) bilan solishtirsak 5 soatlik farq chiqib har doim "stale" bo'ladi.
     if sign_time_raw:
         try:
+            from zoneinfo import ZoneInfo
             sign_dt = datetime.strptime(sign_time_raw, "%Y-%m-%d %H:%M:%S")
-            delta = abs((datetime.utcnow() - sign_dt).total_seconds())
+            now_uz = datetime.now(ZoneInfo("Asia/Tashkent")).replace(tzinfo=None)
+            delta = abs((now_uz - sign_dt).total_seconds())
             if delta > CLICK_TIMESTAMP_WINDOW_SECONDS:
                 from api.logging_config import log_critical
                 log_critical(
@@ -425,6 +429,25 @@ async def handle_click_webhook(payload: dict, client_ip: Optional[str], db: Asyn
         )
         await mark_payment_failed(payment, f"Amount mismatch: {amount_uzs} vs {tiyin_to_uzs(payment.amount_tiyin)}", db)
         return {"error": -2, "error_note": "Amount mismatch"}
+
+    # Click bankда to'lov bekor bo'ldi/o'tmadi: Complete/Prepare so'rovida error<0.
+    # Bu holda tarifni FAOLLASHTIRMAYMIZ (buyurtma oqimidagi err<0 mantiqiga mos).
+    if action in (CLICK_ACTION_PREPARE, CLICK_ACTION_COMPLETE):
+        try:
+            click_err = int(payload.get("error", 0))
+        except (TypeError, ValueError):
+            click_err = 0
+        if click_err < 0:
+            if payment.status != "success":
+                await mark_payment_failed(
+                    payment, payload.get("error_note") or f"Click error {click_err}", db
+                )
+            return {
+                "click_trans_id": payload.get("click_trans_id"),
+                "merchant_trans_id": merchant_trans_id,
+                "error": click_err,
+                "error_note": payload.get("error_note") or "Payment failed",
+            }
 
     if payment.status == "success":
         # Idempotent — qayta tasdiqlash so'ralgan

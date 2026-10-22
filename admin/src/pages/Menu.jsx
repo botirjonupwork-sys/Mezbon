@@ -7,7 +7,7 @@ import {
 import {
   PlusOutlined, EditOutlined, DeleteOutlined,
   CheckOutlined, UploadOutlined, PictureOutlined,
-  AppstoreOutlined, UnorderedListOutlined
+  AppstoreOutlined, UnorderedListOutlined, SettingOutlined
 } from '@ant-design/icons'
 import {
   getCategories, getProducts, toggleStop,
@@ -175,6 +175,7 @@ export default function Menu() {
 
   // Kategoriya CRUD state
   const [catModalOpen, setCatModalOpen] = useState(false)
+  const [catManageOpen, setCatManageOpen] = useState(false)   // kategoriyalarni boshqarish modali
   const [editingCategory, setEditingCategory] = useState(null)
   const [catForm] = Form.useForm()
 
@@ -487,7 +488,17 @@ export default function Menu() {
     },
     { title: 'Nomi', dataIndex: 'name_uz', width: 200 },
     {
-      title: 'Kategoriya', dataIndex: 'category_id',
+      title: (
+        <span>
+          Kategoriya{' '}
+          <SettingOutlined
+            onClick={(e) => { e.stopPropagation(); setCatManageOpen(true) }}
+            title="Kategoriyalarni boshqarish"
+            style={{ cursor: 'pointer', color: '#fa8c16' }}
+          />
+        </span>
+      ),
+      dataIndex: 'category_id',
       render: (id) => categories.find((c) => c.id === id)?.name_uz || '—'
     },
     {
@@ -577,33 +588,6 @@ export default function Menu() {
                     onShowSizeChange: (_, size) => setPageSize(size),
                     showTotal: (total) => `Jami: ${total} ta`,
                   }}
-                />
-              </Card>
-            ),
-          },
-          {
-            key: 'categories',
-            label: <span><UnorderedListOutlined /> Kategoriyalar</span>,
-            children: (
-              <Card
-                extra={
-                  <Button
-                    type="primary"
-                    icon={<PlusOutlined />}
-                    onClick={openAddCategory}
-                    style={{ background: '#fa8c16', borderColor: '#fa8c16' }}
-                  >
-                    Kategoriya qo'shish
-                  </Button>
-                }
-              >
-                <Table
-                  dataSource={categories}
-                  columns={categoryColumns}
-                  rowKey="id"
-                  loading={loading}
-                  pagination={false}
-                  scroll={{ x: 500 }}
                 />
               </Card>
             ),
@@ -748,6 +732,35 @@ export default function Menu() {
             <InputNumber min={0} style={{ width: '100%' }} placeholder="1" />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* ── Kategoriyalarni boshqarish (CRUD) modali ── */}
+      <Modal
+        title={<span><SettingOutlined /> Kategoriyalarni boshqarish</span>}
+        open={catManageOpen}
+        onCancel={() => setCatManageOpen(false)}
+        footer={null}
+        width={640}
+      >
+        <div style={{ marginBottom: 12, textAlign: 'right' }}>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={openAddCategory}
+            style={{ background: '#fa8c16', borderColor: '#fa8c16' }}
+          >
+            Kategoriya qo'shish
+          </Button>
+        </div>
+        <Table
+          dataSource={categories}
+          columns={categoryColumns}
+          rowKey="id"
+          loading={loading}
+          pagination={false}
+          size="small"
+          scroll={{ x: 500 }}
+        />
       </Modal>
 
       <Modal

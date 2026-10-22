@@ -32,6 +32,35 @@ OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_MODEL = "gpt-4o-mini"
 SESSION_TTL = 60 * 30  # 30 daqiqa
 
+# Restoran UI dan sozlanadigan qo'shimcha AI parametrlari (JSON)
+AI_CONFIG_DEFAULTS: dict[str, Any] = {
+    "offline_reply": "",           # bo'sh = standart matn
+    "time_limit_reply": "",
+    "upsell_enabled": True,        # qo'shimcha taklif (ichimlik/non)
+    "sms_location_enabled": True,  # yetkazishda SMS pin-havola
+    "sms_location_template": "",   # {order_id} {link}
+    "system_prompt_override": "",  # to'liq asosiy prompt o'rniga (menyudan oldin)
+    "farewell_hint": "",           # xayrlash uslubi / qo'shimcha
+}
+
+
+def get_ai_config(restaurant: Restaurant) -> dict[str, Any]:
+    raw = getattr(restaurant, "ai_agent_config", None) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    out = dict(AI_CONFIG_DEFAULTS)
+    for k, default in AI_CONFIG_DEFAULTS.items():
+        if k not in raw:
+            continue
+        val = raw[k]
+        if isinstance(default, bool):
+            out[k] = bool(val)
+        elif isinstance(default, str):
+            out[k] = "" if val is None else str(val)
+        else:
+            out[k] = val
+    return out
+
 
 # ── In-memory sessions ───────────────────────────────────────────────────
 
@@ -62,6 +91,12 @@ class AIConversation:
     stt_seconds: float = 0.0
     tts_chars: int = 0
     user_turn_count: int = 0
+    greeted: bool = False                       # operator salomlashdimi (call-start)
+    order_placed: bool = False                  # shu qo'ng'iroqda kamida 1 buyurtma
+    last_order_id: Optional[int] = None
+    conversation_ended: bool = False            # xayrlashib suhbat tugadimi
+    # Oxirgi LLM javobidan rate-limit holati (qolgan so'rov/token) — provayder bersa
+    last_rate_limit: dict = field(default_factory=dict)
     # Tartibli transcript (DB'ga yozish uchun)
     transcript_log: list[dict] = field(default_factory=list)
 
@@ -105,6 +140,49 @@ def get_session(call_id: str, restaurant_id: int, user_phone: str) -> AIConversa
 
 def end_session(call_id: str) -> None:
     _SESSIONS.pop(call_id, None)
+
+
+def get_greeting_text(restaurant: Restaurant) -> str:
+    """Qo'ng'iroq boshidagi operator tabrigi (telefon qo'ng'irog'i kabi birinchi gap)."""
+    default = (
+        f"Assalomu alaykum! '{restaurant.name}' restorani. "
+        "Menyumiz bilan tanishasizmi yoki to'g'ridan-to'g'ri buyurtma berasizmi?"
+    )
+    custom = (getattr(restaurant, "ai_agent_greeting", None) or "").strip()
+    return custom or default
+
+
+def reset_after_order(sess: AIConversation, order_id: int) -> None:
+    """Buyurtma yaratilgach savatni tozalab, post-buyurtma bosqichiga o'tkazish."""
+    sess.order_placed = True
+    sess.last_order_id = order_id
+    sess.cart.clear()
+    sess.address = None
+    sess.delivery_type = None
+    sess.confirmed = False
+
+
+async def start_call_session(
+    restaurant: Restaurant,
+    sess: AIConversation,
+) -> dict:
+    """Qo'ng'iroq ulanishi — operator birinchi gapiradi (SIP/chat bir xil)."""
+    greeting = get_greeting_text(restaurant)
+    sess.greeted = True
+    sess.add_transcript("assistant", greeting)
+    if not sess.messages:
+        sess.messages.append({"role": "system", "content": "(system prompt keyingi turn'da to'ldiriladi)"})
+    sess.messages.append({"role": "assistant", "content": greeting})
+    return {
+        "reply": greeting,
+        "is_greeting": True,
+        "greeted": True,
+        "cart": [],
+        "address": None,
+        "confirmed": False,
+        "transferred": False,
+        "is_catering": False,
+    }
 
 
 # ── Xarajat hisobi va DB log yozish ──────────────────────────────────────
@@ -288,34 +366,83 @@ def build_system_prompt(
     Muhim: AI faqat shu restoranning menyusidan mahsulot taklif qiladi va
     narxlarni faqat shu yerdagi ro'yxatdan oladi.
     """
-    greeting_default = (
-        f"Assalomu alaykum! '{restaurant.name}' AI operatori. "
-        "Menyumiz bilan tanishasizmi yoki to'g'ridan-to'g'ri buyurtma berasizmi?"
-    )
-    custom_greeting = (getattr(restaurant, "ai_agent_greeting", None) or "").strip()
-    greeting = custom_greeting or greeting_default
+    cfg = get_ai_config(restaurant)
+    greeting_default = get_greeting_text(restaurant)
+    greeting = greeting_default
 
     category_hint = (
         f"Bizdagi kategoriyalar: {categories_list}." if categories_list else ""
     )
 
+    # Admin to'liq asosiy promptni o'zi yozgan bo'lsa — shundan foydalanamiz
+    override = (cfg.get("system_prompt_override") or "").strip()
+    if override:
+        parts = [override]
+        custom = (restaurant.ai_agent_prompt or "").strip()
+        if custom:
+            parts.append(f"\nRestoran maxsus ko'rsatmasi:\n{custom}")
+        farewell = (cfg.get("farewell_hint") or "").strip()
+        if farewell:
+            parts.append(f"\nXayrlash / yakunlash uslubi:\n{farewell}")
+        if not cfg.get("upsell_enabled", True):
+            parts.append(
+                "\nQO'SHIMCHA TAKLIF O'CHIRILGAN: ichimlik/non upsell qilma, "
+                "darhol yetkazish turi va manzilga o't."
+            )
+        parts.append(
+            f"\nRESTORAN: {restaurant.name}\n"
+            f"ISH VAQTI: {restaurant.work_hours_from}–{restaurant.work_hours_until}\n"
+            f"MIN. BUYURTMA: {int(restaurant.min_order or 0):,} so'm\n"
+            f"\nMENYU (kategoriyalar bo'yicha, faqat shu mahsulotlar taklif qilinadi):\n{menu_text}"
+        )
+        return "\n".join(parts)
+
     base = (
         f"Sen '{restaurant.name}' restoranining do'stona SOTUV operatorisan. "
         f"{_language_instruction(restaurant)} "
-        "Javoblar qisqa (1-2 jumla), tabiiy, xushmuomala va jonli. "
-        "Maqsading: mijozga yordam berib, YUMSHOQ tavsiyalar bilan to'g'ri "
-        "buyurtma yig'ish (bosim qilmasdan).\n\n"
+        "Javoblar qisqa va tabiiy, xushmuomala va jonli bo'lsin — odam operator kabi. "
+        "Maqsading: mijozga yordam berib, savollariga to'g'ri javob berib va "
+        "YUMSHOQ tavsiyalar bilan to'g'ri buyurtma yig'ish (bosim qilmasdan).\n\n"
+
+        "OVOZ KANALI (muhim):\n"
+        "- Mijoz matni OVOZDAN matnga aylantirilgan (STT) — unda xato bo'lishi mumkin. "
+        "Noaniq joyni TAXMIN QILMA, qisqa aniqlashtirib so'ra.\n"
+        "- Sening javobing OVOZGA aylantiriladi (TTS): oddiy, gapiriladigan jumlalar ishlat. "
+        "Ro'yxat belgilari, emoji, qavs, maxsus formatlash ISHLATMA — faqat tabiiy gap.\n"
+        "- Qisqa bo'l, lekin to'liq javob ber (sun'iy ravishda kesib qisqartirma).\n\n"
+
+        "FAQAT MA'LUMOTGA ASOSLAN (eng muhim qoida):\n"
+        "- Faqat quyida berilgan MENYU va restoran ma'lumotidan javob ber. "
+        "Narx, tarkib, ish vaqti — hammasi shu ro'yxatdan olinadi.\n"
+        "- Agar javobni aniq bilmasang — TAXMIN QILMA. Halol ayt: "
+        "'Buni aniq bilmayman, tekshirib aytaman' yoki operatorga uzat. "
+        "Noto'g'ri ishonchli javob berishdan ko'ra 'bilmayman' deyish yaxshiroq.\n"
+        "- HALAL / ALLERGIYA / tarkib bo'yicha: faqat menyuda ANIQ yozilган narsani ayt. "
+        "Aniq belgilanmagan bo'lsa: 'Buni kafolat bilan ayta olmayman, oshxona bilan "
+        "tasdiqlatib beraman' deb ayt — taxmin qilib aytma (bu sog'liq masalasi).\n\n"
 
         "SOTUV USLUBI (yumshoq — hech qachon majburlama):\n"
         "- Mijoz ikkilansa yoki 'nima bor?' desa — eng mashhur 1-2 taomni tavsiya qil.\n"
-        "- Buyurtma yig'ilgach, bir marta tabiiy qo'shimcha taklif qil "
-        "(masalan: 'Yoniga ichimlik ham qo'shaymi?'). Mijoz 'yo'q' desa — qaytarma, hurmat qil.\n"
-        "- Taklif faqat MENYUDAGI mahsulotlardan bo'lsin.\n"
-        "- Maqtov ortiqcha bo'lmasin — tabiiy va samimiy gapir.\n\n"
+        "- ASOSIY taom savatga qo'shilgach, yetkazish turini so'rashdan OLDIN — ALBATTA "
+        "BIR MARTA tabiiy, vaziyatga mos qo'shimcha taklif qil ('Yana nimadir qo'shamizmi?' "
+        "yoki aniqroq). Bu majburiy bosqich, lekin YUMSHOQ va qisqa bo'lsin.\n"
+        "- TAKLIF ANIQ bo'lsin — umumiy 'ichimlik qo'shamizmi?' emas, menyudagi BOSHQA "
+        "kategoriyadan 1-2 ta HAQIQIY mahsulot nomini ayt (narxi bilan bo'lsa yana yaxshi):\n"
+        "  • Somsa/issiq taom olsa → menyudagi ICHIMLIKLAR yoki NON dan aniq nom ayt "
+        "('Yoniga Coca Cola yoki ayron olasizmi?').\n"
+        "  • Ko'p taom (mehmon/oila) olsa → NON yoki SALAT dan aniq nom taklif qil.\n"
+        "  • Faqat ichimlik olsa → somsa yoki biror taomni aniq nom bilan taklif qil.\n"
+        "  Nomlar va narxlar FAQAT pastdagi menyudan olinsin (o'zingdan o'ylab topma).\n"
+        "- Savatda ALLAQACHON bor narsani qayta taklif QILMA. Maksimum 1 marta taklif "
+        "(eng ko'pi 2 narsa), bir nafasда stack qilma.\n"
+        "- Mijoz 'yo'q' desa yoki qisqa/sovuq javob bersa — DARHOL to'xta, qaytarma, "
+        "buyurtmani sodda yakunlashga o't. Bezor qilma. Hurmat muhim.\n"
+        "- Taklif faqat MENYUDAGI mahsulotlardan bo'lsin. Maqtov ortiqcha bo'lmasin — "
+        "tabiiy, do'stona ohangда (qo'pol/bosimli emas).\n\n"
 
         "SUHBAT OQIMI (har bosqichni o'tkazib yubormaslik kerak):\n"
-        f"1. SALOMLASHISH (faqat suhbat boshida, agar hali aytmagan bo'lsang): "
-        f"\"{greeting}\"\n"
+        "1. SALOMLASHISH: agar JORIY HOLATda 'Salomlashish: bajarildi' bo'lsa — QAYTA "
+        f"salomlashma (qo'ng'iroq allaqachon boshlangan). Aks holda: \"{greeting}\"\n"
         "2. AGAR MIJOZ MENYU SO'RASA: Kategoriyalarni ro'yxat qil va so'ra: "
         f"'{category_hint} Qaysi turidan boshlaymiz?'\n"
         "3. AGAR MIJOZ KATEGORIYA TANLASA: Shu kategoriyadagi mahsulotlarni "
@@ -324,61 +451,210 @@ def build_system_prompt(
         "add_to_cart bilan saqla. Mijoz bir vaqtda bir nechta narsa aytsa "
         "(masalan: '3 ta somsa va manzilim Chilonzor 5'), hammasini bir bora qabul qil "
         "— bir necha tool chaqir va qayta so'rama.\n"
-        "5. SAVAT BO'SH EMAS BO'LGACH (agar yetkazish_turi hali tanlanmagan bo'lsa): "
+        "5. QO'SHIMCHA TAKLIF (asosiy taom qo'shilgach, BIR MARTA — o'tkazib yuborma): "
+        "savatga qarab vaziyatga mos yumshoq taklif qil ('Yoniga ayron yoki non olasizmi?'). "
+        "Agar mijoz allaqachon yetkazish/manzilni ham aytgan bo'lsa yoki 'shu yetarli' degan "
+        "bo'lsa — taklifni o'tkazib yubor. Mijoz rad etsa — qaytarma.\n"
+        "6. SAVAT BO'SH EMAS BO'LGACH (agar yetkazish_turi hali tanlanmagan bo'lsa): "
         "so'ra: 'Yetkazib beraylikmi yoki o'zingiz olib ketasizmi?' "
         "→ Javobiga ko'ra set_delivery_type chaqir.\n"
-        "6. AGAR DELIVERY TANLANSA va MANZIL HALI YO'Q BO'LSA: TO'LIQ manzilni so'ra "
-        "— tuman/ko'cha, uy/kvartira va MO'LJAL (yaqin belgili joy), chunki ovoz orqali "
-        "manzil noaniq bo'ladi. Manzilni eshitgach, MIJOZGA QAYTA AYT va tasdiqlat "
-        "('Manzilingiz: ... — to'g'rimi?') → keyin set_address.\n"
-        "7. BARCHA MA'LUMOT TO'LGANIDA (savat + yetkazish_turi + delivery'da manzil): "
+        "7. MANZIL (delivery tanlansa):\n"
+        "   - AGAR mijoz manzilni aytgan bo'lsa (qisqa bo'lsa ham, masalan 'Otchopar 1/2') — "
+        "uni DARHOL set_address bilan saqla. Aytilganni E'TIBORSIZ QOLDIRIB qaytadan so'rama.\n"
+        "   - Keyin TO'LIQROQ qilishni so'ra (aniq yetkazish uchun): 'Otchopar 1/2 — qabul "
+        "qildim. To'liqroq aytasizmi: uy yoki kvartira raqami va mo'ljal (yaqin belgili joy)?' "
+        "Mijoz qo'shimcha aytsa — set_address'ni to'liq manzil bilan yangila va tasdiqla "
+        "('Manzilingiz: ... — to'g'rimi?').\n"
+        "   - Mijoz 'shu yetarli' yoki boshqa narsa qo'shmasa — bor manzilni tasdiqlab davom et.\n"
+        "   - Manzil umuman aytilmagan bo'lsa: 'Manzilingizni ayting — ko'cha, uy va mo'ljal.'\n"
+        "8. BARCHA MA'LUMOT TO'LGANIDA (savat + yetkazish_turi + delivery'da manzil): "
         "view_cart bilan tekshir va mijozga jamlamani ayt: mahsulotlar, JAMI SUMMA, "
         "yetkazish turi, manzil. So'ra: 'Tasdiqlaysizmi?'\n"
-        "8. AGAR MIJOZ 'HA, TASDIQLAYMAN' DESA: confirm_order chaqir.\n\n"
+        "9. AGAR MIJOZ 'HA, TASDIQLAYMAN' DESA: confirm_order chaqir.\n"
+        "   Buyurtma tasdiqlangach javobda: qabul qilinganini ayt, yetkazish bo'lsa SMS "
+        "haqida eslat (qadam 7b), keyin ALBATTA so'ra: 'Yana biror narsa buyurtma "
+        "qilasizmi yoki boshqa savolingiz bormi?'\n"
+        "10. POST-BUYURTMA (buyurtma allaqachon qabul qilingan, savat bo'sh):\n"
+        "   - Mijoz yana buyurtma desa → start_new_order chaqir, yangi buyurtma boshla.\n"
+        "   - Mijoz faqat savol bersa → javob ber, keyin yana 'Yana biror narsa?' deb so'ra.\n"
+        "   - Mijoz 'yo'q/rahmat/shu yetarli/xayr/yo'q boshqa narsa yo'q' desa → iliq "
+        "xayrlash va end_conversation chaqir.\n"
+        "11. SUHBATNI YAKUNLASH (telefon qo'yilgandek):\n"
+        "   - Xayrlash qisqa, iliq va tabiiy bo'lsin. Restoran nomini aytish mumkin.\n"
+        "   - Namuna: 'Rahmat! Buyurtmangiz tez orada yetkaziladi. Yana savolingiz bo'lmasa, "
+        "xayr va sog' bo'ling!'\n"
+        "   - end_conversation faqat xayrlashgandan KEYIN chaqir — suhbatni yopadi.\n"
+        "   - Buyurtma bo'lmasa ham mijoz 'xayr' desa — xayrlash va end_conversation.\n\n"
 
-        "NAMUNA SUHBAT (uslub uchun):\n"
+        "MANZIL VA ANIQ JOY (yetkazish uchun — operator suhbatida):\n"
+        "7b. YETKAZISH MANZILI — ikki bosqich (suhbat + SMS):\n"
+        "   - SUHBATDA: mijozdan MATN manzil oling (tuman, ko'cha, uy/kvartira, mo'ljal). "
+        "set_address bilan saqlang.\n"
+        "   - BUYURTMA TASDIQLANGACH: tizim mijoz telefoniga SMS yuboradi — unda xarita "
+        "havolasi bor, mijoz aniq pin qo'yadi (kuryer shu joyga keladi).\n"
+        "   - Suhbatda ayt: 'Telefoningizga SMS keladi, aniq yetkazish joyini xaritada "
+        "belgilang' yoki qisqaroq shaklda.\n"
+        "   - PICKUP (olib ketish) bo'lsa manzil va SMS kerak emas.\n\n"
+
+        "NAMUNA SUHBATLAR (uslub va to'g'ri xatti-harakat uchun — shu na'munalarga ergash):\n"
+
+        "1) Oddiy buyurtma + narx aytish + aniq upsell:\n"
         "Mijoz: 'Salom, nima bor?'\n"
-        "Sen: 'Assalomu alaykum! Eng mashhuri — go'shtli somsa. Nechta olamiz?'\n"
+        "Sen: 'Assalomu alaykum! Eng mashhuri — go'shtli somsa, 14 000 so'm. Nechta olamiz?'\n"
         "Mijoz: '3 ta'\n"
-        "Sen: (add_to_cart) 'Bo'ldi, 3 ta go'shtli somsa. Yoniga ayron qo'shaymi?'\n"
+        "Sen: (add_to_cart) 'Bo'ldi, 3 ta go'shtli somsa — 42 000 so'm. Yoniga Coca Cola yoki ayron olasizmi?'\n"
         "Mijoz: 'Yo'q, rahmat'\n"
         "Sen: 'Mayli. Yetkazib beraylikmi yoki o'zingiz olib ketasizmi?'\n\n"
 
+        "1b) Narx savoli (DARHOL ayt — e'tiborsiz qoldirma):\n"
+        "Mijoz: 'Coca Cola 1.5 qancha?'\n"
+        "Sen: 'Coca Cola 1.5 litr — 18 000 so'm. Qo'shaymizmi?' (narx menyudan; misol uchun)\n\n"
+
+        "2) Ko'p narsa bir gapda + yetkazish so'zi (ENG MUHIM — qayta so'rama!):\n"
+        "Mijoz: 'Tovuqli somsa 4 ta dastafka qibering'\n"
+        "Sen: (add_to_cart: tovuqli somsa x4 VA set_delivery_type: delivery — IKKALASI birga) "
+        "'Bo'ldi, 4 ta tovuqli somsa, yetkazib beramiz. Manzilingizni ayting — tuman, ko'cha, uy va mo'ljal.'\n"
+        "(DIQQAT: yetkazish turini QAYTA SO'RAMADIK, chunki 'dastafka' allaqachon delivery degani.)\n\n"
+
+        "3) Pickup (o'zi olib ketish) variantlari:\n"
+        "Mijoz: 'Ikkita kartoshkali, o'zim olaman'\n"
+        "Sen: (add_to_cart: kartoshkali somsa x2 VA set_delivery_type: pickup) "
+        "'Bo'ldi, 2 ta kartoshkali somsa, o'zingiz olib ketasiz. Tasdiqlaymizmi?'\n\n"
+
+        "4) Manzil + miqdor bitta gapda → tasdiqlash uchun qaytar (qayta SO'RAMA):\n"
+        "Mijoz: 'Manzilim Chilonzor 9-kvartal 5-uy, 4 ta go'shtli somsa keltiring'\n"
+        "Sen: (add_to_cart: go'shtli somsa x4; set_delivery_type: delivery; set_address: Chilonzor 9-kvartal 5-uy) "
+        "'Manzilingiz: Chilonzor 9-kvartal, 5-uy — to'g'rimi?'\n\n"
+
+        "4b) Qisqa manzil + dostavka bitta gapda (qabul qil + to'liqroq so'ra):\n"
+        "Mijoz: 'Otchopar 1/2 dastafka qiberin'\n"
+        "Sen: (set_delivery_type: delivery; set_address: Otchopar 1/2) "
+        "'Otchopar 1/2 — qabul qildim. To'liqroq aytasizmi: uy yoki kvartira raqami va mo'ljal?'\n"
+        "Mijoz: '4-kvartira, Korzinka yonida'\n"
+        "Sen: (set_address: Otchopar 1/2, 4-kvartira, Korzinka yonida) "
+        "'Manzilingiz: Otchopar 1/2, 4-kvartira (Korzinka yonida) — to'g'rimi?'\n"
+        "(NOTO'G'RI: aytilgan manzilni e'tiborsiz qoldirib 'Manzilingizni ayting' deб qaytadan so'rash.)\n\n"
+
+        "5) Menyuда yo'q narsa:\n"
+        "Mijoz: 'Olot somsa bormi?'\n"
+        "Sen: 'Kechirasiz, olot somsa yo'q. Bizda go'shtli, kartoshkali, tovuqli somsa bor — qaysi biridan olamiz?'\n"
+        "(MUHIM: menyuда yo'q narsani 'bormi?' deб o'zing taklif qilma.)\n\n"
+
+        "6) Tarkib / halal savoli (faqat aniq ma'lumot, aks holda eskalatsiya):\n"
+        "Mijoz: 'Tovuqli somsa halalmi?'\n"
+        "Sen (agar menyuда aniq belgi bo'lsa): 'Ha, tovuqli somsa halal.'\n"
+        "Sen (agar aniq belgilanmagan bo'lsa): 'Buni kafolat bilan ayta olmayman, oshxona bilan tasdiqlatib beraman.' "
+        "(taxmin qilib 'ha' DEMA.)\n\n"
+
+        "7) Tavsiya so'rasa:\n"
+        "Mijoz: 'Nima tavsiya qilasiz?'\n"
+        "Sen: 'Eng ko'p olinadigani — go'shtli somsa va tovuqli somsa. Qaysi biridan boshlaymiz?'\n\n"
+
+        "8) Tuzatish (mijoz fikrini o'zgartirsa):\n"
+        "Mijoz: 'Yo'q, 4 ta emas, 3 ta bo'lsin'\n"
+        "Sen: (add_to_cart/miqdorni 3 ga to'g'rila) 'Tuzatdim — 3 ta. Yana biror narsa kerakmi?'\n\n"
+
+        "9) Tushunmaslik (generik 'tushunmadim' EMAS — aniq narsani so'ra):\n"
+        "Mijoz: '...(noaniq)...'\n"
+        "Sen: 'Uzr, nechta somsa edi — aniqroq aytasizmi?'\n\n"
+
+        "10) Katta miqdor (tadbir) → catering:\n"
+        "Mijoz: 'Tadbirga 200 ta somsa kerak'\n"
+        "Sen: (transfer_to_catering) 'Bu katta buyurtma — catering bo'limimiz siz bilan bog'lanadi.'\n\n"
+
+        "11) Buyurtma tasdiqlangach + yana savol:\n"
+        "Mijoz: 'Ha, tasdiqlayman'\n"
+        "Sen: (confirm_order) 'Buyurtmangiz qabul qilindi! Telefoningizga SMS keladi — "
+        "aniq yetkazish joyini xaritada belgilang. Yana biror narsa buyurtma qilasizmi?'\n"
+        "Mijoz: 'Yo'q, rahmat'\n"
+        "Sen: (end_conversation) 'Rahmat! Tez orada yetkazamiz. Xayr, sog' bo'ling!'\n\n"
+
+        "12) Ikkinchi buyurtma (bir qo'ng'iroqda):\n"
+        "Mijoz: 'Ha, yana 2 ta go'shtli somsa qo'shing'\n"
+        "Sen: (start_new_order, keyin add_to_cart) 'Albatta. 2 ta go'shtli somsa — ...'\n\n"
+
         "MUHIM QOIDALAR:\n"
-        "- Mijoz allaqachon aytib bergan ma'lumotni QAYTA SO'RAMA. "
-        "Masalan 'manzilim Yunusobod 5-uy, 4 ta somsa kerak' desa — manzil va "
-        "miqdorni bir bora qabul qil.\n"
+        "- 'JORIY BUYURTMA HOLATI' blokiga QARAB ish tut: u yerда ko'rsatilgan to'lgan "
+        "slotlarni (savat, yetkazish turi, manzil) mijozdan QAYTA SO'RAMA — faqat "
+        "'Yetishmayotgan' deb belgilanganini so'ra.\n"
+        "- Mijoz bitta gapда bir nechta narsa aytsa — HAMMASINI bir vaqtda qabul qil, "
+        "tegishli tool'larni BIRGA chaqir, qayta so'rama. Masalan men 'Nechta kartoshkali "
+        "somsa?' deб so'raganimда mijoz '4 ta, dastavka qiling' desa: add_to_cart(kartoshkali "
+        "somsa, 4) VA set_delivery_type('delivery') ni birga chaqir — keyin faqat MANZILni so'ra "
+        "(yetkazish turini qayta so'rama!).\n"
+        "- Slot to'lgach faqat TASDIQLASH uchun qisqa qaytar ('Manzilingiz ... — to'g'rimi?'), "
+        "lekin ma'lumotni qaytadan SO'RAMA.\n"
         "- Faqat menyudagi mahsulotlarni taklif qil (narx/ID menyudan).\n"
         "- Menyuda yo'q narsani taklif qilma. Mijoz so'rasa: 'Kechirasiz, bizda yo'q'.\n"
         "- confirm_order chaqirishdan oldin barcha slot to'la bo'lsin. "
         "Server validatsiyasi xato qaytarsa, yetishmayotgan ma'lumotni so'ra.\n"
         "- Tadbir uchun katta miqdor (100+ somsa, 40+ non) — transfer_to_catering.\n"
         "\n"
-        "STT XATOLARINI TANISH (ovoz orqali kelgan matn aniq bo'lmaydi):\n"
-        "- 'savoy', 'saboy', 'savoyni', 'soyim', 'o'zim', 'ozim', 'olaman', "
-        "'olib ketaman', 'olib ketish', 'kelaman olib', 'pikap' → PICKUP "
-        "(set_delivery_type('pickup')).\n"
-        "- 'yetkazib', 'yetkazing', 'olib keling', 'manzilga', 'uyga bering', "
-        "'eshikkacha', 'dostavka', 'dostavkasi' → DELIVERY "
-        "(set_delivery_type('delivery')).\n"
+
+        "MIJOZ SAVOLLARIGA JAVOB (FAQ):\n"
+        "- NARX: mijoz 'qancha?', 'narxi?', 'necha pul?' deб so'rasa — DARHOL menyudagi "
+        "ANIQ narxni ayt (so'm bilan). Narx savolini hech qachon e'tiborsiz qoldirma.\n"
+        "- Mahsulot savatga qo'shganda ham narxini ayt — masalan: 'Bo'ldi, 5 ta kartoshkali "
+        "somsa — 35 000 so'm. Yana nimadir kerakmi?'\n"
+        "- Ish vaqti, yetkazish, tarkib so'ralsa — menyu/restoran ma'lumotidan "
+        "QISQA javob ber, keyin tabiiy ravishda buyurtmaga qaytar.\n"
+        "- Ro'yxatda bo'lmagan narsani so'rasa: 'Kechirasiz, bizda yo'q' va bori bilan yordam taklif qil.\n"
+        "- Bilmaydigan savol (siyosat, qaytarish, hujjat va h.k.) — taxmin qilma, "
+        "'Buni aniq bilmayman' deb operatorga uzat.\n\n"
+
+        "TUSHUNMASLIK VA TUZATISH:\n"
+        "- Tushunmasang, generik 'tushunmadim' dema — yetishmayotgan ANIQ narsani qayta so'ra "
+        "(masalan: 'Nechta somsa edi?'). Bu mijozga eshitganingni bildiradi.\n"
+        "- Bir narsani 3 martadan ortiq tushunmasang — uzr so'rab, operatorga ulashni taklif qil.\n"
+        "- Mijoz 'yo'q, ...' desa yoki fikrini o'zgartirsa — eski qadamni tuzat va qayta ko'rib chiq, "
+        "ortiqcha uzr so'rama, darhol yangi gapига o't.\n"
+        "\n"
+        "YETKAZISH TURINI MA'NOSIGA QARAB ANIQLA (so'zning aniq shakliga emas, MA'NOGA qara):\n"
+        "- Mijoz 'menga keltir / olib kelib ber / yetkaz / uyimga / manzilga / eshikkacha' "
+        "MA'NOSIDA biror so'z aytsa → DELIVERY. Bunga 'dastavka', 'dastafka', 'dostavka', "
+        "'dastavka qiling', 'qib bering', 'yetkazib bering', 'olib keling' va shu kabi HAR QANDAY "
+        "buzilgan/STT variant kiradi → set_delivery_type('delivery').\n"
+        "- Mijoz 'o'zim olaman / o'zim kelaman / olib ketaman / kelib olaman' MA'NOSINI bersa "
+        "(masalan 'savoy', 'saboy', 'soyim', 'ozim', 'pikap' kabi STT variantlari) → PICKUP "
+        "→ set_delivery_type('pickup').\n"
+        "- MUHIM: mijoz buyurtma bilan BIRGA yetkazish so'zini aytsa (masalan 'tovuqli somsa 4 ta "
+        "dastafka qibering') — add_to_cart VA set_delivery_type('delivery') ni DARHOL birga chaqir, "
+        "keyin yetkazish turini QAYTA SO'RAMA, faqat manzilni so'ra.\n"
+        "- Ma'no haqiqatan noaniq bo'lsagina so'ra: 'Yetkazib beraylikmi yoki o'zingiz olib ketasizmi?'\n"
+        "STT BOSHQA XATOLARI:\n"
         "- Raqamlar: 'тут' → 'to'rt' (4); 'бир-икки' → 'bir-ikki' (1-2, aniqlashtir); "
         "'ани' → 'ana o'sha' (oldingi nomga).\n"
         "- Agar mijoz 'yo'q, ...' deb gap boshlasa — bu rad etish/tuzatish. "
         "Oldingi qadamni qayta ko'rib chiq.\n"
-        "- Ovoz juda noaniq bo'lsa — taxmin qilma, aniq so'ra."
+        "- Ovoz/matn juda noaniq bo'lsa — taxmin qilma, aniq so'ra."
     )
 
     parts = [base]
 
+    if not cfg.get("upsell_enabled", True):
+        parts.append(
+            "\nQO'SHIMCHA TAKLIF O'CHIRILGAN: 5-bosqich (upsell) ni o'tkazib yubor. "
+            "Ichimlik/non taklif qilma — darhol yetkazish turi va manzilga o't."
+        )
+
     custom = (restaurant.ai_agent_prompt or "").strip()
     if custom:
         parts.append(f"\nRestoran maxsus ko'rsatmasi:\n{custom}")
+
+    farewell = (cfg.get("farewell_hint") or "").strip()
+    if farewell:
+        parts.append(f"\nXayrlash / yakunlash uslubi:\n{farewell}")
 
     fallback_phone = (getattr(restaurant, "ai_agent_fallback_phone", None) or "").strip()
     if fallback_phone:
         parts.append(
             f"\nAgar mijozning so'rovini tushuna olmasang yoki murakkab vaziyat bo'lsa, "
             f"unga ayting: 'Operator bilan bog'lanish uchun {fallback_phone} raqamiga qo'ng'iroq qiling.'"
+        )
+
+    if not cfg.get("sms_location_enabled", True):
+        parts.append(
+            "\nSMS PIN O'CHIRILGAN: buyurtmadan keyin xarita SMS haqida gapirma."
         )
 
     parts.append(
@@ -514,6 +790,16 @@ TOOLS = [
         "name": "transfer_to_catering", "description": "Catering kanaliga uzatish.",
         "parameters": {"type": "object", "properties": {"reason": {"type": "string"}}},
     }},
+    {"type": "function", "function": {
+        "name": "start_new_order",
+        "description": "Yangi buyurtma boshlash (oldingi buyurtma allaqachon qabul qilingan). Savatni tozalaydi.",
+        "parameters": {"type": "object", "properties": {}},
+    }},
+    {"type": "function", "function": {
+        "name": "end_conversation",
+        "description": "Suhbatni yakunlash. Faqat mijozga xayrlashgandan keyin chaqir — qo'ng'iroq tugaydi.",
+        "parameters": {"type": "object", "properties": {}},
+    }},
 ]
 
 
@@ -594,6 +880,17 @@ def _exec_tool(
         # Sessiyani belgilab qo'yamiz — tashqi handler order yaratmasdan transfer qiladi
         sess.confirmed = False
         return {"ok": True, "transferred": True, "reason": args.get("reason", "")}
+
+    if name == "start_new_order":
+        sess.cart.clear()
+        sess.address = None
+        sess.delivery_type = None
+        sess.confirmed = False
+        return {"ok": True, "message": "Yangi buyurtma boshlandi. Savat tozalandi."}
+
+    if name == "end_conversation":
+        sess.conversation_ended = True
+        return {"ok": True, "ended": True, "message": "Suhbat yakunlandi."}
 
     return {"error": f"Noma'lum funksiya: {name}"}
 
@@ -686,6 +983,10 @@ def _is_within_work_hours(restaurant: Restaurant) -> bool:
 
 def _build_offline_reply(restaurant: Restaurant) -> str:
     """AI o'chirilgan vaqtda (ish vaqtidan tashqari) mijozga aytiladigan xabar."""
+    cfg = get_ai_config(restaurant)
+    custom = (cfg.get("offline_reply") or "").strip()
+    if custom:
+        return custom
     wf = restaurant.work_hours_from or "09:00"
     wu = restaurant.work_hours_until or "22:00"
     fallback = (getattr(restaurant, "ai_agent_fallback_phone", None) or "").strip()
@@ -699,6 +1000,10 @@ def _build_offline_reply(restaurant: Restaurant) -> str:
 
 
 def _build_time_limit_reply(restaurant: Restaurant) -> str:
+    cfg = get_ai_config(restaurant)
+    custom = (cfg.get("time_limit_reply") or "").strip()
+    if custom:
+        return custom
     fallback = (getattr(restaurant, "ai_agent_fallback_phone", None) or "").strip()
     base = "Kechirasiz, suhbat vaqti yakunlandi. Buyurtmangizni yana boshlash uchun qayta qo'ng'iroq qiling."
     if fallback:
@@ -757,6 +1062,42 @@ async def process_message(
 
     # Tizim xabarini har murojaatda yangilab qo'yamiz (menyu o'zgargan bo'lishi mumkin)
     sys_content = build_system_prompt(restaurant, menu_text, categories_list)
+
+    # ── JORIY HOLAT — modelga to'lgan slotlarni ANIQ ko'rsatamiz ─────────────
+    # History trim (MAX_HISTORY) tufayli model eski xabarlarni unutadi va allaqachon
+    # aytilgan ma'lumotni qayta so'raydi. Bu blok har murojaatda to'lgan slotlarni
+    # eslatib turadi → qayta so'ramaydi, faqat yetishmayotganini so'raydi.
+    if sess.delivery_type == "delivery":
+        _addr = sess.address or "KERAK — hali aytilmagan"
+    elif sess.delivery_type == "pickup":
+        _addr = "kerak emas (olib ketish)"
+    else:
+        _addr = sess.address or "—"
+    _missing = order_missing_slots(sess)
+    _missing_str = ", ".join(_missing) if _missing else "yo'q — tasdiqlashga tayyor"
+    _phase = "buyurtma yig'ish"
+    if sess.conversation_ended:
+        _phase = "suhbat tugadi"
+    elif sess.order_placed and not sess.cart:
+        _phase = "POST-BUYURTMA — 'Yana biror narsa?' deb so'ra yoki xayrlash"
+    elif sess.confirmed:
+        _phase = "tasdiqlash jarayonida"
+    sys_content += (
+        "\n\nJORIY BUYURTMA HOLATI (bu ma'lumotlar ALLAQACHON ma'lum — mijozdan QAYTA "
+        "SO'RAMA; faqat yetishmayotganini so'ra; tasdiqlashda esa qisqa qaytarib o'qib chiq):\n"
+        f"- Suhbat bosqichi: {_phase}\n"
+        f"- Salomlashish: {'bajarildi' if sess.greeted else 'kerak — qisqa salomlash'}\n"
+        f"- Savat: {sess.cart_summary()}\n"
+        f"- Yetkazish turi: {sess.delivery_type or 'tanlanmagan'}\n"
+        f"- Manzil: {_addr}\n"
+        f"- Yetishmayotgan: {_missing_str}"
+    )
+    if sess.order_placed and sess.last_order_id:
+        sys_content += (
+            f"\n- Oxirgi qabul qilingan buyurtma: #{sess.last_order_id} "
+            "(mijoz allaqachon buyurtma bergan — qayta tasdiqlatma, faqat yangi buyurtma yoki xayrlash)"
+        )
+
     if not sess.messages:
         sess.messages.append({"role": "system", "content": sys_content})
     else:
@@ -942,6 +1283,8 @@ async def process_message(
         # Token usage tracking
         sess.tokens_in += int(result_chat.usage.get("prompt_tokens") or 0)
         sess.tokens_out += int(result_chat.usage.get("completion_tokens") or 0)
+        if result_chat.rate_limit:
+            sess.last_rate_limit = result_chat.rate_limit
 
         # LLM xabarini history ga qo'shish (OpenAI shaklida — provayderlar normalizatsiya qiladi)
         # MUHIM: Groq null tool_calls'ni qabul qilmaydi, shuning uchun tool_calls yo'q bo'lsa
@@ -968,7 +1311,9 @@ async def process_message(
             reply = (result_chat.content or "").strip()
             if reply:
                 sess.add_transcript("assistant", reply)
-            return {
+            if not sess.greeted and reply:
+                sess.greeted = True
+            out = {
                 "reply": reply,
                 "tool_calls": executed_tools,
                 "confirmed": sess.confirmed,
@@ -977,6 +1322,9 @@ async def process_message(
                 "address": sess.address,
                 "is_catering": is_catering_cart(sess.cart, restaurant),
             }
+            if sess.conversation_ended:
+                out["ended_reason"] = "conversation_complete"
+            return out
 
         # Tool chaqiruvlarni ketma-ket bajaramiz
         for tc in result_chat.tool_calls:
@@ -993,19 +1341,45 @@ async def process_message(
                 "content": json.dumps(tool_result, ensure_ascii=False),
             })
 
+        # Suhbat yakunlandi — xayrlash bilan qo'ng'iroq tugaydi
+        if sess.conversation_ended:
+            reply = (result_chat.content or "Rahmat! Xayr, sog' bo'ling!").strip()
+            if reply:
+                sess.add_transcript("assistant", reply)
+            sess.greeted = True
+            return {
+                "reply": reply,
+                "tool_calls": executed_tools,
+                "confirmed": False,
+                "transferred": False,
+                "cart": _cart_to_dicts(sess.cart),
+                "address": sess.address,
+                "is_catering": False,
+                "ended_reason": "conversation_complete",
+            }
+
         # confirm yoki transfer bo'lsa loop'dan chiqamiz — yakuniy javobni LLM dan olish uchun
         if sess.confirmed or transferred:
             try:
                 final_chat = await _chat_with_retry()
                 sess.tokens_in += int(final_chat.usage.get("prompt_tokens") or 0)
                 sess.tokens_out += int(final_chat.usage.get("completion_tokens") or 0)
+                if final_chat.rate_limit:
+                    sess.last_rate_limit = final_chat.rate_limit
                 final = final_chat.content or ""
                 sess.messages.append({"role": "assistant", "content": final})
             except Exception:
-                final = "Buyurtma tasdiqlandi." if sess.confirmed else "Sizga qo'ng'iroq qilamiz."
+                if sess.confirmed:
+                    final = (
+                        "Buyurtmangiz qabul qilindi. Yana biror narsa buyurtma qilasizmi "
+                        "yoki boshqa savolingiz bormi?"
+                    )
+                else:
+                    final = "Sizga qo'ng'iroq qilamiz."
             final = final.strip()
             if final:
                 sess.add_transcript("assistant", final)
+            sess.greeted = True
             return {
                 "reply": final,
                 "tool_calls": executed_tools,

@@ -40,6 +40,7 @@ class OpenAIProvider(LLMProvider):
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(f"{self.BASE_URL}/chat/completions", headers=headers, json=payload)
+            rate_limit = _extract_rate_limit(r.headers)
             r.raise_for_status()
             data = r.json()
 
@@ -66,4 +67,33 @@ class OpenAIProvider(LLMProvider):
                 "prompt_tokens": int(usage.get("prompt_tokens") or 0),
                 "completion_tokens": int(usage.get("completion_tokens") or 0),
             },
+            rate_limit=rate_limit,
         )
+
+
+def _extract_rate_limit(h) -> dict:
+    """Groq/OpenAI rate-limit header'larini normalizatsiya qiladi.
+
+    Header'lar (OpenAI-mos): x-ratelimit-{limit,remaining}-{requests,tokens},
+    x-ratelimit-reset-{requests,tokens} (masalan '2m59.56s'). Bo'lmasa bo'sh dict.
+    """
+    def _i(name):
+        v = h.get(name)
+        if v is None:
+            return None
+        try:
+            return int(float(v))
+        except (ValueError, TypeError):
+            return None
+    out = {
+        "limit_requests": _i("x-ratelimit-limit-requests"),
+        "remaining_requests": _i("x-ratelimit-remaining-requests"),
+        "limit_tokens": _i("x-ratelimit-limit-tokens"),
+        "remaining_tokens": _i("x-ratelimit-remaining-tokens"),
+        "reset_requests": h.get("x-ratelimit-reset-requests"),
+        "reset_tokens": h.get("x-ratelimit-reset-tokens"),
+    }
+    # Hech qanday rate-limit header bo'lmasa — bo'sh dict (provayder bermaydi)
+    if all(v is None for v in out.values()):
+        return {}
+    return out

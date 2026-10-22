@@ -36,6 +36,9 @@ class ChatResult:
     content: str = ""
     tool_calls: list[dict] = field(default_factory=list)  # [{id, name, arguments}]
     usage: dict[str, int] = field(default_factory=lambda: {"prompt_tokens": 0, "completion_tokens": 0})
+    # Provayder rate-limit holati (response header'laridan) — qolgan so'rov/token va reset vaqti.
+    # Groq/OpenAI: x-ratelimit-remaining-requests/tokens, x-ratelimit-reset-*. Bo'lmasa bo'sh.
+    rate_limit: dict = field(default_factory=dict)
 
 
 @dataclass

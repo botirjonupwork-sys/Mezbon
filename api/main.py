@@ -16,7 +16,7 @@ from api.routes import (
     users, menu, orders, reviews, admin, auth, couriers, branches,
     catering, billing, ai, health, super_admin, super_legacy, pos,
     registration, yandex_webhook, uzum_webhook, delivery_quote, autopay,
-    alerts_admin, ai_test,
+    alerts_admin, ai_test, location,
 )
 
 # Logging — eng birinchi sozlanishi shart (boshqa modullar import paytida ham log yozishi mumkin)
@@ -28,6 +28,15 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["300/minute"])
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Server boshqa mamlakatda bo'lsa ham — process TZ = O'zbekiston
+    os.environ.setdefault("TZ", "Asia/Tashkent")
+    try:
+        import time as _time
+        if hasattr(_time, "tzset"):
+            _time.tzset()
+    except Exception:
+        pass
+
     await create_tables()
     os.makedirs("static/images/products", exist_ok=True)
 
@@ -191,6 +200,8 @@ async def maintenance_guard(request: Request, call_next):
 
 _SUSPENSION_ALLOW_PREFIXES = (
     "/admin/billing",       # tarif sotib olish — yagona yo'l
+    "/admin/profile",       # read-only profil — UI shell + ogohlantirish banneri uchun (suspended'da ham)
+    "/admin/me/plan",       # joriy tarif ma'lumoti — banner/billing UI uchun
     "/payments/",           # to'lov yaratish va webhook
     "/auth/",               # login/refresh
     "/super-admin/",        # super-admin har doim ishlaydi
@@ -273,6 +284,7 @@ app.include_router(alerts_admin.router)
 app.include_router(ai_test.router)
 app.include_router(super_legacy.router)
 app.include_router(pos.router)
+app.include_router(location.router)
 app.include_router(registration.router)
 app.include_router(yandex_webhook.router)
 app.include_router(uzum_webhook.router)

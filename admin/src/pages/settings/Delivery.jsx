@@ -11,6 +11,7 @@ import {
 import { checkYandexBalanceNow, getSettings, updateSettings } from '../../api'
 import { useAuthStore } from '../../store/auth'
 import { useBranchStore } from '../../store/branch'
+import { fmtTashkent } from '../../utils/datetime'
 
 const { Title, Text } = Typography
 
@@ -333,7 +334,7 @@ export default function DeliverySettings() {
                   </Space>
                   <Text type="secondary" style={{ fontSize: 12 }}>
                     {balanceInfo?.checked_at
-                      ? `Oxirgi tekshiruv: ${new Date(balanceInfo.checked_at).toLocaleString('uz-UZ', { hour12: false })}`
+                      ? `Oxirgi tekshiruv: ${fmtTashkent(balanceInfo.checked_at, 'DD.MM.YYYY HH:mm:ss')}`
                       : 'Hali tekshirilmagan'}
                   </Text>
                 </Space>

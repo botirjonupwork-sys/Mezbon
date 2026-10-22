@@ -6,7 +6,7 @@ import {
   AudioOutlined, AudioMutedOutlined, SendOutlined, ReloadOutlined,
   RobotOutlined, UserOutlined, SoundOutlined, PhoneOutlined, PhoneFilled,
 } from '@ant-design/icons'
-import { aiTestText, aiTestVoice, aiTestReset } from '../api'
+import { aiTestText, aiTestVoice, aiTestReset, aiTestCallStart, getPlatformSettings, updatePlatformSettings } from '../api'
 
 const { Text } = Typography
 
@@ -68,6 +68,18 @@ export default function AiTestConsole({ restaurants = [] }) {
   const [status, setStatus] = useState('idle')
   const [sensitivity, setSensitivity] = useState(30)   // 10..60 → RMS thresh
 
+  // LLM / STT / TTS boshqaruvi (platform sozlamalaridan o'qiladi va yoziladi)
+  const [providers, setProviders] = useState([])       // ai_providers katalogi
+  const [keyStatus, setKeyStatus] = useState({})       // {provider: {set, masked}}
+  const [llmProvider, setLlmProvider] = useState(null)
+  const [llmModel, setLlmModel] = useState(null)
+  const [sttOn, setSttOn] = useState(false)
+  const [ttsOn, setTtsOn] = useState(false)
+  const [savingCfg, setSavingCfg] = useState(false)
+  const [rateLimit, setRateLimit] = useState(null)   // Groq qolgan limit (oxirgi javobdan)
+  const sttProvRef = useRef('aisha')                   // STT yoqilganda ishlatiladigan provayder
+  const ttsProvRef = useRef('aisha')                   // TTS yoqilganda ishlatiladigan provayder
+
   // refs (real-time loop)
   const streamRef = useRef(null)
   const audioCtxRef = useRef(null)
@@ -97,7 +109,7 @@ export default function AiTestConsole({ restaurants = [] }) {
   }, [restaurants])
 
   useEffect(() => {
-    if (restaurantId && !callId) setCallId(genCallId())
+    if (restaurantId && !callId) beginCallSession()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restaurantId])
 
@@ -107,12 +119,87 @@ export default function AiTestConsole({ restaurants = [] }) {
 
   useEffect(() => () => endCall(), [])     // unmount → tozalash
 
+  // Platform sozlamalarini yuklash — LLM/STT/TTS joriy holati
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await getPlatformSettings()
+        setProviders(data.ai_providers || [])
+        setKeyStatus(data.ai_llm_api_keys_status || {})
+        setLlmProvider(data.ai_llm_provider || null)
+        setLlmModel(data.ai_llm_model || null)
+        const off = new Set(['none', 'off', 'disabled', ''])
+        const stt = (data.ai_stt_provider || 'none').toLowerCase()
+        const tts = (data.ai_tts_provider || 'none').toLowerCase()
+        setSttOn(!off.has(stt)); if (!off.has(stt)) sttProvRef.current = stt
+        setTtsOn(!off.has(tts)); if (!off.has(tts)) ttsProvRef.current = tts
+      } catch { /* sozlama yuklanmadi — jim o'tamiz */ }
+    })()
+  }, [])
+
+  const changeLlm = async (val) => {
+    const idx = val.indexOf('::')
+    const prov = val.slice(0, idx), model = val.slice(idx + 2)
+    setLlmProvider(prov); setLlmModel(model); setSavingCfg(true)
+    try {
+      await updatePlatformSettings({ ai_llm_provider: prov, ai_llm_model: model })
+      message.success(`LLM: ${prov} / ${model}`)
+    } catch { message.error('LLM saqlanmadi') }
+    finally { setSavingCfg(false) }
+  }
+
+  const toggleStt = async (on) => {
+    setSttOn(on)
+    try { await updatePlatformSettings({ ai_stt_provider: on ? sttProvRef.current : 'none' }) }
+    catch { message.error('STT saqlanmadi'); setSttOn(!on) }
+  }
+
+  const toggleTts = async (on) => {
+    setTtsOn(on)
+    try { await updatePlatformSettings({ ai_tts_provider: on ? ttsProvRef.current : 'none' }) }
+    catch { message.error('TTS saqlanmadi'); setTtsOn(!on) }
+  }
+
+  // LLM Select uchun guruhlangan optionlar (kalit yo'q provayderlar bloklangan)
+  const llmOptions = providers.map(p => ({
+    label: `${p.display_name}${keyStatus[p.name]?.set ? '' : ' — kalit yo\'q'}`,
+    options: (p.models || []).map(m => ({
+      value: `${p.name}::${m.value}`,
+      label: `${m.label}${m.free ? ' · bepul' : ''}${m.notes ? ` (${m.notes})` : ''}`,
+      disabled: !keyStatus[p.name]?.set,
+    })),
+  }))
+  const llmValue = llmProvider && llmModel ? `${llmProvider}::${llmModel}` : undefined
+
   const genCallId = () => `test-${Date.now()}-${Math.floor(Math.random() * 1e6)}`
 
-  const newCall = async () => {
-    if (callId) { try { await aiTestReset(callId) } catch { /* ignore */ } }
-    setCallId(genCallId()); setMessages([])
+  const beginCallSession = async (id = null, rid = null) => {
+    const cid = id || genCallId()
+    const restId = rid || restaurantId
+    if (!restId) return cid
+    if (callId && callId !== cid) {
+      try { await aiTestReset(callId) } catch { /* ignore */ }
+    }
+    setCallId(cid)
+    setMessages([])
+    try {
+      const { data } = await aiTestCallStart({ restaurant_id: restId, call_id: cid })
+      const greeting = {
+        role: 'ai',
+        text: data.reply_text,
+        audio: data.reply_audio_b64,
+        mime: data.reply_audio_mime,
+        greeting: true,
+      }
+      setMessages([greeting])
+      speak(greeting)
+    } catch (e) {
+      message.error(e.response?.data?.detail || 'Salomlashish xatosi')
+    }
+    return cid
   }
+
+  const newCall = () => beginCallSession()
 
   // ── Audio chiqarish (AI javob) ──
   const speak = (m, onDone) => {
@@ -141,12 +228,23 @@ export default function AiTestConsole({ restaurants = [] }) {
   }
 
   const pushMessages = (userText, data) => {
+    const aiMsg = {
+      role: 'ai',
+      text: data.reply_text,
+      audio: data.reply_audio_b64,
+      mime: data.reply_audio_mime,
+      confirmed: data.confirmed,
+      ended: data.ended_reason === 'conversation_complete',
+      orderId: data.simulated_order_id || data.last_order_id,
+      locationLink: data.location_link_preview,
+    }
     setMessages(prev => [
       ...prev,
       { role: 'user', text: userText || data.transcript || '(ovoz)' },
-      { role: 'ai', text: data.reply_text, audio: data.reply_audio_b64, mime: data.reply_audio_mime,
-        confirmed: data.confirmed, ended: data.ended_reason },
+      aiMsg,
     ])
+    if (data.rate_limit && Object.keys(data.rate_limit).length) setRateLimit(data.rate_limit)
+    return aiMsg
   }
 
   // ── TELEGRAM rejimi: matn ──
@@ -154,8 +252,9 @@ export default function AiTestConsole({ restaurants = [] }) {
     const t = text.trim(); if (!t || !restaurantId) return
     setText(''); setLoading(true)
     try {
-      const { data } = await aiTestText({ restaurant_id: restaurantId, call_id: callId, text: t, want_audio: true })
-      pushMessages(t, data); speak({ text: data.reply_text, audio: data.reply_audio_b64, mime: data.reply_audio_mime })
+      const { data } = await aiTestText({ restaurant_id: restaurantId, call_id: callId, text: t, want_audio: ttsOn })
+      const aiMsg = pushMessages(t, data)
+      speak(aiMsg, () => { if (data.ended_reason === 'conversation_complete') endCall() })
     } catch (e) { message.error(e.response?.data?.detail || 'Xato') }
     finally { setLoading(false) }
   }
@@ -174,8 +273,8 @@ export default function AiTestConsole({ restaurants = [] }) {
         try {
           const data = await sendVoiceBlob(new Blob(chunksRef.current, { type: mr.mimeType || 'audio/webm' }))
           if (data && (data.reply_text || data.transcript)) {
-            pushMessages(data.transcript, data)
-            speak({ text: data.reply_text, audio: data.reply_audio_b64, mime: data.reply_audio_mime })
+            const aiMsg = pushMessages(data.transcript, data)
+            speak(aiMsg, () => { if (data.ended_reason === 'conversation_complete') endCall() })
           }
         } catch (e) { message.error(e.response?.data?.detail || 'Ovoz xatosi') }
       }
@@ -210,6 +309,7 @@ export default function AiTestConsole({ restaurants = [] }) {
   // ── TELEFON rejimi: real-time hands-free (VAD + barge-in) ──
   const startCall = async () => {
     if (!restaurantId) return
+    if (!messages.length) await beginCallSession()
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
       streamRef.current = stream
@@ -258,8 +358,13 @@ export default function AiTestConsole({ restaurants = [] }) {
       if (data && (data.reply_text || data.transcript)) {
         pushMessages(data.transcript, data)
         setStatus('speaking')
-        speak({ text: data.reply_text, audio: data.reply_audio_b64, mime: data.reply_audio_mime }, () => {
+        const lastAi = { text: data.reply_text, audio: data.reply_audio_b64, mime: data.reply_audio_mime }
+        speak(lastAi, () => {
           busyRef.current = false
+          if (data.ended_reason === 'conversation_complete') {
+            endCall()
+            return
+          }
           if (callActiveRef()) setStatus('listening')
         })
         return
@@ -340,7 +445,52 @@ export default function AiTestConsole({ restaurants = [] }) {
         )}
       </Space>
 
-      {mode === 'phone' && (
+      {/* LLM tanlash + STT/TTS yoqish-o'chirish */}
+      <Space style={{ marginBottom: 12, width: '100%' }} wrap>
+        <Text>LLM:</Text>
+        <Select
+          style={{ minWidth: 340 }}
+          value={llmValue}
+          onChange={changeLlm}
+          loading={savingCfg}
+          options={llmOptions}
+          placeholder="Model tanlang"
+          showSearch
+          optionFilterProp="label"
+        />
+        <Tooltip title="STT (ovoz→matn). O'chirilsa faqat matn yozib sinaladi, mikrofon ishlamaydi.">
+          <span><AudioOutlined /> STT <Switch size="small" checked={sttOn} onChange={toggleStt} /></span>
+        </Tooltip>
+        <Tooltip title="TTS (matn→ovoz). O'chirilsa AI faqat matn qaytaradi (server ovozi yo'q).">
+          <span><SoundOutlined /> TTS <Switch size="small" checked={ttsOn} onChange={toggleTts} /></span>
+        </Tooltip>
+        {rateLimit && (
+          <Tooltip title={`Provayder limiti (oxirgi javobdan). So'rov yangilanishi: ${rateLimit.reset_requests || '—'}, token yangilanishi: ${rateLimit.reset_tokens || '—'}`}>
+            <Tag color={
+              rateLimit.remaining_requests != null && rateLimit.limit_requests
+                ? (rateLimit.remaining_requests / rateLimit.limit_requests < 0.1 ? 'red'
+                   : rateLimit.remaining_requests / rateLimit.limit_requests < 0.3 ? 'orange' : 'green')
+                : 'blue'
+            }>
+              ⚡ Qolgan limit:&nbsp;
+              {rateLimit.remaining_requests != null
+                ? `${rateLimit.remaining_requests.toLocaleString()}/${(rateLimit.limit_requests ?? 0).toLocaleString()} so'rov`
+                : ''}
+              {rateLimit.remaining_tokens != null
+                ? ` · ${rateLimit.remaining_tokens.toLocaleString()}/${(rateLimit.limit_tokens ?? 0).toLocaleString()} token`
+                : ''}
+            </Tag>
+          </Tooltip>
+        )}
+      </Space>
+
+      {mode === 'phone' && !sttOn && (
+        <Alert type="warning" showIcon style={{ marginBottom: 12 }}
+          message="STT o'chiq — telefon (ovozli) rejim ishlamaydi"
+          description="Faqat matn bilan sinash uchun 'Telegram' rejimiga o'ting va pastdagi maydonga yozing. Ovozli sinov uchun STT'ni yoqing." />
+      )}
+
+      {mode === 'phone' && sttOn && (
         <Alert
           type="info" showIcon style={{ marginBottom: 12 }}
           message="Real-time telefon rejimi — gapiring, pauza qilsangiz javob beradi"
@@ -351,20 +501,25 @@ export default function AiTestConsole({ restaurants = [] }) {
       {/* Suhbat */}
       <div ref={scrollRef} style={{ height: 320, overflowY: 'auto', border: '1px solid #f0f0f0', borderRadius: 10, padding: 16, marginBottom: 12, background: '#fafafa' }}>
         {messages.length === 0
-          ? <Empty description={mode === 'phone' ? 'Qo\'ng\'iroqni boshlang va gapiring' : 'Gapiring yoki yozing'} />
+          ? <Empty description={mode === 'phone' ? 'Qo\'ng\'iroqni boshlang — operator salomlashadi' : 'Yangi qo\'ng\'iroq yoki yozing'} />
           : messages.map((m, i) => (
             <div key={i} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start', marginBottom: 10 }}>
               <div style={{ maxWidth: '78%', padding: '8px 12px', borderRadius: 12,
                 background: m.role === 'user' ? '#722ed1' : '#fff', color: m.role === 'user' ? '#fff' : '#000',
                 border: m.role === 'user' ? 'none' : '1px solid #e8e8e8' }}>
                 <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 2 }}>
-                  {m.role === 'user' ? <><UserOutlined /> Siz</> : <><RobotOutlined /> AI</>}
+                  {m.role === 'user' ? <><UserOutlined /> Siz</> : <><RobotOutlined /> Operator</>}
+                  {m.greeting && <Tag color="blue" style={{ marginLeft: 6 }}>Salomlashish</Tag>}
                 </div>
                 <div style={{ whiteSpace: 'pre-wrap' }}>{m.text || '…'}</div>
+                {m.locationLink && (
+                  <div style={{ fontSize: 12, marginTop: 6, color: '#1677ff' }}>📍 {m.locationLink}</div>
+                )}
                 {m.role === 'ai' && (
-                  <Space size={4} style={{ marginTop: 4 }}>
+                  <Space size={4} style={{ marginTop: 4 }} wrap>
                     <Button size="small" type="text" icon={<SoundOutlined />} onClick={() => speak(m)}>Eshitish</Button>
-                    {m.confirmed && <Tag color="green">Tasdiqlandi</Tag>}
+                    {m.confirmed && <Tag color="green">Buyurtma qabul qilindi{m.orderId ? ` №${m.orderId}` : ''}</Tag>}
+                    {m.ended && <Tag color="default">Suhbat tugadi</Tag>}
                   </Space>
                 )}
               </div>
@@ -377,7 +532,7 @@ export default function AiTestConsole({ restaurants = [] }) {
         <Space direction="vertical" style={{ width: '100%' }}>
           {!callActive ? (
             <Button type="primary" size="large" block icon={<PhoneFilled />} onClick={startCall}
-              disabled={!restaurantId} style={{ background: '#52c41a', borderColor: '#52c41a' }}>
+              disabled={!restaurantId || !sttOn} style={{ background: '#52c41a', borderColor: '#52c41a' }}>
               Qo'ng'iroqni boshlash
             </Button>
           ) : (
@@ -397,7 +552,7 @@ export default function AiTestConsole({ restaurants = [] }) {
             <Button type={recording ? 'primary' : 'default'} danger={recording}
               icon={recording ? <AudioMutedOutlined /> : <AudioOutlined />}
               onMouseDown={startРTT} onMouseUp={stopPTT} onTouchStart={startРTT} onTouchEnd={stopPTT}
-              loading={loading && !recording} disabled={!restaurantId} style={{ minWidth: 130 }}>
+              loading={loading && !recording} disabled={!restaurantId || !sttOn} style={{ minWidth: 130 }}>
               {recording ? 'Yuborish...' : 'Gapirish'}
             </Button>
           </Tooltip>

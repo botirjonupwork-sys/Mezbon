@@ -91,9 +91,16 @@ async def delivery_quote(
                 Branch.restaurant_id == rest.id,
             )
         )).scalar_one_or_none()
-        if br and br.latitude and br.longitude:
-            pickup_lat = br.latitude
-            pickup_lon = br.longitude
+        if br and br.latitude is not None and br.longitude is not None:
+            # Default/placeholder Toshkent markazi — restoran koordinatoridan farq
+            # qilsa ham noto'g'ri pickup → masofa va narx sun'iy oshadi.
+            is_placeholder = (
+                abs(float(br.latitude) - 41.2995) < 0.0002
+                and abs(float(br.longitude) - 69.2401) < 0.0002
+            )
+            if not is_placeholder:
+                pickup_lat = br.latitude
+                pickup_lon = br.longitude
 
     if pickup_lat is None or pickup_lon is None:
         raise HTTPException(400, "Pickup koordinatalari sozlanmagan")
@@ -102,10 +109,20 @@ async def delivery_quote(
         api_token=rest.yandex_api_token or "",
         test_mode=bool(rest.yandex_test_mode),
     )
+    # Quote va claim bir xil tarif: courier (express qimmat)
+    due = None
+    if body.get("due"):
+        due = str(body.get("due")).strip() or None
+    elif body.get("scheduled_for"):
+        # Bot HH:MM yoki ISO yuborishi mumkin — ISO deb urinish
+        due = str(body.get("scheduled_for")).strip() or None
+
     return await client.quote_price(
         pickup_lat=float(pickup_lat),
         pickup_lon=float(pickup_lon),
         dropoff_lat=float(dropoff_lat),
         dropoff_lon=float(dropoff_lon),
         weight_kg=float(body.get("weight_kg") or 1.0),
+        taxi_class="courier",
+        due=due,
     )

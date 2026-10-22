@@ -28,6 +28,11 @@ export const login = (data) => api.post('/auth/login', data)
 export const logoutServer = () => api.post('/auth/logout')
 export const checkAuth = () => api.get('/auth/me')
 
+// ── POS / Printer (chek printeri) ──
+export const getPosConfig = (params) => api.get('/admin/pos/config', { params })
+export const updatePosConfig = (data, params) => api.put('/admin/pos/config', data, { params })
+export const posTestPrint = (params) => api.post('/admin/pos/test-print', null, { params })
+
 // ── Dashboard / Stats ─────────────────────────────────
 export const getStats = (params) => api.get('/admin/stats', { params })
 export const getReviewStats = (params) => api.get('/reviews/stats', { params })
@@ -133,6 +138,8 @@ export const getAiLogs = (params) => api.get('/ai/logs', { params })
 export const getAiLogDetail = (id, params) => api.get(`/ai/logs/${id}`, { params })
 export const getAiStats = (params) => api.get('/ai/stats', { params })
 export const aiProcessCall = (data, params) => api.post('/ai/process-call', data, { params })
+export const aiCallStart = (data, params) => api.post('/ai/call-start', data, { params })
+export const getAiSystemPromptPreview = (params) => api.get('/ai/system-prompt-preview', { params })
 
 // ── Super Admin ───────────────────────────────────────
 export const getSuperStats = (params) => api.get('/super-admin/stats', { params })

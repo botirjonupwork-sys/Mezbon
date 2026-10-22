@@ -13,7 +13,7 @@ import io
 import logging
 
 from aiogram import Bot, F, Router
-from aiogram.types import BufferedInputFile, Message
+from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot import api_client
 
@@ -108,17 +108,34 @@ async def on_voice(message: Message, bot: Bot):
     actions = result.get("actions") or []
     for act in actions:
         if act.get("type") == "create_order":
-            await message.answer(
-                f"✅ Buyurtmangiz qabul qilindi! №{act.get('order_id')}\n"
-                f"Tez orada operator siz bilan bog'lanadi."
-            )
+            pay_url = act.get("payment_url")
+            provider = (act.get("payment_provider") or "").capitalize()
+            if pay_url:
+                # To'lov linki — bosiladigan tugma sifatida yuboramiz
+                btn_text = f"💳 {provider} orqali to'lash" if provider else "💳 To'lash"
+                kb = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text=btn_text, url=pay_url)
+                ]])
+                await message.answer(
+                    f"✅ Buyurtmangiz qabul qilindi! №{act.get('order_id')}\n"
+                    f"To'lov uchun quyidagi tugmani bosing 👇",
+                    reply_markup=kb,
+                )
+            else:
+                # To'lov provayderi sozlanmagan — operator bog'lanadi
+                await message.answer(
+                    f"✅ Buyurtmangiz qabul qilindi! №{act.get('order_id')}\n"
+                    f"Tez orada operator siz bilan bog'lanadi."
+                )
         elif act.get("type") == "transfer_to_catering":
             await message.answer(
                 "📞 Tadbir uchun katta buyurtma — siz bilan operator alohida bog'lanadi."
             )
         elif act.get("type") == "end_call":
             reason = act.get("reason")
-            if reason == "outside_work_hours":
+            if reason == "conversation_complete":
+                pass  # xayrlash AI javobida aytilgan
+            elif reason == "outside_work_hours":
                 pass  # AI javobida allaqachon aytildi
             elif reason == "time_limit":
                 pass

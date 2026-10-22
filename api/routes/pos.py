@@ -112,10 +112,15 @@ async def test_print(
 @router.websocket("/pos/bridge/{restaurant_id}")
 async def pos_bridge(websocket: WebSocket, restaurant_id: int, token: str = ""):
     """Restoranga tegishli terminal'lar uchun WebSocket bridge."""
-    # Tokenni tekshirish — restoran admin tokeni yoki POS-specific token
+    # Tokenni tekshirish. Afzal: alohida POS_BRIDGE_TOKEN (kassa PC'siga master
+    # SECRET_KEY tushmasin). Orqaga moslik uchun SECRET_KEY ham qabul qilinadi.
+    import os
     expected_prefix = settings.SECRET_KEY
+    pos_token = (os.getenv("POS_BRIDGE_TOKEN") or "").strip()
     valid = False
-    if token == expected_prefix:
+    if pos_token and (token == pos_token or token == f"{pos_token}:{restaurant_id}"):
+        valid = True
+    elif token == expected_prefix:
         valid = True
     elif token.startswith(f"{expected_prefix}:"):
         try:

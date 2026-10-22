@@ -25,6 +25,7 @@ import SettingsCatering from './pages/settings/Catering'
 import SettingsAiAgent from './pages/settings/AiAgent'
 import SettingsAiLogs from './pages/settings/AiLogs'
 import SettingsProfile from './pages/settings/Profile'
+import SettingsPrinter from './pages/settings/Printer'
 
 function PrivateRoute({ children }) {
   const isAuth = useAuthStore((s) => s.isAuth)
@@ -62,6 +63,7 @@ export default function App() {
           <Route path="settings/ai-agent" element={<SettingsAiAgent />} />
           <Route path="settings/ai-logs" element={<SettingsAiLogs />} />
           <Route path="settings/profile" element={<SettingsProfile />} />
+          <Route path="settings/printer" element={<SettingsPrinter />} />
           <Route path="couriers" element={<Couriers />} />
           <Route path="admins" element={<Admins />} />
           <Route path="billing" element={<Billing />} />

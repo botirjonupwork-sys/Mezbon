@@ -369,14 +369,11 @@ async def quote_delivery_price(
     dropoff_lon: float,
     branch_id: Optional[int] = None,
     weight_kg: float = 1.0,
+    due: Optional[str] = None,
 ) -> dict:
     """Yandex'dan haqiqiy dastavka narxini olish (claim YARATMAYDI, pul KETMAYDI).
 
-    Qaytaradi:
-      success: {"ok": True, "price": 18200.0, "currency": "UZS", "eta_minutes": 25}
-      no coverage: {"ok": False, "code": "no_coverage", "message": "..."}
-      provider != yandex: {"ok": False, "code": "provider_not_yandex"}
-      tarmoq xatosi: {"ok": False, "code": "network_error", "message": "..."}
+    due: ISO 8601 — vaqtli yetkazish uchun (ixtiyoriy).
     """
     payload = {
         "restaurant_id": _restaurant_id,
@@ -386,6 +383,8 @@ async def quote_delivery_price(
     }
     if branch_id:
         payload["branch_id"] = int(branch_id)
+    if due:
+        payload["due"] = due
     try:
         async with httpx.AsyncClient(timeout=12.0) as client:
             r = await client.post(

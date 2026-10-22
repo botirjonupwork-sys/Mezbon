@@ -306,8 +306,14 @@ export default function AdminLayout() {
             type={profileInfo.subscription_status === 'suspended' ? 'error' : 'warning'}
             showIcon
             message={profileInfo.subscription_status === 'suspended'
-              ? '⏰ Tarif muddati tugagan. Iltimos, yangi tarifni faollashtiring.'
-              : '⏳ Tarif muddati yaqinda tugaydi (grace period). Yangilang.'}
+              ? '⏰ Tarif (to\'lov) muddati tugadi — xizmat to\'xtatildi. Davom etish uchun to\'lovni amalga oshiring.'
+              : '⏳ Tarif (to\'lov) muddati tugadi. Imtiyozli davr ichida ishlayapsiz — uzilishdan oldin to\'lovni yangilang.'}
+            action={
+              <Button size="small" type="primary" danger={profileInfo.subscription_status === 'suspended'}
+                onClick={() => navigate('/billing')}>
+                Tarifni yangilash
+              </Button>
+            }
             style={{ borderRadius: 0 }}
           />
         )}

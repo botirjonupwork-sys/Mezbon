@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # Telegram
-    BOT_TOKEN: str = ""
+    BOT_TOKEN: str = "8303328779:AAGBlD6jLjl8qESXnU8Q-CqZ_WhRwgvJ13c"
     WEBAPP_URL: str = ""
     ADMIN_CHAT_ID: str = ""
 
@@ -17,19 +17,19 @@ class Settings(BaseSettings):
     ALICE_STORE_ID: str = ""
 
     # Kuryer Bot
-    COURIER_BOT_TOKEN: str = ""
+    COURIER_BOT_TOKEN: str = "8751215042:AAG0V3zO922SEKp18p91Ujva_oJAsK-eGas"
 
     # Yandex Delivery
     YANDEX_DELIVERY_TOKEN: str = ""
 
     # Admin panel — bularsiz dastur ishga tushmaydi (production-safe)
     ADMIN_USERNAME: str = "admin"
-    ADMIN_PASSWORD: str = ""           # .env'da o'rnatilishi SHART
+    ADMIN_PASSWORD: str = "admin123"           # .env'da o'rnatilishi SHART
     SECRET_KEY: str = ""               # .env'da o'rnatilishi SHART (256-bit random)
 
     # Super Admin
     SUPER_ADMIN_USERNAME: str = "superadmin"
-    SUPER_ADMIN_PASSWORD: str = ""     # .env'da o'rnatilishi SHART
+    SUPER_ADMIN_PASSWORD: str = "superadmin123"     # .env'da o'rnatilishi SHART
 
     # Bot<->API ichki autentifikatsiya — SECRET_KEY'dan AJRATILGAN (audit C1).
     # Bo'sh bo'lsa bot so'rovlari rad etiladi (fail-closed). .env va bot bir xil qiymat.

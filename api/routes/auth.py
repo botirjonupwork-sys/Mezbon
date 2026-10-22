@@ -91,14 +91,16 @@ def _set_auth_cookie(response: Response, token: str, max_age: int = 3600) -> Non
 
     SameSite=Strict bilan boshqa domendan kelgan so'rovlarga cookie yuborilmaydi
     (CSRF himoyasi). Backward compat: token body'da ham qaytariladi.
+    Localhost HTTP rivojlanishida secure=False — aks holda brauzer cookie'ni rad etadi.
     """
+    is_dev = bool(getattr(settings, "DEBUG", False))
     response.set_cookie(
         key="admin_token",
         value=token,
         max_age=max_age,
         httponly=True,
-        secure=True,   # HTTPS faqat
-        samesite="strict",  # CSRF himoyasi
+        secure=not is_dev,   # prod: HTTPS shart, dev: localhost HTTP uchun False
+        samesite="lax" if is_dev else "strict",
         path="/",
     )
 

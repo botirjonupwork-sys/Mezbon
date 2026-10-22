@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Form, Input, Button, Card, Typography, message } from 'antd'
+import { Form, Input, Button, Card, Typography, message, Alert } from 'antd'
 import { UserOutlined, LockOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/auth'
@@ -11,16 +11,34 @@ export default function Login() {
   const navigate = useNavigate()
   const setAuth = useAuthStore((s) => s.setAuth)
   const [loading, setLoading] = useState(false)
+  const [warn, setWarn] = useState(null)   // { type, text } — login ogohlantirishi
 
   const onFinish = async ({ username, password }) => {
     setLoading(true)
+    setWarn(null)
     try {
       const res = await login({ username, password })
       setAuth(res.data.token, { name: res.data.name }, res.data.restaurant_id)
       message.success('Xush kelibsiz!')
       navigate('/')
-    } catch {
-      message.error("Login yoki parol noto'g'ri!")
+    } catch (err) {
+      const status = err.response?.status
+      const detail = err.response?.data?.detail
+      let text, type
+      if (status === 429) {
+        // Bruteforce himoyasi — vaqtincha bloklangan (backend aniq vaqtni qaytaradi)
+        type = 'warning'
+        text = (typeof detail === 'string' && detail) ||
+          "Juda ko'p urinish bo'ldi. Hisob vaqtincha bloklandi — bir necha daqiqadan keyin qayta urinib ko'ring."
+      } else if (status === 401) {
+        type = 'error'
+        text = "Login yoki parol noto'g'ri. Diqqat: 5 marta xato kiritsangiz hisob 15 daqiqaga bloklanadi."
+      } else {
+        type = 'error'
+        text = (typeof detail === 'string' && detail) || "Kirishda xatolik. Keyinroq urinib ko'ring."
+      }
+      setWarn({ type, text })
+      if (type === 'warning') message.warning(text, 6); else message.error(text)
     } finally {
       setLoading(false)
     }
@@ -81,6 +99,17 @@ export default function Login() {
             Restoran boshqaruv tizimi
           </Text>
         </div>
+
+        {warn && (
+          <Alert
+            type={warn.type}
+            message={warn.text}
+            showIcon
+            closable
+            onClose={() => setWarn(null)}
+            style={{ marginBottom: 16, borderRadius: 8 }}
+          />
+        )}
 
         <Form onFinish={onFinish} layout="vertical" size="large">
           <Form.Item name="username" rules={[{ required: true, message: 'Login kiriting' }]}>

@@ -16,16 +16,168 @@ from bot.states import OrderFlow
 from bot.api_client import get_user, create_order, get_addresses, get_branch, quote_delivery_price
 from bot import api_client
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from bot.handlers.cart import get_cart, save_cart
 from bot.handlers.notifications import notify_admin
 from bot.keyboards.order import (
     delivery_type_kb, payment_kb, confirm_kb,
     location_request_kb, saved_addresses_kb,
-    time_slots_kb, comment_skip_kb,
+    time_slots_kb, comment_skip_kb, address_nav_kb,
 )
 from bot.keyboards.main import main_menu_kb
+from bot.handlers.cart import get_cart, save_cart, show_cart_message
 
 router = Router()
+
+# ReplyKeyboard navigatsiya matnlari (manzil bosqichi)
+_BACK_TEXTS = {"⬅️ Orqaga", "⬅️ orqaga", "Orqaga", "orqaga"}
+_CANCEL_TEXTS = {"❌ Bekor qilish", "❌ bekor qilish", "Bekor qilish", "bekor qilish"}
+
+
+def _checkout_keep_keys(data: dict) -> dict:
+    """Bekor/orqaga — savat va filial saqlanadi, zakaz qadamlari tozalanadi."""
+    keep = {}
+    for k in (
+        "cart", "cart_total", "branch_id", "branch_name", "no_branches",
+        "user_name", "user_phone",
+    ):
+        if k in data:
+            keep[k] = data[k]
+    return keep
+
+
+async def _cancel_checkout(message: Message, state: FSMContext, *, notice: str | None = None):
+    """Butun checkoutni bekor — savat saqlanadi."""
+    data = await state.get_data()
+    keep = _checkout_keep_keys(data)
+    await state.clear()
+    if keep:
+        await state.update_data(**keep)
+    try:
+        await message.answer(
+            notice or "❌ Zakaz bekor qilindi. Savatingiz saqlangan — qayta boshlashingiz mumkin.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+    except Exception:
+        pass
+    await message.answer("Asosiy menyu:", reply_markup=main_menu_kb())
+
+
+async def _ask_delivery_type(message: Message, state: FSMContext):
+    await state.set_state(OrderFlow.choosing_delivery)
+    await message.answer(
+        "🚚 Yetkazib berish turini tanlang:",
+        reply_markup=delivery_type_kb(),
+    )
+
+
+async def _ask_time(message: Message, state: FSMContext):
+    data = await state.get_data()
+    branch_id = data.get("branch_id")
+    branch_info = await get_branch(branch_id) if branch_id else None
+    work_from = (branch_info or {}).get("work_hours_from") or _load_settings().get("work_hours_from", "09:00")
+    work_until = (branch_info or {}).get("work_hours_until") or _load_settings().get("work_hours_until", "22:00")
+    await state.set_state(OrderFlow.choosing_time)
+    await message.answer(
+        "⏰ <b>Buyurtmangiz qachon yetkazib berilsin?</b>",
+        reply_markup=time_slots_kb(work_from=work_from, work_until=work_until),
+        parse_mode="HTML",
+    )
+
+
+async def _ask_address(message: Message, state: FSMContext, *, telegram_id: str | None = None):
+    """Manzil bosqichi — saqlangan manzillar + joylashuv klaviaturasi."""
+    try:
+        tid = telegram_id or (str(message.chat.id) if message.chat else None)
+        addresses = await get_addresses(tid) if tid else []
+    except Exception:
+        addresses = []
+
+    await state.set_state(OrderFlow.entering_address)
+    if addresses:
+        await message.answer(
+            "📍 <b>Saqlangan manzillardan birini tanlang:</b>",
+            reply_markup=saved_addresses_kb(addresses),
+            parse_mode="HTML",
+        )
+    await message.answer(
+        "📍 <b>Yetkazib berish manzili</b>\n\n"
+        "📍 Tugmani bosing — joriy joylashuv yuboriladi\n"
+        "📎 Yoki skrepka → Joylashuv → xaritadan tanlash\n\n"
+        "<i>Manzilni matn ko'rinishida ham yozishingiz mumkin</i>",
+        reply_markup=location_request_kb(),
+        parse_mode="HTML",
+    )
+    if not addresses:
+        await message.answer("Qadamni boshqarish:", reply_markup=address_nav_kb())
+
+
+async def _go_back_order(callback_or_message, state: FSMContext):
+    """Joriy holatdan bir qadam orqaga."""
+    current = await state.get_state()
+    if isinstance(callback_or_message, CallbackQuery):
+        msg = callback_or_message.message
+        is_cb = True
+        cb = callback_or_message
+        telegram_id = str(callback_or_message.from_user.id) if callback_or_message.from_user else None
+    else:
+        msg = callback_or_message
+        is_cb = False
+        cb = None
+        telegram_id = str(msg.from_user.id) if getattr(msg, "from_user", None) else None
+
+    data = await state.get_data()
+
+    if current == OrderFlow.choosing_delivery.state:
+        keep = _checkout_keep_keys(data)
+        await state.clear()
+        if keep:
+            await state.update_data(**keep)
+        cart = keep.get("cart") or {}
+        if is_cb:
+            await cb.answer()
+        await msg.answer("🛒 Savatingiz:", reply_markup=ReplyKeyboardRemove())
+        await show_cart_message(msg, cart)
+        return
+
+    if current == OrderFlow.choosing_time.state:
+        await state.update_data(delivery_type=None, delivery_time_slot=None)
+        if is_cb:
+            await cb.answer()
+        await _ask_delivery_type(msg, state)
+        return
+
+    if current == OrderFlow.entering_address.state:
+        await state.update_data(
+            address=None, latitude=None, longitude=None, delivery_fee=None,
+        )
+        if is_cb:
+            await cb.answer()
+        await msg.answer("Orqaga:", reply_markup=ReplyKeyboardRemove())
+        await _ask_time(msg, state)
+        return
+
+    if current == OrderFlow.entering_comment.state:
+        await state.update_data(comment=None)
+        if is_cb:
+            await cb.answer()
+        if data.get("delivery_type") == "pickup":
+            await state.update_data(
+                address=None, delivery_time_slot=None, delivery_fee=None,
+            )
+            await _ask_delivery_type(msg, state)
+        else:
+            await _ask_address(msg, state, telegram_id=telegram_id)
+        return
+
+    if current == OrderFlow.confirming.state:
+        await state.update_data(comment=None)
+        if is_cb:
+            await cb.answer()
+        await _ask_comment(msg, state, pickup=(data.get("delivery_type") == "pickup"))
+        return
+
+    if is_cb:
+        await cb.answer()
+    await _cancel_checkout(msg, state)
 
 
 def _load_settings() -> dict:
@@ -217,19 +369,7 @@ async def choose_delivery(callback: CallbackQuery, state: FSMContext):
         await state.update_data(address="Saboy olib ketish", delivery_time_slot="now")
         await _ask_comment(callback.message, state, pickup=True)
     else:
-        # Dastavka — avval vaqt tanlash, keyin manzil
-        data = await state.get_data()
-        branch_id = data.get("branch_id")
-        branch_info = await get_branch(branch_id) if branch_id else None
-        work_from = (branch_info or {}).get("work_hours_from") or _load_settings().get("work_hours_from", "09:00")
-        work_until = (branch_info or {}).get("work_hours_until") or _load_settings().get("work_hours_until", "22:00")
-
-        await state.set_state(OrderFlow.choosing_time)
-        await callback.message.answer(
-            "⏰ <b>Buyurtmangiz qachon yetkazib berilsin?</b>",
-            reply_markup=time_slots_kb(work_from=work_from, work_until=work_until),
-            parse_mode="HTML",
-        )
+        await _ask_time(callback.message, state)
 
     await callback.answer()
 
@@ -245,18 +385,11 @@ async def choose_delivery_time(callback: CallbackQuery, state: FSMContext):
     choice = parts[1]
 
     if choice == "back":
-        # Dastavka turini qayta tanlash
-        await state.set_state(OrderFlow.choosing_delivery)
-        await callback.message.answer(
-            "🚚 Yetkazib berish turini tanlang:",
-            reply_markup=delivery_type_kb(),
-        )
-        await callback.answer()
+        await _go_back_order(callback, state)
         return
 
     # "now" yoki "HH:MM"
     if choice != "now":
-        # Format tekshirish
         try:
             hh, mm = choice.split(":")
             int(hh); int(mm)
@@ -265,30 +398,11 @@ async def choose_delivery_time(callback: CallbackQuery, state: FSMContext):
             return
 
     await state.update_data(delivery_time_slot=choice)
-
-    # Manzil bosqichiga o'tish
-    try:
-        addresses = await get_addresses(str(callback.from_user.id))
-    except Exception:
-        addresses = []
-
-    if addresses:
-        await callback.message.answer(
-            "📍 <b>Saqlangan manzillardan birini tanlang:</b>",
-            reply_markup=saved_addresses_kb(addresses),
-            parse_mode="HTML",
-        )
-
-    await state.set_state(OrderFlow.entering_address)
-    await callback.message.answer(
-        "📍 <b>Yetkazib berish manzili</b>\n\n"
-        "📍 Tugmani bosing — joriy joylashuv yuboriladi\n"
-        "📎 Yoki skrepka → Joylashuv → xaritadan tanlash\n\n"
-        "<i>Manzilni matn ko'rinishida ham yozishingiz mumkin</i>",
-        reply_markup=location_request_kb(),
-        parse_mode="HTML",
-    )
     await callback.answer()
+    await _ask_address(
+        callback.message, state,
+        telegram_id=str(callback.from_user.id) if callback.from_user else None,
+    )
 
 
 async def _ask_comment(message: Message, state: FSMContext, *, pickup: bool = False):
@@ -322,12 +436,30 @@ async def _quote_and_proceed(message: Message, state: FSMContext) -> None:
         await _ask_comment(message, state)
         return
 
+    # Vaqtli slot → Yandex due (ISO) — narx ham shu vaqtga mos
+    due_iso = None
+    slot = (data.get("delivery_time_slot") or "").strip()
+    if slot and slot != "now":
+        try:
+            from datetime import timedelta as _td
+            hh, mm = slot.split(":")
+            now_uz = datetime.now(UZ_TZ)
+            due_local = now_uz.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+            # Kuryer restoranga ~25 daqiqa oldin
+            due_local = due_local - _td(minutes=25)
+            if due_local < now_uz:
+                due_local += _td(days=1)
+            due_iso = due_local.isoformat()
+        except Exception:
+            due_iso = None
+
     try:
         quote = await quote_delivery_price(
             dropoff_lat=float(lat),
             dropoff_lon=float(lon),
             branch_id=int(branch_id) if branch_id else None,
             weight_kg=1.0,
+            due=due_iso,
         )
     except Exception as e:
         log.warning("Yandex quote failed: %s", e)
@@ -360,7 +492,8 @@ async def _quote_and_proceed(message: Message, state: FSMContext) -> None:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🏪 Saboy olib ketaman", callback_data="switch_pickup")],
             [InlineKeyboardButton(text="🔄 Boshqa manzil yuborish", callback_data="retry_address")],
-            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_order")],
+            [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="order_back")],
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="order_cancel")],
         ])
         await message.answer(
             "⚠️ <b>Bu manzilga hozir Yandex kuryeri yo'q</b>\n\n"
@@ -401,14 +534,10 @@ async def retry_address(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(OrderFlow.entering_address, F.data == "cancel_order")
+@router.callback_query(OrderFlow.entering_address, F.data == "order_cancel")
 async def cancel_order_from_address(callback: CallbackQuery, state: FSMContext):
-    """Coverage tashqarisi — mijoz zakazni bekor qildi."""
-    await state.clear()
     await callback.answer("❌ Bekor qilindi")
-    await callback.message.answer(
-        "Zakaz bekor qilindi. Yana zakaz berishni xohlasangiz menyudan boshlang.",
-        reply_markup=main_menu_kb(),
-    )
+    await _cancel_checkout(callback.message, state)
 
 
 # ── Saqlangan manzilni tanlash ────────────────────────
@@ -462,7 +591,14 @@ async def enter_map_location(message: Message, state: FSMContext):
 # ── Matn ko'rinishida manzil (foydalanuvchi o'zi yozadi) ─
 @router.message(OrderFlow.entering_address, F.text)
 async def enter_text_address(message: Message, state: FSMContext):
-    text = message.text.strip()
+    text = (message.text or "").strip()
+    if text in _BACK_TEXTS:
+        await message.answer("Orqaga:", reply_markup=ReplyKeyboardRemove())
+        await _go_back_order(message, state)
+        return
+    if text in _CANCEL_TEXTS:
+        await _cancel_checkout(message, state)
+        return
     if len(text) < 5:
         await message.answer(
             "⚠️ Manzil juda qisqa. To'liq manzil yozing.\n"
@@ -471,6 +607,7 @@ async def enter_text_address(message: Message, state: FSMContext):
         )
         return
     await state.update_data(address=text)
+    await message.answer("✅ Manzil qabul qilindi", reply_markup=ReplyKeyboardRemove())
     await _ask_comment(message, state)
 
 
@@ -486,7 +623,14 @@ async def skip_comment_callback(callback: CallbackQuery, state: FSMContext):
 @router.message(OrderFlow.entering_comment)
 async def enter_comment(message: Message, state: FSMContext):
     """Izoh kiritildi → darhol tasdiqlash xulosasi (to'lov turi tasdiqdan keyin)."""
-    comment = "" if (message.text or "") == "/skip" else (message.text or "").strip()
+    raw = (message.text or "").strip()
+    if raw in _BACK_TEXTS:
+        await _go_back_order(message, state)
+        return
+    if raw in _CANCEL_TEXTS:
+        await _cancel_checkout(message, state)
+        return
+    comment = "" if raw == "/skip" else raw
     await _process_comment(message, state, comment_text=comment)
 
 
@@ -683,9 +827,24 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
     pay_kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
     if options:
+        items_total = float(order.get("total_price") or 0)
+        delivery_fee = float(order.get("delivery_fee") or 0)
+        payable = items_total + delivery_fee
+        # get_pay_options ham amount_uzs qaytarsa — shu ustun
+        try:
+            payable = float(pay_data.get("amount_uzs") or payable)
+        except Exception:
+            pass
+        breakdown = ""
+        if delivery_fee > 0:
+            breakdown = (
+                f"Mahsulotlar: {items_total:,.0f} so'm\n"
+                f"🚗 Dastavka: {delivery_fee:,.0f} so'm\n"
+            )
         body = (
             f"💳 <b>To'lov usulini tanlang — Buyurtma #{order['id']}</b>\n\n"
-            f"💰 To'lanadigan summa: <b>{order.get('total_price', 0):,.0f} so'm</b>\n\n"
+            f"{breakdown}"
+            f"💰 To'lanadigan summa: <b>{payable:,.0f} so'm</b>\n\n"
             f"⬇️ Tugma bosilganda telefoningizdagi mos app ochiladi va to'lovni o'sha yerda yakunlaysiz.\n"
             f"<i>To'lov tasdiqlanganda bu chat'ga avtomatik xabar yuboriladi.</i>"
         )
@@ -713,16 +872,40 @@ async def confirm_order(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(OrderFlow.confirming, F.data == "cancel_order")
+@router.callback_query(OrderFlow.confirming, F.data == "order_cancel")
 async def cancel_order(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    branch_id = data.get("branch_id")
-    branch_name = data.get("branch_name")
-    await state.clear()
-    if branch_id:
-        await state.update_data(branch_id=branch_id, branch_name=branch_name)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await callback.message.answer("❌ Zakaz bekor qilindi.", reply_markup=main_menu_kb())
-    await callback.answer()
+    await callback.answer("❌ Bekor qilindi")
+    await _cancel_checkout(callback.message, state)
+
+
+# ── Umumiy Orqaga / Bekor (barcha qadamlar) ─────────────
+@router.callback_query(
+    OrderFlow.choosing_delivery,
+    F.data == "order_back",
+)
+@router.callback_query(OrderFlow.choosing_time, F.data == "order_back")
+@router.callback_query(OrderFlow.entering_address, F.data == "order_back")
+@router.callback_query(OrderFlow.entering_comment, F.data == "order_back")
+@router.callback_query(OrderFlow.confirming, F.data == "order_back")
+async def order_back_handler(callback: CallbackQuery, state: FSMContext):
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await _go_back_order(callback, state)
+
+
+@router.callback_query(OrderFlow.choosing_delivery, F.data == "order_cancel")
+@router.callback_query(OrderFlow.choosing_time, F.data == "order_cancel")
+@router.callback_query(OrderFlow.entering_comment, F.data == "order_cancel")
+async def order_cancel_handler(callback: CallbackQuery, state: FSMContext):
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.answer("❌ Bekor qilindi")
+    await _cancel_checkout(callback.message, state)

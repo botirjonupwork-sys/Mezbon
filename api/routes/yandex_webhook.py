@@ -190,6 +190,83 @@ async def _notify_customer(
         log.warning("Yandex webhook notify failed: %s", e)
 
 
+async def _apply_claim_info(
+    db: AsyncSession,
+    order: Order,
+    info: dict,
+    client: YandexDeliveryClient,
+) -> Optional[str]:
+    """Yandex `/claims/info` natijasini Order'ga qo'llaydi (status + xabar).
+
+    Webhook (push) ham, scheduler poller (pull) ham AYNAN shu funksiyani ishlatadi.
+    Idempotent: status o'zgarmagan bo'lsa hech narsa qilmaydi — shuning uchun bir
+    xil bildirishnoma takror yuborilmaydi.
+    """
+    new_status = (info.get("status") or "").strip()
+    if not new_status:
+        return None
+
+    # Status o'zgarmagan bo'lsa — chiqamiz (takror xabar/yozuv yo'q)
+    if order.yandex_status == new_status:
+        return new_status
+
+    prev_yandex_status = order.yandex_status
+    order.yandex_status = new_status
+
+    # Ichki OrderStatus ni yangilash (bekor qilingan order qayta tirilmasin)
+    mapped_status = _YANDEX_TO_ORDER_STATUS.get(new_status)
+    if mapped_status and order.status != mapped_status and order.status != OrderStatus.cancelled:
+        order.status = mapped_status
+
+    # Tracking URL — performer topilganda bir marta olamiz
+    if new_status == "performer_found" and not order.yandex_tracking_url:
+        try:
+            link = await client.get_tracking_link(order.yandex_claim_id)
+            if link:
+                order.yandex_tracking_url = link
+        except Exception as e:
+            log.warning("Yandex tracking_link xatosi: %s", e)
+
+    await db.commit()
+
+    await _notify_customer(db, order, new_status, info.get("performer_info") or {})
+    log.info(
+        "Yandex sync: order #%d %s → %s (mapped=%s)",
+        order.id, prev_yandex_status, new_status, mapped_status,
+    )
+    return new_status
+
+
+async def sync_order_status(db: AsyncSession, order: Order) -> Optional[str]:
+    """Bitta order uchun Yandex'dan joriy holatni tortib olib Order'ga qo'llaydi.
+
+    Buyurtma yaratgan AYNAN o'sha restoran tokeni + claim_id ishlatiladi.
+    Webhook handler va scheduler poller (zaxira) shu yagona yo'lni chaqiradi.
+    Qaytaradi: yangi yandex_status yoki None (claim/token yo'q yoki xato).
+    """
+    if not order or not order.yandex_claim_id:
+        return None
+
+    rest = (await db.execute(
+        select(Restaurant).where(Restaurant.id == order.restaurant_id)
+    )).scalar_one_or_none()
+    if not rest or not rest.yandex_api_token:
+        log.warning("Yandex sync: restaurant token topilmadi order=%s", order.id)
+        return None
+
+    client = YandexDeliveryClient(
+        api_token=rest.yandex_api_token,
+        test_mode=bool(rest.yandex_test_mode),
+    )
+    try:
+        info = await client.get_claim_info(order.yandex_claim_id)
+    except YandexDeliveryError as e:
+        log.error("Yandex claim_info xatosi (order #%s): %s", order.id, e)
+        return None
+
+    return await _apply_claim_info(db, order, info, client)
+
+
 async def _handle_webhook(claim_id: str, request: Request, db: AsyncSession) -> dict:
     """Ichki handler — GET va POST uchun umumiy."""
     if not claim_id:
@@ -198,69 +275,14 @@ async def _handle_webhook(claim_id: str, request: Request, db: AsyncSession) -> 
     order = (await db.execute(
         select(Order).where(Order.yandex_claim_id == claim_id)
     )).scalar_one_or_none()
-
     if not order:
         log.warning("Yandex webhook: order topilmadi claim_id=%s", claim_id)
         return {"ok": True, "note": "order_not_found"}
 
-    # Restoran tokeniga ulanib `/claims/info` orqali joriy holatni olamiz.
-    # Webhook bizga statusni yubormaydi — uni alohida so'rab olishimiz kerak.
-    rest = (await db.execute(
-        select(Restaurant).where(Restaurant.id == order.restaurant_id)
-    )).scalar_one_or_none()
-    if not rest or not rest.yandex_api_token:
-        log.warning("Yandex webhook: restaurant token topilmadi order=%s", order.id)
-        return {"ok": True, "note": "no_token"}
-
-    client = YandexDeliveryClient(
-        api_token=rest.yandex_api_token,
-        test_mode=bool(rest.yandex_test_mode),
-    )
-
-    try:
-        info = await client.get_claim_info(claim_id)
-    except YandexDeliveryError as e:
-        log.error("Yandex claim_info xatosi: %s", e)
-        # 200 qaytaramiz — qayta urinish foydasiz, lekin 5xx bersak Yandex retry qiladi
-        return {"ok": True, "note": "info_fetch_failed"}
-
-    new_status = (info.get("status") or "").strip()
-    if not new_status:
-        return {"ok": True, "note": "no_status"}
-
-    # Idempotency: status o'zgarmagan bo'lsa qaytib chiqamiz
-    if order.yandex_status == new_status:
-        return {"ok": True, "note": "no_change"}
-
-    prev_yandex_status = order.yandex_status
-    order.yandex_status = new_status
-
-    # Ichki OrderStatus ni yangilash
-    mapped_status = _YANDEX_TO_ORDER_STATUS.get(new_status)
-    if mapped_status and order.status != mapped_status:
-        if order.status != OrderStatus.cancelled:
-            order.status = mapped_status
-
-    # Tracking URL — agar hali olinmagan bo'lsa, performer topilganda olamiz
-    if new_status == "performer_found" and not order.yandex_tracking_url:
-        try:
-            link = await client.get_tracking_link(claim_id)
-            if link:
-                order.yandex_tracking_url = link
-        except Exception as e:
-            log.warning("Yandex tracking_link xatosi: %s", e)
-
-    await db.commit()
-
-    performer_info = info.get("performer_info") or {}
-    await _notify_customer(db, order, new_status, performer_info)
-
-    log.info(
-        "Yandex webhook: order #%d %s → %s (mapped=%s)",
-        order.id, prev_yandex_status, new_status, mapped_status,
-    )
-
-    return {"ok": True, "order_id": order.id, "status": new_status}
+    status = await sync_order_status(db, order)
+    if status is None:
+        return {"ok": True, "note": "no_update"}
+    return {"ok": True, "order_id": order.id, "status": status}
 
 
 # ── Endpoint (GET — Yandex'ning haqiqiy xulqi) ───────────────────────────

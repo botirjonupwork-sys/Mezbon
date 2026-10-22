@@ -27,6 +27,11 @@ services:
     ports:
       - "8000:8000"
     env_file: .env
+    volumes:
+      - ./muhsina_test.db:/app/muhsina_test.db
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     depends_on:
       - db
       - redis
@@ -37,6 +42,9 @@ services:
       dockerfile: bot/Dockerfile
     restart: always
     env_file: .env
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     depends_on:
       - api
       - db

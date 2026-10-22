@@ -15,7 +15,10 @@ Yangi oqim:
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from aiogram import Router, F
+
+UZ_TZ = ZoneInfo("Asia/Tashkent")
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 
@@ -328,7 +331,8 @@ async def too_soon_clicked(callback: CallbackQuery):
 
 def _lead_min_time(date_str: str, delivery_subtype: str) -> str | None:
     """Bugungi sana uchun eng erta ruxsat etilgan vaqt (HH:MM), aks holda None."""
-    today = datetime.now().date()
+    now_uz = datetime.now(UZ_TZ)
+    today = now_uz.date()
     try:
         d = datetime.fromisoformat(date_str).date()
     except (ValueError, TypeError):
@@ -336,7 +340,7 @@ def _lead_min_time(date_str: str, delivery_subtype: str) -> str | None:
     if d != today:
         return None
     lead = 3 if delivery_subtype == "onsite" else 2
-    cutoff = datetime.now() + timedelta(hours=lead)
+    cutoff = now_uz.replace(tzinfo=None) + timedelta(hours=lead)
     # 30 daqiqaga yaxlitlash (yuqoriga)
     if cutoff.minute > 30:
         cutoff = cutoff.replace(minute=0) + timedelta(hours=1)
@@ -371,7 +375,7 @@ async def date_selected(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "cat_date_custom")
 async def date_custom(callback: CallbackQuery, state: FSMContext):
     await state.set_state(CateringFlow.entering_date_custom)
-    today = datetime.now().date()
+    today = datetime.now(UZ_TZ).date()
     example = (today + timedelta(days=7)).strftime("%d.%m.%Y")
     await callback.message.answer(
         f"📅 Sanani kiriting (masalan: <code>{example}</code> yoki <code>{example.replace('.', '/')}</code>)\n\n"
@@ -390,7 +394,7 @@ async def date_custom_input(message: Message, state: FSMContext):
         await message.answer("❌ Format noto'g'ri. Masalan: 28.04.2026")
         return
 
-    today = datetime.now().date()
+    today = datetime.now(UZ_TZ).date()
     if d < today:
         await message.answer(
             "❌ O'tgan sanaga buyurtma berib bo'lmaydi.\n\n"
@@ -466,7 +470,7 @@ async def time_custom_input(message: Message, state: FSMContext):
     try:
         sched_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
         lead = 3 if subtype == "onsite" else 2
-        if sched_dt < datetime.now() + timedelta(hours=lead):
+        if sched_dt < datetime.now(UZ_TZ).replace(tzinfo=None) + timedelta(hours=lead):
             await message.answer(
                 f"⏳ Bu vaqt juda yaqin. Bu xizmat turi kamida {lead} soat oldin "
                 f"qabul qilinadi. Keyinroq vaqt kiriting.",

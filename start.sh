@@ -22,7 +22,14 @@ pip install -q -r requirements.txt
 
 # API va Bot parallel ishga tushirish
 echo "🚀 API ishga tushmoqda (port 8000)..."
-uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload &
+PYTHON_BIN="$(command -v python || command -v python3)"
+# Prefer virtualenv python if present
+if [ -x ".venv/bin/python" ]; then
+  PYTHON_BIN=".venv/bin/python"
+fi
+
+# Start API using module runner to avoid broken shebangs in scripts
+$PYTHON_BIN -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload &
 API_PID=$!
 
 sleep 2
@@ -30,7 +37,14 @@ sleep 2
 # Bot menejeri — DB'dagi BARCHA restoran botlarini (customer + courier) boshqaradi.
 # Har bir bot alohida subprocess'da; restart super-admin paneldan (bot_reload_at signali).
 echo "🤖 Bot menejeri ishga tushmoqda (barcha restoran botlari)..."
-python -m bot.manager &
+# Ensure DB tables exist (create for SQLite) before starting bots
+$PYTHON_BIN - <<'PY'
+import asyncio
+from api.database import create_tables
+asyncio.run(create_tables())
+PY
+
+$PYTHON_BIN -m bot.manager &
 BOT_PID=$!
 COURIER_PID=""
 

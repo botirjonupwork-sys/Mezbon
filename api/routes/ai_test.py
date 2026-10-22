@@ -4,6 +4,7 @@ Maqsad: real telefon ulanmasdan oldin AI operatorni super-admindan sinash.
 Pipeline real telefon bilan BIR XIL (1:1): STT → AI agent → TTS.
 
 Endpointlar (require_superuser):
+  POST /super-admin/ai-test/call-start — qo'ng'iroq boshlash (operator salomlashadi)
   POST /super-admin/ai-test/voice  — audio yuborib, audio+matn javob
   POST /super-admin/ai-test/text   — matn yozib, matn(+audio) javob (tez sinov)
   POST /super-admin/ai-test/reset  — sessiyani tozalash
@@ -14,6 +15,7 @@ qaytariladi), test ma'lumotni ifloslantirmasligi uchun.
 from __future__ import annotations
 
 import base64
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -52,8 +54,8 @@ async def _maybe_tts(reply_text: str, rest: Restaurant) -> Optional[str]:
         return None  # audio bo'lmasa ham matn qaytadi
 
 
-def _result_payload(transcript: str, result: dict, audio_b64: Optional[str]) -> dict:
-    return {
+def _result_payload(transcript: str, result: dict, audio_b64: Optional[str], sess=None) -> dict:
+    payload = {
         "transcript": transcript,
         "reply_text": (result.get("reply") or "").strip(),
         "reply_audio_b64": audio_b64,
@@ -65,6 +67,67 @@ def _result_payload(transcript: str, result: dict, audio_b64: Optional[str]) -> 
         "is_catering": bool(result.get("is_catering")),
         "ended_reason": result.get("ended_reason"),
         "test_mode": True,  # real buyurtma yaratilmaydi
+    }
+    if sess:
+        payload["order_placed"] = sess.order_placed
+        payload["last_order_id"] = sess.last_order_id
+    return payload
+
+
+def _apply_test_order_simulation(call_id: str, sess, result: dict) -> dict:
+    """Sinov: tasdiqlangan buyurtmani DB'siz simulyatsiya qilish."""
+    out = dict(result)
+    if out.get("confirmed") and out.get("cart"):
+        sim_id = abs(hash(call_id)) % 90000 + 10000
+        saved_addr = sess.address
+        ai_agent.reset_after_order(sess, sim_id)
+        out["confirmed"] = True
+        out["cart"] = []
+        out["simulated_order_id"] = sim_id
+        if saved_addr:
+            base = (os.getenv("API_URL") or "http://localhost:8000").rstrip("/")
+            out["location_link_preview"] = (
+                f"{base}/loc/test-{call_id} "
+                f"(sinov: haqiqiy SMS yuborilmaydi; telefonda shu havola SMS orqali keladi)"
+            )
+    return out
+
+
+async def _finalize_test_payload(
+    transcript: str, rest: Restaurant, sess, result: dict, want_audio: bool = True,
+) -> dict:
+    result = _apply_test_order_simulation(sess.call_id, sess, result)
+    audio_b64 = await _maybe_tts((result.get("reply") or "").strip(), rest) if want_audio else None
+    payload = _result_payload(transcript, result, audio_b64, sess)
+    payload["rate_limit"] = sess.last_rate_limit or {}
+    if result.get("simulated_order_id"):
+        payload["simulated_order_id"] = result["simulated_order_id"]
+    if result.get("location_link_preview"):
+        payload["location_link_preview"] = result["location_link_preview"]
+    return payload
+
+
+# ── Qo'ng'iroq boshlash (operator salomlashadi) ─────────
+
+class CallStartIn(BaseModel):
+    restaurant_id: int
+    call_id: str
+
+
+@router.post("/call-start")
+async def ai_test_call_start(body: CallStartIn, actor: dict = Depends(require_superuser),
+                             db: AsyncSession = Depends(get_db)):
+    """Sinov: qo'ng'iroq boshlandi — operator birinchi gapiradi (telefon kabi)."""
+    rest = await _get_restaurant(db, body.restaurant_id)
+    sess = ai_agent.get_session(body.call_id, rest.id, "+000test")
+    result = await ai_agent.start_call_session(rest, sess)
+    audio_b64 = await _maybe_tts(result["reply"], rest)
+    return {
+        "reply_text": result["reply"],
+        "reply_audio_b64": audio_b64,
+        "reply_audio_mime": voice_svc.tts_mime() if audio_b64 else None,
+        "greeted": True,
+        "test_mode": True,
     }
 
 
@@ -106,8 +169,7 @@ async def ai_test_voice(
                 "reply_audio_b64": None, "test_mode": True}
 
     result = await ai_agent.process_message(db, rest, sess, transcript)
-    audio_b64 = await _maybe_tts((result.get("reply") or "").strip(), rest)
-    return _result_payload(transcript, result, audio_b64)
+    return await _finalize_test_payload(transcript, rest, sess, result)
 
 
 # ── Matnli sinov (tez, mikrofon shart emas) ─────────────
@@ -128,8 +190,7 @@ async def ai_test_text(body: TextTurnIn, actor: dict = Depends(require_superuser
         raise HTTPException(400, "Matn bo'sh")
     sess = ai_agent.get_session(body.call_id, rest.id, "+000test")
     result = await ai_agent.process_message(db, rest, sess, text)
-    audio_b64 = await _maybe_tts((result.get("reply") or "").strip(), rest) if body.want_audio else None
-    return _result_payload(text, result, audio_b64)
+    return await _finalize_test_payload(text, rest, sess, result, want_audio=body.want_audio)
 
 
 # ── Sessiyani tozalash ──────────────────────────────────
