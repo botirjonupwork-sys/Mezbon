@@ -22,6 +22,7 @@ UZ_TZ = ZoneInfo("Asia/Tashkent")
 class BranchCreate(BaseModel):
     name: str
     address: Optional[str] = None
+    landmark: Optional[str] = None
     phone: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
@@ -30,11 +31,17 @@ class BranchCreate(BaseModel):
     min_order: float = 30000
     delivery_base_fee: float = 10000
     delivery_per_km: float = 3000
+    is_delivery_enabled: bool = True
+    is_takeaway_enabled: bool = True
+    kitchen_chat_id: Optional[str] = None
+    cashier_chat_id: Optional[str] = None
+    max_delivery_radius_km: float = 15.0
 
 
 class BranchUpdate(BaseModel):
     name: Optional[str] = None
     address: Optional[str] = None
+    landmark: Optional[str] = None
     phone: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
@@ -43,6 +50,11 @@ class BranchUpdate(BaseModel):
     min_order: Optional[float] = None
     delivery_base_fee: Optional[float] = None
     delivery_per_km: Optional[float] = None
+    is_delivery_enabled: Optional[bool] = None
+    is_takeaway_enabled: Optional[bool] = None
+    kitchen_chat_id: Optional[str] = None
+    cashier_chat_id: Optional[str] = None
+    max_delivery_radius_km: Optional[float] = None
     is_active: Optional[bool] = None
 
 
@@ -103,6 +115,7 @@ async def list_branches(restaurant_id: int, db: AsyncSession = Depends(get_db)):
             "restaurant_id": b.restaurant_id,
             "name": b.name,
             "address": b.address,
+            "landmark": getattr(b, "landmark", None),
             "phone": b.phone,
             "latitude": b.latitude,
             "longitude": b.longitude,
@@ -111,6 +124,11 @@ async def list_branches(restaurant_id: int, db: AsyncSession = Depends(get_db)):
             "min_order": b.min_order,
             "delivery_base_fee": b.delivery_base_fee,
             "delivery_per_km": b.delivery_per_km,
+            "is_delivery_enabled": getattr(b, "is_delivery_enabled", True),
+            "is_takeaway_enabled": getattr(b, "is_takeaway_enabled", True),
+            "kitchen_chat_id": getattr(b, "kitchen_chat_id", None),
+            "cashier_chat_id": getattr(b, "cashier_chat_id", None),
+            "max_delivery_radius_km": getattr(b, "max_delivery_radius_km", 15.0),
             "is_active": b.is_active,
             "is_open": _is_branch_open(b),
         }
@@ -160,6 +178,7 @@ async def create_branch_super(
         restaurant_id=restaurant_id,
         name=data.name,
         address=data.address,
+        landmark=data.landmark,
         phone=data.phone,
         latitude=data.latitude,
         longitude=data.longitude,
@@ -168,6 +187,11 @@ async def create_branch_super(
         min_order=data.min_order,
         delivery_base_fee=data.delivery_base_fee,
         delivery_per_km=data.delivery_per_km,
+        is_delivery_enabled=data.is_delivery_enabled,
+        is_takeaway_enabled=data.is_takeaway_enabled,
+        kitchen_chat_id=data.kitchen_chat_id,
+        cashier_chat_id=data.cashier_chat_id,
+        max_delivery_radius_km=data.max_delivery_radius_km,
     )
     db.add(branch)
     await db.commit()
@@ -262,9 +286,24 @@ async def admin_list_branches(
     return [
         {
             "id": b.id,
+            "restaurant_id": b.restaurant_id,
             "name": b.name,
             "address": b.address,
+            "landmark": getattr(b, "landmark", None),
             "phone": b.phone,
+            "latitude": b.latitude,
+            "longitude": b.longitude,
+            "work_hours_from": b.work_hours_from,
+            "work_hours_until": b.work_hours_until,
+            "min_order": b.min_order,
+            "delivery_base_fee": b.delivery_base_fee,
+            "delivery_per_km": b.delivery_per_km,
+            "is_delivery_enabled": getattr(b, "is_delivery_enabled", True),
+            "is_takeaway_enabled": getattr(b, "is_takeaway_enabled", True),
+            "kitchen_chat_id": getattr(b, "kitchen_chat_id", None),
+            "cashier_chat_id": getattr(b, "cashier_chat_id", None),
+            "max_delivery_radius_km": getattr(b, "max_delivery_radius_km", 15.0),
+            "is_active": b.is_active,
             "is_open": _is_branch_open(b),
         }
         for b in branches

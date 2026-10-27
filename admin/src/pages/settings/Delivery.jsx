@@ -6,9 +6,9 @@ import {
 } from 'antd'
 import {
   ArrowLeftOutlined, SaveOutlined, CarOutlined,
-  UserOutlined, ApiOutlined, ReloadOutlined,
+  UserOutlined, ApiOutlined, ReloadOutlined, CheckCircleOutlined,
 } from '@ant-design/icons'
-import { checkYandexBalanceNow, getSettings, updateSettings } from '../../api'
+import { checkYandexBalanceNow, testYandexToken, getSettings, updateSettings } from '../../api'
 import { useAuthStore } from '../../store/auth'
 import { useBranchStore } from '../../store/branch'
 import { fmtTashkent } from '../../utils/datetime'
@@ -25,6 +25,7 @@ export default function DeliverySettings() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [checkingBalance, setCheckingBalance] = useState(false)
+  const [testingToken, setTestingToken] = useState(false)
   const [balanceInfo, setBalanceInfo] = useState(null)
 
   const { currentRestaurantId: restaurantId } = useAuthStore()
@@ -86,6 +87,28 @@ export default function DeliverySettings() {
       message.error('Balansni tekshirishda xato')
     } finally {
       setCheckingBalance(false)
+    }
+  }
+
+  const handleTestToken = async () => {
+    const token = form.getFieldValue('yandex_api_token')
+    if (!token) {
+      message.warning('Iltimos, avval OAuth tokenni kiriting')
+      return
+    }
+    setTestingToken(true)
+    try {
+      const res = await testYandexToken({ token }, restParams)
+      if (res.data?.ok) {
+        message.success(res.data.message || "Token to'g'ri! Yandex Delivery faol.")
+      } else {
+        message.error(res.data?.message || 'Token tekshirishda xatolik yuz berdi')
+      }
+    } catch (e) {
+      const msg = e.response?.data?.detail || e.message || 'Xatolik yuz berdi'
+      message.error(`Xatolik: ${msg}`)
+    } finally {
+      setTestingToken(false)
     }
   }
 
@@ -254,6 +277,16 @@ export default function DeliverySettings() {
                 />
               </Form.Item>
 
+              <div style={{ marginBottom: 20 }}>
+                <Button
+                  icon={<CheckCircleOutlined />}
+                  loading={testingToken}
+                  onClick={handleTestToken}
+                >
+                  Tokenni tekshirish (Test Connection)
+                </Button>
+              </div>
+
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <Form.Item name="yandex_test_mode" valuePropName="checked" style={{ marginBottom: 0 }}>
                   <Switch />
@@ -329,7 +362,7 @@ export default function DeliverySettings() {
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', padding: 12, border: '1px solid #f0f0f0', borderRadius: 8 }}>
                 <Space direction="vertical" size={2}>
                   <Space>
-                    <Text strong>Holat</Text>
+                    <Text strong>Balans holati:</Text>
                     {statusTag(balanceInfo?.status)}
                   </Space>
                   <Text type="secondary" style={{ fontSize: 12 }}>
@@ -339,7 +372,7 @@ export default function DeliverySettings() {
                   </Text>
                 </Space>
                 <Button icon={<ReloadOutlined />} loading={checkingBalance} onClick={handleCheckBalance}>
-                  Hozir tekshirish
+                  Balansni tekshirish
                 </Button>
               </div>
             </Card>

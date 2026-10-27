@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import math
@@ -453,6 +455,20 @@ async def _quote_and_proceed(message: Message, state: FSMContext) -> None:
         except Exception:
             due_iso = None
 
+    # Telegram chat action (animatsiya: joylashuv qidirish)
+    try:
+        await message.bot.send_chat_action(chat_id=message.chat.id, action="find_location")
+    except Exception:
+        pass
+
+    # Mijozga kuryer qidirilayotgani va hisoblanayotgani haqida loading / ogohlantirish xabari
+    time_hint = f" (🕐 Vaqt: <b>{slot}</b>)" if slot and slot != "now" else ""
+    loading_msg = await message.answer(
+        f"🚕 <b>Yandex Delivery:</b> Kuryer qidirilmoqda va narx hisoblanmoqda...{time_hint}\n"
+        f"⏳ <i>Iltimos kuting, eng maqbul tarif va yetib borish vaqti tekshirilmoqda...</i>",
+        parse_mode="HTML",
+    )
+
     try:
         quote = await quote_delivery_price(
             dropoff_lat=float(lat),
@@ -464,6 +480,10 @@ async def _quote_and_proceed(message: Message, state: FSMContext) -> None:
     except Exception as e:
         log.warning("Yandex quote failed: %s", e)
         await state.update_data(delivery_fee=0)
+        try:
+            await loading_msg.delete()
+        except Exception:
+            pass
         await _ask_comment(message, state)
         return
 
@@ -471,11 +491,32 @@ async def _quote_and_proceed(message: Message, state: FSMContext) -> None:
         price = float(quote.get("price") or 0)
         await state.update_data(delivery_fee=price)
         eta = quote.get("eta_minutes")
-        eta_text = f" · ⏱ ~{eta} daq" if eta else ""
-        await message.answer(
-            f"🚗 <b>Dastavka narxi (Yandex):</b> {price:,.0f} so'm{eta_text}",
-            parse_mode="HTML",
+
+        # Hisob-kitobni shakllantirish
+        cart = data.get("cart", {})
+        cart_total = sum(v["price"] * v["quantity"] for v in cart.values())
+        grand_total = cart_total + price
+
+        timing_text = ""
+        if slot and slot != "now":
+            timing_text = f"🕐 <b>Rejalashtirilgan yetkazish vaqti:</b> {slot}\n"
+        elif eta:
+            timing_text = f"⏱ <b>Taxminiy yetib borish vaqti (ETA):</b> ~{eta} daqiqa\n"
+
+        result_text = (
+            f"✅ <b>Kuryer va yetkazib berish narxi aniqlandi!</b>\n\n"
+            f"{timing_text}"
+            f"🚗 <b>Dastavka narxi (Yandex):</b> {price:,.0f} so'm\n"
+            f"🛒 <b>Savatdagi mahsulotlar:</b> {cart_total:,.0f} so'm\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"💳 <b>Jami to'lov summasi: {grand_total:,.0f} so'm</b>\n\n"
+            f"<i>Izoh qoldirishingiz yoki keyingi bosqichga o'tishingiz mumkin:</i>"
         )
+        try:
+            await loading_msg.edit_text(result_text, parse_mode="HTML")
+        except Exception:
+            await message.answer(result_text, parse_mode="HTML")
+
         await _ask_comment(message, state)
         return
 
@@ -484,6 +525,14 @@ async def _quote_and_proceed(message: Message, state: FSMContext) -> None:
     # Provider Yandex emas → mahalliy hisoblashga qaytish
     if code == "provider_not_yandex":
         await state.update_data(delivery_fee=0)
+        try:
+            await loading_msg.edit_text(
+                "ℹ️ <b>Buyurtma filial kuryeri tomonidan yetkaziladi.</b>\n"
+                "Dastavka narxi buyurtma tasdiqlangach kuryer bilan aniqlanadi.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
         await _ask_comment(message, state)
         return
 
@@ -495,18 +544,25 @@ async def _quote_and_proceed(message: Message, state: FSMContext) -> None:
             [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="order_back")],
             [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="order_cancel")],
         ])
-        await message.answer(
-            "⚠️ <b>Bu manzilga hozir Yandex kuryeri yo'q</b>\n\n"
-            "Nima qilamiz?",
-            reply_markup=kb,
-            parse_mode="HTML",
+        no_cov_text = (
+            "⚠️ <b>Bu manzilga hozircha Yandex kuryeri topilmadi</b>\n\n"
+            "Manzil yetkazib berish hududidan tashqarida bo'lishi yoki hozirda bo'sh kuryerlar bo'lmasligi mumkin.\n\n"
+            "Nima qilamiz?"
         )
+        try:
+            await loading_msg.edit_text(no_cov_text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            await message.answer(no_cov_text, reply_markup=kb, parse_mode="HTML")
         # state'da entering_address holatida qoldiramiz — mijoz tugma bossin
         return
 
     # Boshqa xato — jim o'tib, fallback
     log.warning("Yandex quote returned error: %s", quote)
     await state.update_data(delivery_fee=0)
+    try:
+        await loading_msg.delete()
+    except Exception:
+        pass
     await _ask_comment(message, state)
 
 
@@ -544,9 +600,19 @@ async def cancel_order_from_address(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(OrderFlow.entering_address, F.data.startswith("addr:"))
 async def select_saved_address(callback: CallbackQuery, state: FSMContext):
     address = callback.data.split(":", 1)[1]
-    await state.update_data(address=address)
     await callback.answer("✅ Manzil tanlandi")
-    await _ask_comment(callback.message, state)
+    user_addresses = await get_addresses(str(callback.from_user.id)) or []
+    matched = next((a for a in user_addresses if a.get("address") == address), None)
+    if matched and matched.get("latitude") and matched.get("longitude"):
+        await state.update_data(
+            address=address,
+            latitude=float(matched["latitude"]),
+            longitude=float(matched["longitude"]),
+        )
+        await _quote_and_proceed(callback.message, state)
+    else:
+        await state.update_data(address=address)
+        await _ask_comment(callback.message, state)
 
 
 # ── Telegram GPS yoki xaritadan joylashuv ─────────────
@@ -607,6 +673,23 @@ async def enter_text_address(message: Message, state: FSMContext):
         )
         return
     await state.update_data(address=text)
+
+    # Matnli manzilni geokodlashga urinib ko'rish
+    try:
+        from api.services.geocode import geocode_address
+        coords = await geocode_address(text)
+        if coords:
+            lat, lon = coords
+            await state.update_data(latitude=lat, longitude=lon)
+            await message.answer(
+                f"✅ Manzil aniqlandi!\n📍 {text}",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            await _quote_and_proceed(message, state)
+            return
+    except Exception as e:
+        log.warning("Geocoding failed for text address: %s", e)
+
     await message.answer("✅ Manzil qabul qilindi", reply_markup=ReplyKeyboardRemove())
     await _ask_comment(message, state)
 

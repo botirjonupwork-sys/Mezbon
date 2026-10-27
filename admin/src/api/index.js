@@ -77,6 +77,7 @@ export const getSettings = (params) => api.get('/admin/settings', { params })
 export const updateSettings = (data, params) => api.put('/admin/settings', data, { params })
 export const getYandexBalance = (params) => api.get('/admin/yandex-balance', { params })
 export const checkYandexBalanceNow = (params) => api.post('/admin/yandex-balance/check-now', null, { params })
+export const testYandexToken = (data, params) => api.post('/admin/yandex/test-token', data, { params })
 
 // ── Profile ──────────────────────────────────────────
 export const getProfile = (params) => api.get('/admin/profile', { params })

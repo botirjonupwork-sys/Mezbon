@@ -28,7 +28,8 @@ const topMenuConfig = [
   { key: '/',         icon: <DashboardOutlined />,    label: 'Dashboard' },
   { key: '/orders',   icon: <ShoppingCartOutlined />, label: 'Zakazlar'  },
   { key: '/catering', icon: <GiftOutlined />,         label: 'Catering', feature: 'catering' },
-  { key: '/branches', icon: <ShopOutlined />,         label: 'Filiallar' },
+  // Filiallar bo'limi hozircha vaqtincha yashirilgan, kelgusida faqat adminlarga ko'rinishi uchun role-based ga sozlangan
+  { key: '/branches', icon: <ShopOutlined />,         label: 'Filiallar', roles: ['admin', 'super'], hidden: true },
   { key: '/menu',     icon: <AppstoreOutlined />,     label: 'Menyu'     },
   { key: '/users',    icon: <UserOutlined />,         label: 'Mijozlar'  },
   { key: '/reviews',  icon: <StarOutlined />,         label: 'Baholar'   },
@@ -153,15 +154,22 @@ export default function AdminLayout() {
       .catch(() => { setPlan(null); setFeatures({}) })
   }, [effectiveRid])
 
-  // Tarif featurelariga ko'ra menu item'larni filter qilamiz. Agar restoran
-  // tarifi qo'llab-quvvatlamasa, item menyudan butunlay yashiriladi (locked
-  // stub qo'shilmaydi — foydalanuvchini chalg'itmaslik uchun).
-  const topMenuItems = topMenuConfig.filter((item) => {
-    if (!item.feature) return true
-    // effectiveRid hali yuklanmagan bo'lsa, item ko'rinsin (loading flicker bo'lmasin)
-    if (!effectiveRid) return true
-    return !!features[item.feature]
-  })
+  // Foydalanuvchi roli (kelajakdagi to'liq RBAC uchun poydevor)
+  const userRole = isSuper ? 'super' : (admin?.role || 'admin')
+
+  // Role va tarif featurelariga ko'ra menyu item'larni filter qilamiz
+  const topMenuItems = topMenuConfig
+    .filter((item) => {
+      // Hozircha yashirilgan bo'limlar
+      if (item.hidden) return false
+      // Role bo'yicha cheklov: agar roles ko'rsatilgan bo'lsa, mos kelishi shart (kelgusi RBAC)
+      if (item.roles && !item.roles.includes(userRole)) return false
+      // Feature bo'yicha cheklov
+      if (!item.feature) return true
+      if (!effectiveRid) return true
+      return !!features[item.feature]
+    })
+    .map(({ feature, roles, hidden, ...rest }) => rest)
 
   const handleMenuClick = ({ key }) => {
     navigate(key)
@@ -194,19 +202,6 @@ export default function AdminLayout() {
             options={allRestaurants.map((r) => ({
               value: r.id, label: `${r.name}${r.status !== 'active' ? ' (' + r.status + ')' : ''}`,
             }))}
-          />
-        )}
-        {branches.length > 0 && (
-          <Select
-            value={selectedBranchId}
-            onChange={selectBranch}
-            style={{ width: '100%', marginTop: 10 }}
-            size="small"
-            suffixIcon={<BranchesOutlined style={{ color: '#fa8c16' }} />}
-            options={[
-              { value: null, label: 'Barcha filiallar' },
-              ...branches.map((b) => ({ value: b.id, label: b.name })),
-            ]}
           />
         )}
       </div>

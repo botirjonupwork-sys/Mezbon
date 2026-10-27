@@ -1124,6 +1124,50 @@ async def check_yandex_balance_now(
     return data
 
 
+@router.post("/yandex/test-token")
+async def test_yandex_token(
+    body: Optional[dict] = None,
+    restaurant_id: int = Depends(get_restaurant_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Yandex Delivery OAuth tokenni haqiqiy Yandex API orqali tekshirish."""
+    token = (body and body.get("token"))
+    if not token and restaurant_id:
+        rest = (await db.execute(
+            select(Restaurant).where(Restaurant.id == restaurant_id)
+        )).scalar_one_or_none()
+        if rest:
+            token = rest.yandex_api_token
+
+    if not token or not str(token).strip():
+        raise HTTPException(400, "Yandex OAuth token kiritilmagan")
+
+    from api.services.yandex_delivery import YandexDeliveryClient
+    client = YandexDeliveryClient(api_token=str(token).strip(), test_mode=False)
+
+    res = await client.quote_price(
+        pickup_lat=41.311081,
+        pickup_lon=69.279737,
+        dropoff_lat=41.275143,
+        dropoff_lon=69.203448,
+        weight_kg=1.0,
+        taxi_class="courier",
+    )
+    if res.get("ok"):
+        return {
+            "ok": True,
+            "message": "Token muvaffaqiyatli tekshirildi! Yandex Delivery faol.",
+            "price": res.get("price"),
+            "currency": res.get("currency", "UZS"),
+            "eta_minutes": res.get("eta_minutes"),
+        }
+    return {
+        "ok": False,
+        "code": res.get("code"),
+        "message": res.get("message") or "Yandex API bilan bog'lanishda xatolik",
+    }
+
+
 # ── Profil (restaurant-specific) ─────────────────────
 @router.get("/profile")
 async def get_profile(

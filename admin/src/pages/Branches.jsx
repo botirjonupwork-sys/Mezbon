@@ -25,6 +25,17 @@ export default function Branches() {
   const [createForm] = Form.useForm()
   const [editForm] = Form.useForm()
   const restaurantId = useAuthStore((s) => s.currentRestaurantId)
+  const admin = useAuthStore((s) => s.admin)
+  const isSuper = useAuthStore((s) => s.restaurantId === null)
+
+  // Kelajakdagi to'liq role-based tizim uchun:
+  // Agar xodim muayyan bitta filialga biriktirilgan bo'lsa (admin?.branch_id), u faqat o'z filialini ko'radi.
+  // Super admin va restoran adminlari esa barcha filiallarni boshqara oladi.
+  const canManageAllBranches = isSuper || !admin?.branch_id || admin?.role === 'admin' || admin?.role === 'tenant_admin'
+  const visibleBranches = branches.filter((b) => {
+    if (canManageAllBranches) return true
+    return b.id === admin.branch_id
+  })
 
   // Xarita uchun joriy qiymatlar (qo'lda manzil yo'q — faqat xaritadan)
   const cLat = Form.useWatch('latitude', createForm)
@@ -158,13 +169,15 @@ export default function Branches() {
     <div>
       <Space style={{ marginBottom: 16, justifyContent: 'space-between', width: '100%' }}>
         <Title level={3} style={{ margin: 0 }}>
-          <ShopOutlined /> Filiallar ({branches.length})
+          <ShopOutlined /> Filiallar ({visibleBranches.length})
         </Title>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={load}>Yangilash</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreating(true)}>
-            Yangi filial
-          </Button>
+          {canManageAllBranches && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreating(true)}>
+              Yangi filial
+            </Button>
+          )}
         </Space>
       </Space>
 
@@ -209,7 +222,7 @@ export default function Branches() {
         <Table
           rowKey="id" size="middle"
           loading={loading}
-          dataSource={branches}
+          dataSource={visibleBranches}
           columns={columns}
           pagination={false}
           locale={{ emptyText: 'Filial yo\'q. "Yangi filial" tugmasini bosing.' }}

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Enum, JSON
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Enum, JSON, UniqueConstraint, Index
 from sqlalchemy.orm import relationship, DeclarativeBase
 from sqlalchemy.sql import func
 from datetime import datetime
@@ -214,6 +214,7 @@ class Restaurant(Base):
     order_cycle_minutes = Column(Integer, nullable=False, default=120)
 
     branches = relationship("Branch", back_populates="restaurant")
+    staff_members = relationship("Staff", back_populates="restaurant", cascade="all, delete-orphan")
     car_bookings = relationship("DeliveryCarBooking", back_populates="restaurant")
     plan_obj = relationship("Plan", back_populates="restaurants", foreign_keys=[plan_id])
 
@@ -243,12 +244,22 @@ class Branch(Base):
     delivery_car_count = Column(Integer, nullable=False, default=5)
     order_cycle_minutes = Column(Integer, nullable=False, default=120)
 
+    # ── Multi-Tenant Filial kengaytmasi ─────────────────
+    landmark = Column(String, nullable=True)                        # Mo'ljal
+    is_delivery_enabled = Column(Boolean, default=True, nullable=False)   # Yetkazib berish
+    is_takeaway_enabled = Column(Boolean, default=True, nullable=False)   # Olib ketish (Saboy)
+    kitchen_chat_id = Column(String, nullable=True)                 # Oshxona Telegram chat ID
+    cashier_chat_id = Column(String, nullable=True)                 # Kassa Telegram chat ID
+    max_delivery_radius_km = Column(Float, default=15.0, nullable=False)  # Qamrov radiusi (km)
+
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, server_default=func.now())
 
     restaurant = relationship("Restaurant", back_populates="branches")
     categories = relationship("Category", back_populates="branch")
     products = relationship("Product", back_populates="branch")
+    branch_products = relationship("BranchProduct", back_populates="branch", cascade="all, delete-orphan")
+    staff_members = relationship("Staff", back_populates="branch", cascade="all, delete-orphan")
     orders = relationship("Order", back_populates="branch")
     couriers = relationship("Courier", back_populates="branch")
     reviews = relationship("Review", back_populates="branch")
@@ -350,6 +361,7 @@ class Product(Base):
     branch = relationship("Branch", back_populates="products")
     category = relationship("Category", back_populates="products")
     order_items = relationship("OrderItem", back_populates="product")
+    branch_overrides = relationship("BranchProduct", back_populates="product", cascade="all, delete-orphan")
 
 
 # ── Orders ───────────────────────────────────────────
@@ -816,3 +828,58 @@ class AlertHistory(Base):
     error = Column(Text, nullable=True)
     ai_used = Column(Boolean, default=False)      # LLM tahlil ishlatildimi
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+# ── Filial Stop-Listi va Narx Override (BranchProduct) ──────
+
+class BranchProduct(Base):
+    """
+    Filial darajasida taomning mavjudligi (Stop-list) va filialga xos maxsus narx.
+    Agar override_price bo'sh (None) bo'lsa -> Global Product.price ishlatiladi.
+    """
+    __tablename__ = "branch_products"
+
+    id = Column(Integer, primary_key=True)
+    branch_id = Column(Integer, ForeignKey("branches.id", ondelete="CASCADE"), nullable=False, index=True)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    is_available = Column(Boolean, default=True, nullable=False)   # False = Stop-listda
+    override_price = Column(Float, nullable=True)                  # Filial maxsus narxi
+    preparation_time_min = Column(Integer, default=15, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    branch = relationship("Branch", back_populates="branch_products")
+    product = relationship("Product", back_populates="branch_overrides")
+
+    __table_args__ = (
+        UniqueConstraint("branch_id", "product_id", name="uq_branch_product"),
+        Index("idx_branch_product_available", "branch_id", "product_id", "is_available"),
+    )
+
+
+# ── Filial Xodimlari va Rollari (Staff) ─────────────────────
+
+class Staff(Base):
+    """Filial kassiri, oshxona xodimi yoki menejeri."""
+    __tablename__ = "staff_members"
+
+    id = Column(Integer, primary_key=True)
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id", ondelete="CASCADE"), nullable=False, index=True)
+    branch_id = Column(Integer, ForeignKey("branches.id", ondelete="CASCADE"), nullable=True, index=True)
+
+    username = Column(String(64), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
+    full_name = Column(String(128), nullable=False)
+    phone = Column(String(32), nullable=True)
+    role = Column(String(32), default="cashier", nullable=False)   # 'tenant_admin' | 'branch_manager' | 'cashier' | 'kitchen'
+
+    telegram_chat_id = Column(String(64), nullable=True)  # Xodimning shaxsiy Telegram ID si
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    restaurant = relationship("Restaurant", back_populates="staff_members")
+    branch = relationship("Branch", back_populates="staff_members")
+
+    __table_args__ = (
+        Index("idx_staff_branch_role", "branch_id", "role"),
+    )

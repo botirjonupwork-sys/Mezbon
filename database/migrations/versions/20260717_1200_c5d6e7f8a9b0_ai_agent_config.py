@@ -15,7 +15,11 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("restaurants", sa.Column("ai_agent_config", sa.JSON(), nullable=True))
+    conn = op.get_bind()
+    insp = sa.inspect(conn)
+    cols = [c["name"] for c in insp.get_columns("restaurants")]
+    if "ai_agent_config" not in cols:
+        op.add_column("restaurants", sa.Column("ai_agent_config", sa.JSON(), nullable=True))
 
 
 def downgrade() -> None:

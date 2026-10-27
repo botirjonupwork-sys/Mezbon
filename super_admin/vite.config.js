@@ -14,7 +14,7 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: apiTarget,
           changeOrigin: true,
-          secure: true,
+          secure: false,
           // Backend /api prefiksisiz ishlaydi — prod'da nginx tomonidan strip qilinadi
           rewrite: (path) => path.replace(/^\/api/, ''),
         },
